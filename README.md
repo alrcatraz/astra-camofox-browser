@@ -9,7 +9,8 @@
     <a href="https://hub.docker.com"><img src="https://img.shields.io/badge/docker-ready-blue" alt="Docker" /></a>
   </p>
   <p>
-    Standing on the mighty shoulders of <a href="https://camoufox.com">Camoufox</a> — a Firefox fork with fingerprint spoofing at the C++ level.<br/>
+    Standing on the mighty shoulders of <a href="https://camoufox.com">Camoufox</a> — a Firefox fork with fingerprint spoofing at the C++ level.
+    <br/><br/>
     The same engine behind <a href="https://askjo.ai">askjo.ai</a>'s web browsing.
   </p>
 </div>
