@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="camofox.png" alt="camofox-browser" width="200" />
+  <img src="fox.png" alt="camofox-browser" width="200" />
   <h1>camofox-browser</h1>
   <p><strong>Headless browser server for AI agents with C++ anti-detection</strong></p>
   <p>
