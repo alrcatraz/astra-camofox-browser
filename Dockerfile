@@ -53,7 +53,7 @@ COPY server.js ./
 COPY lib/ ./lib/
 
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV CAMOFOX_PORT=3000
 
 EXPOSE 3000
 

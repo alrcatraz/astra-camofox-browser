@@ -1269,20 +1269,44 @@ app.post('/act', async (req, res) => {
 });
 
 // Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('Shutting down...');
+let shuttingDown = false;
+
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} received, shutting down...`);
+
+  const forceTimeout = setTimeout(() => {
+    console.error('Shutdown timed out after 10s, forcing exit');
+    process.exit(1);
+  }, 10000);
+  forceTimeout.unref();
+
+  server.close();
+
   for (const [userId, session] of sessions) {
     await session.context.close().catch(() => {});
   }
   if (browser) await browser.close().catch(() => {});
   process.exit(0);
-});
+}
 
-const PORT = process.env.PORT || 9377;
-app.listen(PORT, async () => {
-  console.log(`🦊 camofox-browser listening on port ${PORT}`);
-  // Pre-launch browser so it's ready for first request
-  await ensureBrowser().catch(err => {
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+const PORT = process.env.CAMOFOX_PORT || 9377;
+const server = app.listen(PORT, () => {
+  console.log(`camofox-browser listening on port ${PORT}`);
+  ensureBrowser().catch(err => {
     console.error('Failed to pre-launch browser:', err.message);
   });
+});
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`FATAL: Port ${PORT} is already in use. Set CAMOFOX_PORT env var to use a different port.`);
+    process.exit(1);
+  }
+  console.error('Server error:', err);
+  process.exit(1);
 });

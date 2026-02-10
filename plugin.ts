@@ -108,7 +108,7 @@ async function startServer(
   const serverPath = join(pluginDir, "server.js");
   const proc = spawn("node", [serverPath], {
     cwd: pluginDir,
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, CAMOFOX_PORT: String(port) },
     stdio: ["ignore", "pipe", "pipe"],
     detached: false,
   });
