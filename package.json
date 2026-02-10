@@ -1,6 +1,6 @@
 {
   "name": "@askjo/camofox-browser",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Headless browser automation server and OpenClaw plugin for AI agents - anti-detection, element refs, and session isolation",
   "main": "server.js",
   "license": "MIT",
@@ -42,7 +42,9 @@
     "LICENSE"
   ],
   "openclaw": {
-    "extensions": ["plugin.ts"]
+    "extensions": [
+      "plugin.ts"
+    ]
   },
   "scripts": {
     "start": "node server.js",
