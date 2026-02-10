@@ -1,0 +1,67 @@
+{
+  "name": "@askjo/camofox-browser",
+  "version": "1.0.12",
+  "description": "Headless browser automation server and OpenClaw plugin for AI agents - anti-detection, element refs, and session isolation",
+  "main": "server.js",
+  "license": "MIT",
+  "author": "Jo Inc <oss@askjo.ai>",
+  "homepage": "https://github.com/jo-inc/camofox-browser#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jo-inc/camofox-browser.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jo-inc/camofox-browser/issues"
+  },
+  "keywords": [
+    "browser",
+    "automation",
+    "headless",
+    "scraping",
+    "camofox",
+    "camoufox",
+    "anti-detection",
+    "ai-agent",
+    "openclaw",
+    "clawdbot",
+    "moltbot",
+    "playwright",
+    "firefox"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "server.js",
+    "lib/",
+    "plugin.ts",
+    "openclaw.plugin.json",
+    "run.sh",
+    "Dockerfile",
+    "README.md",
+    "LICENSE"
+  ],
+  "openclaw": {
+    "extensions": ["plugin.ts"]
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "jest --runInBand --forceExit",
+    "test:e2e": "jest --runInBand --forceExit tests/e2e",
+    "test:live": "RUN_LIVE_TESTS=1 jest --runInBand --forceExit tests/live",
+    "test:debug": "DEBUG_SERVER=1 jest --runInBand --forceExit",
+    "postinstall": "npx camoufox-js fetch || true"
+  },
+  "dependencies": {
+    "camoufox-js": "^0.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.18.2",
+    "playwright": "^1.50.0",
+    "playwright-core": "^1.58.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}
