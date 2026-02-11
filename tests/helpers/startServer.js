@@ -25,7 +25,7 @@ async function startServer(port = 0) {
   const serverPath = path.join(__dirname, '../../server.js');
   
   serverProcess = spawn('node', [serverPath], {
-    env: { ...process.env, CAMOFOX_PORT: usePort.toString(), DEBUG_RESPONSES: 'false' },
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: process.env.NODE_ENV, CAMOFOX_PORT: usePort.toString(), DEBUG_RESPONSES: 'false' },
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: false
   });

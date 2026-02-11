@@ -1,4 +1,3 @@
-require('dotenv').config();
 const { Camoufox, launchOptions } = require('camoufox-js');
 const { firefox } = require('playwright-core');
 const express = require('express');
