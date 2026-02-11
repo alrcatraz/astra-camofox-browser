@@ -30,6 +30,26 @@ function validateUrl(url) {
   }
 }
 
+// Import cookies into a user's browser context (Playwright cookies format)
+// POST /sessions/:userId/cookies { cookies: Cookie[] }
+app.post('/sessions/:userId/cookies', async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const cookies = (req.body && req.body.cookies) || [];
+    if (!Array.isArray(cookies)) {
+      return res.status(400).json({ error: 'cookies must be an array' });
+    }
+    const session = await getSession(userId);
+    await session.context.addCookies(cookies);
+    const result = { ok: true, userId: String(userId), count: cookies.length };
+    logResponse('POST /sessions/:userId/cookies', result);
+    res.json(result);
+  } catch (err) {
+    console.error('Cookie import error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 let browser = null;
 // userId -> { context, tabGroups: Map<sessionKey, Map<tabId, TabState>>, lastAccess }
 // TabState = { page, refs: Map<refId, {role, name, nth}>, visitedUrls: Set, toolCalls: number }
