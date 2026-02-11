@@ -170,7 +170,12 @@ npm install @askjo/camofox-browser
 ## Credits
 
 - [Camoufox](https://camoufox.com) — Firefox-based browser with C++ anti-detection
+- [Donate to Camoufox's original creator daijro](https://camoufox.com/about/)
 - [OpenClaw](https://openclaw.ai) — Open-source AI agent framework
+
+## Crypto Scam Warning
+
+Sketchy people are doing sketchy things with crypto tokens named "Camofox" now that this project is getting attention. **Camofox is not a crypto project and will never be one.** Any token, coin, or NFT using the Camofox name has nothing to do with us.
 
 ## License
 
