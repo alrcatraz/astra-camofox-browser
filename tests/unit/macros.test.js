@@ -17,7 +17,8 @@ describe('Macro URL Expansion (unit)', () => {
     expect(macros).toContain('@instagram_search');
     expect(macros).toContain('@tiktok_search');
     expect(macros).toContain('@twitch_search');
-    expect(macros.length).toBe(13);
+    expect(macros).toContain('@reddit_subreddit');
+    expect(macros.length).toBe(14);
   });
 
   test('@google_search expands correctly', () => {
@@ -37,7 +38,12 @@ describe('Macro URL Expansion (unit)', () => {
 
   test('@reddit_search expands correctly', () => {
     expect(expandMacro('@reddit_search', 'programming'))
-      .toBe('https://www.reddit.com/search/?q=programming');
+      .toBe('https://www.reddit.com/search.json?q=programming&limit=25');
+  });
+
+  test('@reddit_subreddit expands correctly', () => {
+    expect(expandMacro('@reddit_subreddit', 'programming'))
+      .toBe('https://www.reddit.com/r/programming.json?limit=25');
   });
 
   test('@wikipedia_search expands correctly', () => {

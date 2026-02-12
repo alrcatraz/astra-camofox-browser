@@ -1,4 +1,3 @@
-require('dotenv').config();
 const { Camoufox, launchOptions } = require('camoufox-js');
 const { firefox } = require('playwright-core');
 const express = require('express');
@@ -516,7 +515,6 @@ app.get('/health', async (req, res) => {
     res.json({ 
       ok: true, 
       engine: 'camoufox',
-      sessions: sessions.size,
       browserConnected: b.isConnected()
     });
   } catch (err) {
@@ -1120,7 +1118,6 @@ app.get('/', async (req, res) => {
       enabled: true,
       running: b.isConnected(),
       engine: 'camoufox',
-      sessions: sessions.size,
       browserConnected: b.isConnected()
     });
   } catch (err) {

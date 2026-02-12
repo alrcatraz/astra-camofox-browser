@@ -33,7 +33,10 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **Element Refs** — stable `e1`, `e2`, `e3` identifiers for reliable interaction
 - **Token-Efficient** — accessibility snapshots are ~90% smaller than raw HTML
 - **Session Isolation** — separate cookies/storage per user
-- **Search Macros** — `@google_search`, `@youtube_search`, `@amazon_search`, and 10 more
+- **Cookie Import** — inject Netscape-format cookie files for authenticated browsing
+- **Proxy + GeoIP** — route traffic through residential proxies with automatic locale/timezone
+- **Structured Logging** — JSON log lines with request IDs for production observability
+- **Search Macros** — `@google_search`, `@youtube_search`, `@amazon_search`, `@reddit_subreddit`, and 10 more
 - **Deploy Anywhere** — Docker, Fly.io, Railway
 
 ## Quick Start
@@ -55,7 +58,7 @@ npm install
 npm start  # downloads Camoufox on first run (~300MB)
 ```
 
-Default port is `9377`. Set `CAMOFOX_PORT` to override.
+Default port is `9377`. See [Environment Variables](#environment-variables) for all options.
 
 ### Docker
 
@@ -89,6 +92,48 @@ curl -X POST http://localhost:9377/sessions/agent1/cookies \
   -H 'Authorization: Bearer YOUR_CAMOFOX_API_KEY' \
   -d '{"cookies":[{"name":"foo","value":"bar","domain":"example.com","path":"/","expires":-1,"httpOnly":false,"secure":false}]}'
 ```
+
+### Proxy + GeoIP
+
+Route all browser traffic through a proxy with automatic locale, timezone, and geolocation derived from the proxy's IP address via Camoufox's built-in GeoIP.
+
+Set these environment variables before starting the server:
+
+```bash
+export PROXY_HOST=166.88.179.132
+export PROXY_PORT=46040
+export PROXY_USERNAME=myuser
+export PROXY_PASSWORD=mypass
+npm start
+```
+
+Or in Docker:
+
+```bash
+docker run -p 9377:9377 \
+  -e PROXY_HOST=166.88.179.132 \
+  -e PROXY_PORT=46040 \
+  -e PROXY_USERNAME=myuser \
+  -e PROXY_PASSWORD=mypass \
+  camofox-browser
+```
+
+When a proxy is configured:
+- All traffic routes through the proxy
+- Camoufox's GeoIP automatically sets `locale`, `timezone`, and `geolocation` to match the proxy's exit IP
+- Browser fingerprint (language, timezone, coordinates) is consistent with the proxy location
+- Without a proxy, defaults to `en-US`, `America/Los_Angeles`, San Francisco coordinates
+
+### Structured Logging
+
+All log output is JSON (one object per line) for easy parsing by log aggregators:
+
+```json
+{"ts":"2026-02-11T23:45:01.234Z","level":"info","msg":"req","reqId":"a1b2c3d4","method":"POST","path":"/tabs","userId":"agent1"}
+{"ts":"2026-02-11T23:45:01.567Z","level":"info","msg":"res","reqId":"a1b2c3d4","status":200,"ms":333}
+```
+
+Health check requests (`/health`) are excluded from request logging to reduce noise.
 
 ### Basic Browsing
 
@@ -164,7 +209,24 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 
 ## Search Macros
 
-`@google_search` · `@youtube_search` · `@amazon_search` · `@reddit_search` · `@wikipedia_search` · `@twitter_search` · `@yelp_search` · `@spotify_search` · `@netflix_search` · `@linkedin_search` · `@instagram_search` · `@tiktok_search` · `@twitch_search`
+`@google_search` · `@youtube_search` · `@amazon_search` · `@reddit_search` · `@reddit_subreddit` · `@wikipedia_search` · `@twitter_search` · `@yelp_search` · `@spotify_search` · `@netflix_search` · `@linkedin_search` · `@instagram_search` · `@tiktok_search` · `@twitch_search`
+
+Reddit macros return JSON directly (no HTML parsing needed):
+- `@reddit_search` — search all of Reddit, returns JSON with 25 results
+- `@reddit_subreddit` — browse a subreddit (e.g., query `"programming"` → `/r/programming.json`)
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CAMOFOX_PORT` | Server port | `9377` |
+| `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | — |
+| `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | — |
+| `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
+| `PROXY_HOST` | Proxy hostname or IP | — |
+| `PROXY_PORT` | Proxy port | — |
+| `PROXY_USERNAME` | Proxy auth username | — |
+| `PROXY_PASSWORD` | Proxy auth password | — |
 
 ## Architecture
 
