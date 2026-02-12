@@ -19,13 +19,13 @@ async function waitForServer(port, maxRetries = 30, interval = 1000) {
   throw new Error(`Server failed to start on port ${port} after ${maxRetries} attempts`);
 }
 
-async function startServer(port = 0) {
+async function startServer(port = 0, extraEnv = {}) {
   const usePort = port || Math.floor(3100 + Math.random() * 900);
   
   const serverPath = path.join(__dirname, '../../server.js');
   
   serverProcess = spawn('node', [serverPath], {
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: process.env.NODE_ENV, CAMOFOX_PORT: usePort.toString(), DEBUG_RESPONSES: 'false' },
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: process.env.NODE_ENV, CAMOFOX_PORT: usePort.toString(), DEBUG_RESPONSES: 'false', ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: false
   });
