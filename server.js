@@ -176,16 +176,39 @@ function getHostOS() {
   return 'linux';
 }
 
+function buildProxyConfig() {
+  const host = process.env.PROXY_HOST;
+  const port = process.env.PROXY_PORT;
+  const username = process.env.PROXY_USERNAME;
+  const password = process.env.PROXY_PASSWORD;
+  
+  if (!host || !port) {
+    console.log('No proxy configured');
+    return null;
+  }
+  
+  console.log(`Proxy configured: ${host}:${port}`);
+  return {
+    server: `http://${host}:${port}`,
+    username,
+    password,
+  };
+}
+
 async function ensureBrowser() {
   if (!browser) {
     const hostOS = getHostOS();
-    console.log(`Launching Camoufox browser (host OS: ${hostOS})...`);
+    const proxy = buildProxyConfig();
+    
+    console.log(`Launching Camoufox browser (host OS: ${hostOS}, geoip: ${!!proxy})...`);
     
     const options = await launchOptions({
       headless: true,
       os: hostOS,
       humanize: true,
       enable_cache: true,
+      proxy: proxy,
+      geoip: !!proxy,
     });
     
     browser = await firefox.launch(options);
@@ -207,13 +230,18 @@ async function getSession(userId) {
       throw new Error('Maximum concurrent sessions reached');
     }
     const b = await ensureBrowser();
-    const context = await b.newContext({
+    const contextOptions = {
       viewport: { width: 1280, height: 720 },
-      locale: 'en-US',
-      timezoneId: 'America/Los_Angeles',
-      geolocation: { latitude: 37.7749, longitude: -122.4194 },
       permissions: ['geolocation'],
-    });
+    };
+    // When geoip is active (proxy configured), camoufox auto-configures
+    // locale/timezone/geolocation from the proxy IP. Without proxy, use defaults.
+    if (!process.env.PROXY_HOST) {
+      contextOptions.locale = 'en-US';
+      contextOptions.timezoneId = 'America/Los_Angeles';
+      contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
+    }
+    const context = await b.newContext(contextOptions);
     
     session = { context, tabGroups: new Map(), lastAccess: Date.now() };
     sessions.set(key, session);
