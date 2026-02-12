@@ -8,6 +8,20 @@ const { expandMacro } = require('./lib/macros');
 const app = express();
 app.use(express.json({ limit: '5mb' }));
 
+const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
+
+function validateUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (!ALLOWED_URL_SCHEMES.includes(parsed.protocol)) {
+      return `Blocked URL scheme: ${parsed.protocol} (only http/https allowed)`;
+    }
+    return null;
+  } catch {
+    return `Invalid URL: ${url}`;
+  }
+}
+
 let browser = null;
 // userId -> { context, tabGroups: Map<sessionKey, Map<tabId, TabState>>, lastAccess }
 // TabState = { page, refs: Map<refId, {role, name, nth}>, visitedUrls: Set, toolCalls: number }
@@ -380,6 +394,8 @@ app.post('/tabs', async (req, res) => {
     group.set(tabId, tabState);
     
     if (url) {
+      const urlErr = validateUrl(url);
+      if (urlErr) return res.status(400).json({ error: urlErr });
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
       tabState.visitedUrls.add(url);
     }
@@ -413,6 +429,9 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
     if (!targetUrl) {
       return res.status(400).json({ error: 'url or macro required' });
     }
+    
+    const urlErr = validateUrl(targetUrl);
+    if (urlErr) return res.status(400).json({ error: urlErr });
     
     // Serialize navigation operations on the same tab
     const result = await withTabLock(tabId, async () => {
@@ -784,7 +803,7 @@ app.get('/tabs/:tabId/links', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) {
-      console.log(`GET /tabs/${req.params.tabId}/links -> 404 (userId=${userId}, hasSession=${!!session}, sessionUsers=${[...sessions.keys()].join(',')})`);
+      console.log(`GET /tabs/${req.params.tabId}/links -> 404 (userId=${userId}, hasSession=${!!session})`);
       return res.status(404).json({ error: 'Tab not found' });
     }
     
@@ -989,6 +1008,9 @@ app.post('/tabs/open', async (req, res) => {
       return res.status(400).json({ error: 'url is required' });
     }
     
+    const urlErr = validateUrl(url);
+    if (urlErr) return res.status(400).json({ error: urlErr });
+    
     const session = await getSession(userId);
     const group = getTabGroup(session, listItemId);
     
@@ -1045,6 +1067,9 @@ app.post('/navigate', async (req, res) => {
     if (!url) {
       return res.status(400).json({ error: 'url is required' });
     }
+    
+    const urlErr = validateUrl(url);
+    if (urlErr) return res.status(400).json({ error: urlErr });
     
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, targetId);
