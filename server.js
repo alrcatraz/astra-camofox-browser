@@ -48,7 +48,7 @@ function validateUrl(url) {
 // Cookie injection moves this from "anonymous browsing" to "authenticated browsing".
 // This endpoint is DISABLED unless CAMOFOX_API_KEY is set.
 // When enabled, caller must send: Authorization: Bearer <CAMOFOX_API_KEY>
-app.post('/sessions/:userId/cookies', async (req, res) => {
+app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (req, res) => {
   try {
     const apiKey = process.env.CAMOFOX_API_KEY;
     if (!apiKey) {
@@ -72,7 +72,10 @@ app.post('/sessions/:userId/cookies', async (req, res) => {
       return res.status(400).json({ error: 'cookies must be an array' });
     }
 
-    // Validate before passing to Playwright to avoid cryptic 500s
+    if (cookies.length > 500) {
+      return res.status(400).json({ error: 'Too many cookies. Maximum 500 per request.' });
+    }
+
     const invalid = [];
     for (let i = 0; i < cookies.length; i++) {
       const c = cookies[i];
@@ -91,10 +94,6 @@ app.post('/sessions/:userId/cookies', async (req, res) => {
         error: 'Invalid cookie objects: each cookie must include name, value, and domain',
         invalid,
       });
-    }
-
-    if (cookies.length > 500) {
-      return res.status(400).json({ error: 'Too many cookies. Maximum 500 per request.' });
     }
 
     const allowedFields = ['name', 'value', 'domain', 'path', 'expires', 'httpOnly', 'secure', 'sameSite'];

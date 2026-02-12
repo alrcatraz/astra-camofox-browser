@@ -211,7 +211,9 @@ function parseNetscapeCookieFile(text: string) {
     secure?: boolean;
   }> = [];
 
-  for (const rawLine of text.split(/\r?\n/)) {
+  const cleaned = text.replace(/^\uFEFF/, '');
+
+  for (const rawLine of cleaned.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
     if (line.startsWith('#') && !line.startsWith('#HttpOnly_')) continue;
@@ -513,7 +515,7 @@ export default function register(api: PluginApi) {
       const cookiesDir = resolve(process.env.CAMOFOX_COOKIES_DIR || join(homedir(), ".camofox", "cookies"));
       const resolved = resolve(cookiesDir, cookiesPath);
       if (!resolved.startsWith(cookiesDir + sep)) {
-        throw new Error(`cookiesPath must be within ${cookiesDir}`);
+        throw new Error("cookiesPath must be a relative path within the cookies directory");
       }
 
       const stat = await fs.stat(resolved);

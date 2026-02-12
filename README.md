@@ -81,7 +81,7 @@ If you’re using the OpenClaw plugin, you can import a Netscape-format cookie f
 
 ```bash
 # OpenClaw tool usage (conceptual)
-# camofox_import_cookies({ cookiesPath: "/path/to/cookies.txt", domainSuffix: "linkedin.com" })
+# camofox_import_cookies({ cookiesPath: "linkedin.txt", domainSuffix: "linkedin.com" })
 
 # Direct server usage (Playwright cookie objects)
 curl -X POST http://localhost:9377/sessions/agent1/cookies \
