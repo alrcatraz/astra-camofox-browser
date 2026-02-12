@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { Camoufox, launchOptions } = require('camoufox-js');
 const { firefox } = require('playwright-core');
 const express = require('express');
@@ -5,8 +6,41 @@ const crypto = require('crypto');
 const os = require('os');
 const { expandMacro } = require('./lib/macros');
 
+// --- Structured logging ---
+function log(level, msg, fields = {}) {
+  const entry = {
+    ts: new Date().toISOString(),
+    level,
+    msg,
+    ...fields,
+  };
+  const line = JSON.stringify(entry);
+  if (level === 'error') {
+    process.stderr.write(line + '\n');
+  } else {
+    process.stdout.write(line + '\n');
+  }
+}
+
 const app = express();
 app.use(express.json({ limit: '100kb' }));
+
+// Request logging middleware
+app.use((req, res, next) => {
+  if (req.path === '/health') return next();
+  const reqId = crypto.randomUUID().slice(0, 8);
+  req.reqId = reqId;
+  req.startTime = Date.now();
+  const userId = req.body?.userId || req.query?.userId || '-';
+  log('info', 'req', { reqId, method: req.method, path: req.path, userId });
+  const origEnd = res.end.bind(res);
+  res.end = function (...args) {
+    const ms = Date.now() - req.startTime;
+    log('info', 'res', { reqId, status: res.statusCode, ms });
+    return origEnd(...args);
+  };
+  next();
+});
 
 const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
 
@@ -23,7 +57,7 @@ function timingSafeCompare(a, b) {
 
 function safeError(err) {
   if (process.env.NODE_ENV === 'production') {
-    console.error(err);
+    log('error', 'internal error', { error: err.message, stack: err.stack });
     return 'Internal server error';
   }
   return err.message;
@@ -108,10 +142,10 @@ app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (r
     const session = await getSession(userId);
     await session.context.addCookies(sanitized);
     const result = { ok: true, userId: String(userId), count: sanitized.length };
-    logResponse('POST /sessions/:userId/cookies', result);
+    log('info', 'cookies imported', { reqId: req.reqId, userId: String(userId), count: sanitized.length });
     res.json(result);
   } catch (err) {
-    console.error('Cookie import error:', err);
+    log('error', 'cookie import failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -126,18 +160,6 @@ const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 min
 const MAX_SNAPSHOT_NODES = 500;
 const MAX_SESSIONS = 50;
 const MAX_TABS_PER_SESSION = 10;
-const DEBUG_RESPONSES = process.env.NODE_ENV !== 'production';
-
-function logResponse(endpoint, data) {
-  if (!DEBUG_RESPONSES) return;
-  let logData = data;
-  // Truncate snapshot for readability
-  if (data && data.snapshot) {
-    const snap = data.snapshot;
-    logData = { ...data, snapshot: `[${snap.length} chars] ${snap.slice(0, 300)}...` };
-  }
-  console.log(`📤 ${endpoint} ->`, JSON.stringify(logData, null, 2));
-}
 
 // Per-tab locks to serialize operations on the same tab
 // tabId -> Promise (the currently executing operation)
@@ -183,11 +205,11 @@ function buildProxyConfig() {
   const password = process.env.PROXY_PASSWORD;
   
   if (!host || !port) {
-    console.log('No proxy configured');
+    log('info', 'no proxy configured');
     return null;
   }
   
-  console.log(`Proxy configured: ${host}:${port}`);
+  log('info', 'proxy configured', { host, port });
   return {
     server: `http://${host}:${port}`,
     username,
@@ -200,7 +222,7 @@ async function ensureBrowser() {
     const hostOS = getHostOS();
     const proxy = buildProxyConfig();
     
-    console.log(`Launching Camoufox browser (host OS: ${hostOS}, geoip: ${!!proxy})...`);
+    log('info', 'launching camoufox', { hostOS, geoip: !!proxy });
     
     const options = await launchOptions({
       headless: true,
@@ -212,7 +234,7 @@ async function ensureBrowser() {
     });
     
     browser = await firefox.launch(options);
-    console.log('Camoufox browser launched');
+    log('info', 'camoufox launched');
   }
   return browser;
 }
@@ -245,7 +267,7 @@ async function getSession(userId) {
     
     session = { context, tabGroups: new Map(), lastAccess: Date.now() };
     sessions.set(key, session);
-    console.log(`Session created for user ${key}`);
+    log('info', 'session created', { userId: key });
   }
   session.lastAccess = Date.now();
   return session;
@@ -287,7 +309,7 @@ async function waitForPageReady(page, options = {}) {
     
     if (waitForNetwork) {
       await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-        console.log('waitForPageReady: networkidle timeout (continuing anyway)');
+        log('warn', 'networkidle timeout, continuing');
       });
     }
     
@@ -308,7 +330,7 @@ async function waitForPageReady(page, options = {}) {
         await new Promise(r => setTimeout(r, 250));
       }
     }).catch(() => {
-      console.log('waitForPageReady: framework hydration wait failed (continuing anyway)');
+      log('warn', 'hydration wait failed, continuing');
     });
     
     await page.waitForTimeout(200);
@@ -318,7 +340,7 @@ async function waitForPageReady(page, options = {}) {
     
     return true;
   } catch (err) {
-    console.log(`waitForPageReady: ${err.message}`);
+    log('warn', 'page ready failed', { error: err.message });
     return false;
   }
 }
@@ -358,7 +380,7 @@ async function dismissConsentDialogs(page) {
       const button = page.locator(selector).first();
       if (await button.isVisible({ timeout: 100 })) {
         await button.click({ timeout: 1000 }).catch(() => {});
-        console.log(`🍪 Auto-dismissed consent dialog via: ${selector}`);
+        log('info', 'dismissed consent dialog', { selector });
         await page.waitForTimeout(300); // Brief pause after dismiss
         break; // Only dismiss one dialog per page load
       }
@@ -372,7 +394,7 @@ async function buildRefs(page) {
   const refs = new Map();
   
   if (!page || page.isClosed()) {
-    console.log('buildRefs: Page is closed or invalid');
+    log('warn', 'buildRefs: page closed or invalid');
     return refs;
   }
   
@@ -385,7 +407,7 @@ async function buildRefs(page) {
   try {
     ariaYaml = await page.locator('body').ariaSnapshot({ timeout: 10000 });
   } catch (err) {
-    console.log('buildRefs: ariaSnapshot failed, retrying after navigation settles');
+    log('warn', 'ariaSnapshot failed, retrying');
     await page.waitForLoadState('load', { timeout: 5000 }).catch(() => {});
     ariaYaml = await page.locator('body').ariaSnapshot({ timeout: 10000 });
   }
@@ -411,7 +433,7 @@ async function buildRefs(page) {
   }).catch(() => []);
   
   if (!ariaYaml) {
-    console.log('buildRefs: No aria snapshot available');
+    log('warn', 'buildRefs: no aria snapshot');
     return refs;
   }
   
@@ -494,6 +516,7 @@ app.get('/health', async (req, res) => {
     res.json({ 
       ok: true, 
       engine: 'camoufox',
+      sessions: sessions.size,
       browserConnected: b.isConnected()
     });
   } catch (err) {
@@ -533,10 +556,10 @@ app.post('/tabs', async (req, res) => {
       tabState.visitedUrls.add(url);
     }
     
-    console.log(`Tab ${tabId} created for user ${userId}, session ${resolvedSessionKey}`);
+    log('info', 'tab created', { reqId: req.reqId, tabId, userId, sessionKey: resolvedSessionKey, url: page.url() });
     res.json({ tabId, url: page.url() });
   } catch (err) {
-    console.error('Create tab error:', err);
+    log('error', 'tab create failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -574,10 +597,10 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
       return { ok: true, url: tabState.page.url() };
     });
     
-    logResponse(`POST /tabs/${tabId}/navigate`, result);
+    log('info', 'navigated', { reqId: req.reqId, tabId, url: result.url });
     res.json(result);
   } catch (err) {
-    console.error('Navigate error:', err);
+    log('error', 'navigate failed', { reqId: req.reqId, tabId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -650,10 +673,10 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
       snapshot: annotatedYaml,
       refsCount: tabState.refs.size
     };
-    logResponse(`GET /tabs/${req.params.tabId}/snapshot`, result);
+    log('info', 'snapshot', { reqId: req.reqId, tabId: req.params.tabId, url: result.url, snapshotLen: result.snapshot?.length, refsCount: result.refsCount });
     res.json(result);
   } catch (err) {
-    console.error('Snapshot error:', err);
+    log('error', 'snapshot failed', { reqId: req.reqId, tabId: req.params.tabId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -671,7 +694,7 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
     
     res.json({ ok: true, ready });
   } catch (err) {
-    console.error('Wait error:', err);
+    log('error', 'wait failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -712,7 +735,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         await tabState.page.waitForTimeout(50);
         await tabState.page.mouse.up();
         
-        console.log(`🖱️ Dispatched full mouse sequence at (${x.toFixed(0)}, ${y.toFixed(0)})`);
+        log('info', 'mouse sequence dispatched', { x: x.toFixed(0), y: y.toFixed(0) });
       };
       
       const doClick = async (locatorOrSelector, isLocator) => {
@@ -724,17 +747,17 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         } catch (err) {
           // Fallback 1: If intercepted by overlay, retry with force
           if (err.message.includes('intercepts pointer events')) {
-            console.log('Click intercepted, retrying with force:true');
+            log('warn', 'click intercepted, retrying with force');
             try {
               await locator.click({ timeout: 5000, force: true });
             } catch (forceErr) {
               // Fallback 2: Full mouse event sequence for stubborn JS handlers
-              console.log('Force click failed, trying full mouse sequence');
+              log('warn', 'force click failed, trying mouse sequence');
               await dispatchMouseSequence(locator);
             }
           } else if (err.message.includes('not visible') || err.message.includes('timeout')) {
             // Fallback 2: Element not responding to click, try mouse sequence
-            console.log('Click timeout/not visible, trying full mouse sequence');
+            log('warn', 'click timeout, trying mouse sequence');
             await dispatchMouseSequence(locator);
           } else {
             throw err;
@@ -761,10 +784,10 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       return { ok: true, url: newUrl };
     });
     
-    logResponse(`POST /tabs/${tabId}/click`, result);
+    log('info', 'clicked', { reqId: req.reqId, tabId, url: result.url });
     res.json(result);
   } catch (err) {
-    console.error('Click error:', err);
+    log('error', 'click failed', { reqId: req.reqId, tabId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -798,7 +821,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
     
     res.json({ ok: true });
   } catch (err) {
-    console.error('Type error:', err);
+    log('error', 'type failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -822,7 +845,7 @@ app.post('/tabs/:tabId/press', async (req, res) => {
     
     res.json({ ok: true });
   } catch (err) {
-    console.error('Press error:', err);
+    log('error', 'press failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -844,7 +867,7 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     
     res.json({ ok: true });
   } catch (err) {
-    console.error('Scroll error:', err);
+    log('error', 'scroll failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -870,7 +893,7 @@ app.post('/tabs/:tabId/back', async (req, res) => {
     
     res.json(result);
   } catch (err) {
-    console.error('Back error:', err);
+    log('error', 'back failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -896,7 +919,7 @@ app.post('/tabs/:tabId/forward', async (req, res) => {
     
     res.json(result);
   } catch (err) {
-    console.error('Forward error:', err);
+    log('error', 'forward failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -922,7 +945,7 @@ app.post('/tabs/:tabId/refresh', async (req, res) => {
     
     res.json(result);
   } catch (err) {
-    console.error('Refresh error:', err);
+    log('error', 'refresh failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -936,7 +959,7 @@ app.get('/tabs/:tabId/links', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) {
-      console.log(`GET /tabs/${req.params.tabId}/links -> 404 (userId=${userId}, hasSession=${!!session})`);
+      log('warn', 'links: tab not found', { reqId: req.reqId, tabId: req.params.tabId, userId, hasSession: !!session });
       return res.status(404).json({ error: 'Tab not found' });
     }
     
@@ -963,7 +986,7 @@ app.get('/tabs/:tabId/links', async (req, res) => {
       pagination: { total, offset, limit, hasMore: offset + limit < total }
     });
   } catch (err) {
-    console.error('Links error:', err);
+    log('error', 'links failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -982,7 +1005,7 @@ app.get('/tabs/:tabId/screenshot', async (req, res) => {
     res.set('Content-Type', 'image/png');
     res.send(buffer);
   } catch (err) {
-    console.error('Screenshot error:', err);
+    log('error', 'screenshot failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -1006,7 +1029,7 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
       refsCount: tabState.refs.size
     });
   } catch (err) {
-    console.error('Stats error:', err);
+    log('error', 'stats failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -1024,11 +1047,11 @@ app.delete('/tabs/:tabId', async (req, res) => {
       if (found.group.size === 0) {
         session.tabGroups.delete(found.listItemId);
       }
-      console.log(`Tab ${req.params.tabId} closed for user ${userId}`);
+      log('info', 'tab closed', { reqId: req.reqId, tabId: req.params.tabId, userId });
     }
     res.json({ ok: true });
   } catch (err) {
-    console.error('Close tab error:', err);
+    log('error', 'tab close failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -1045,11 +1068,11 @@ app.delete('/tabs/group/:listItemId', async (req, res) => {
         tabLocks.delete(tabId);
       }
       session.tabGroups.delete(req.params.listItemId);
-      console.log(`Tab group ${req.params.listItemId} closed for user ${userId}`);
+      log('info', 'tab group closed', { reqId: req.reqId, listItemId: req.params.listItemId, userId });
     }
     res.json({ ok: true });
   } catch (err) {
-    console.error('Close tab group error:', err);
+    log('error', 'tab group close failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -1062,11 +1085,11 @@ app.delete('/sessions/:userId', async (req, res) => {
     if (session) {
       await session.context.close();
       sessions.delete(userId);
-      console.log(`Session closed for user ${userId}`);
+      log('info', 'session closed', { userId });
     }
     res.json({ ok: true });
   } catch (err) {
-    console.error('Close session error:', err);
+    log('error', 'session close failed', { error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -1078,7 +1101,7 @@ setInterval(() => {
     if (now - session.lastAccess > SESSION_TIMEOUT_MS) {
       session.context.close().catch(() => {});
       sessions.delete(userId);
-      console.log(`Session expired for user ${userId}`);
+      log('info', 'session expired', { userId });
     }
   }
 }, 60_000);
@@ -1097,6 +1120,7 @@ app.get('/', async (req, res) => {
       enabled: true,
       running: b.isConnected(),
       engine: 'camoufox',
+      sessions: sessions.size,
       browserConnected: b.isConnected()
     });
   } catch (err) {
@@ -1129,7 +1153,7 @@ app.get('/tabs', async (req, res) => {
     
     res.json({ running: true, tabs });
   } catch (err) {
-    console.error('List tabs error:', err);
+    log('error', 'list tabs failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -1166,7 +1190,7 @@ app.post('/tabs/open', async (req, res) => {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     tabState.visitedUrls.add(url);
     
-    console.log(`[OpenClaw] Tab ${tabId} opened: ${url}`);
+    log('info', 'openclaw tab opened', { reqId: req.reqId, tabId, url: page.url() });
     res.json({ 
       ok: true,
       targetId: tabId,
@@ -1175,7 +1199,7 @@ app.post('/tabs/open', async (req, res) => {
       title: await page.title().catch(() => '')
     });
   } catch (err) {
-    console.error('Open tab error:', err);
+    log('error', 'openclaw tab open failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -1240,7 +1264,7 @@ app.post('/navigate', async (req, res) => {
     
     res.json(result);
   } catch (err) {
-    console.error('Navigate error:', err);
+    log('error', 'openclaw navigate failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -1298,7 +1322,7 @@ app.get('/snapshot', async (req, res) => {
       refsCount: tabState.refs.size
     });
   } catch (err) {
-    console.error('Snapshot error:', err);
+    log('error', 'openclaw snapshot failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -1445,9 +1469,37 @@ app.post('/act', async (req, res) => {
     
     res.json(result);
   } catch (err) {
-    console.error('Act error:', err);
+    log('error', 'act failed', { reqId: req.reqId, kind: req.body?.kind, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
+});
+
+// Periodic stats beacon (every 5 min)
+setInterval(() => {
+  const mem = process.memoryUsage();
+  let totalTabs = 0;
+  for (const [, session] of sessions) {
+    for (const [, group] of session.tabGroups) {
+      totalTabs += group.size;
+    }
+  }
+  log('info', 'stats', {
+    sessions: sessions.size,
+    tabs: totalTabs,
+    rssBytes: mem.rss,
+    heapUsedBytes: mem.heapUsed,
+    uptimeSeconds: Math.floor(process.uptime()),
+    browserConnected: browser?.isConnected() ?? false,
+  });
+}, 5 * 60_000);
+
+// Crash logging
+process.on('uncaughtException', (err) => {
+  log('error', 'uncaughtException', { error: err.message, stack: err.stack });
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  log('error', 'unhandledRejection', { reason: String(reason) });
 });
 
 // Graceful shutdown
@@ -1456,10 +1508,10 @@ let shuttingDown = false;
 async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`${signal} received, shutting down...`);
+  log('info', 'shutting down', { signal });
 
   const forceTimeout = setTimeout(() => {
-    console.error('Shutdown timed out after 10s, forcing exit');
+    log('error', 'shutdown timed out, forcing exit');
     process.exit(1);
   }, 10000);
   forceTimeout.unref();
@@ -1476,19 +1528,19 @@ async function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-const PORT = process.env.CAMOFOX_PORT || 9377;
+const PORT = process.env.CAMOFOX_PORT || process.env.PORT || 9377;
 const server = app.listen(PORT, () => {
-  console.log(`camofox-browser listening on port ${PORT}`);
+  log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
   ensureBrowser().catch(err => {
-    console.error('Failed to pre-launch browser:', err.message);
+    log('error', 'browser pre-launch failed', { error: err.message });
   });
 });
 
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
-    console.error(`FATAL: Port ${PORT} is already in use. Set CAMOFOX_PORT env var to use a different port.`);
+    log('error', 'port in use', { port: PORT });
     process.exit(1);
   }
-  console.error('Server error:', err);
+  log('error', 'server error', { error: err.message });
   process.exit(1);
 });
