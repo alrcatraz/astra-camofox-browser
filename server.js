@@ -10,6 +10,17 @@ app.use(express.json({ limit: '100kb' }));
 
 const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
 
+function timingSafeCompare(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) {
+    crypto.timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 function safeError(err) {
   if (process.env.NODE_ENV === 'production') {
     console.error(err);
@@ -29,6 +40,81 @@ function validateUrl(url) {
     return `Invalid URL: ${url}`;
   }
 }
+
+// Import cookies into a user's browser context (Playwright cookies format)
+// POST /sessions/:userId/cookies { cookies: Cookie[] }
+//
+// SECURITY:
+// Cookie injection moves this from "anonymous browsing" to "authenticated browsing".
+// This endpoint is DISABLED unless CAMOFOX_API_KEY is set.
+// When enabled, caller must send: Authorization: Bearer <CAMOFOX_API_KEY>
+app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (req, res) => {
+  try {
+    const apiKey = process.env.CAMOFOX_API_KEY;
+    if (!apiKey) {
+      return res.status(403).json({
+        error: 'Cookie import is disabled. Set CAMOFOX_API_KEY to enable this endpoint.',
+      });
+    }
+
+    const auth = String(req.headers['authorization'] || '');
+    const match = auth.match(/^Bearer\s+(.+)$/i);
+    if (!match || !timingSafeCompare(match[1], apiKey)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const userId = req.params.userId;
+    if (!req.body || !('cookies' in req.body)) {
+      return res.status(400).json({ error: 'Missing "cookies" field in request body' });
+    }
+    const cookies = req.body.cookies;
+    if (!Array.isArray(cookies)) {
+      return res.status(400).json({ error: 'cookies must be an array' });
+    }
+
+    if (cookies.length > 500) {
+      return res.status(400).json({ error: 'Too many cookies. Maximum 500 per request.' });
+    }
+
+    const invalid = [];
+    for (let i = 0; i < cookies.length; i++) {
+      const c = cookies[i];
+      const missing = [];
+      if (!c || typeof c !== 'object') {
+        invalid.push({ index: i, error: 'cookie must be an object' });
+        continue;
+      }
+      if (typeof c.name !== 'string' || !c.name) missing.push('name');
+      if (typeof c.value !== 'string') missing.push('value');
+      if (typeof c.domain !== 'string' || !c.domain) missing.push('domain');
+      if (missing.length) invalid.push({ index: i, missing });
+    }
+    if (invalid.length) {
+      return res.status(400).json({
+        error: 'Invalid cookie objects: each cookie must include name, value, and domain',
+        invalid,
+      });
+    }
+
+    const allowedFields = ['name', 'value', 'domain', 'path', 'expires', 'httpOnly', 'secure', 'sameSite'];
+    const sanitized = cookies.map(c => {
+      const clean = {};
+      for (const k of allowedFields) {
+        if (c[k] !== undefined) clean[k] = c[k];
+      }
+      return clean;
+    });
+
+    const session = await getSession(userId);
+    await session.context.addCookies(sanitized);
+    const result = { ok: true, userId: String(userId), count: sanitized.length };
+    logResponse('POST /sessions/:userId/cookies', result);
+    res.json(result);
+  } catch (err) {
+    console.error('Cookie import error:', err);
+    res.status(500).json({ error: safeError(err) });
+  }
+});
 
 let browser = null;
 // userId -> { context, tabGroups: Map<sessionKey, Map<tabId, TabState>>, lastAccess }
@@ -1080,7 +1166,7 @@ app.post('/start', async (req, res) => {
 app.post('/stop', async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
-    if (!adminKey || adminKey !== process.env.CAMOFOX_ADMIN_KEY) {
+    if (!adminKey || !timingSafeCompare(adminKey, process.env.CAMOFOX_ADMIN_KEY || '')) {
       return res.status(403).json({ error: 'Forbidden' });
     }
     if (browser) {
