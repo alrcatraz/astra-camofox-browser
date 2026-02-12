@@ -113,6 +113,7 @@ async function startServer(
       HOME: process.env.HOME,
       NODE_ENV: process.env.NODE_ENV,
       CAMOFOX_PORT: String(port),
+      CAMOFOX_ADMIN_KEY: process.env.CAMOFOX_ADMIN_KEY,
     },
     stdio: ["ignore", "pipe", "pipe"],
     detached: false,

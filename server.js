@@ -6,9 +6,17 @@ const os = require('os');
 const { expandMacro } = require('./lib/macros');
 
 const app = express();
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '100kb' }));
 
 const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
+
+function safeError(err) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error(err);
+    return 'Internal server error';
+  }
+  return err.message;
+}
 
 function validateUrl(url) {
   try {
@@ -30,7 +38,9 @@ const sessions = new Map();
 
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 min
 const MAX_SNAPSHOT_NODES = 500;
-const DEBUG_RESPONSES = true; // Log response payloads
+const MAX_SESSIONS = 50;
+const MAX_TABS_PER_SESSION = 10;
+const DEBUG_RESPONSES = process.env.NODE_ENV !== 'production';
 
 function logResponse(endpoint, data) {
   if (!DEBUG_RESPONSES) return;
@@ -107,6 +117,9 @@ async function getSession(userId) {
   const key = normalizeUserId(userId);
   let session = sessions.get(key);
   if (!session) {
+    if (sessions.size >= MAX_SESSIONS) {
+      throw new Error('Maximum concurrent sessions reached');
+    }
     const b = await ensureBrowser();
     const context = await b.newContext({
       viewport: { width: 1280, height: 720 },
@@ -367,11 +380,10 @@ app.get('/health', async (req, res) => {
     res.json({ 
       ok: true, 
       engine: 'camoufox',
-      sessions: sessions.size,
       browserConnected: b.isConnected()
     });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    res.status(500).json({ ok: false, error: safeError(err) });
   }
 });
 
@@ -386,6 +398,13 @@ app.post('/tabs', async (req, res) => {
     }
     
     const session = await getSession(userId);
+    
+    let totalTabs = 0;
+    for (const group of session.tabGroups.values()) totalTabs += group.size;
+    if (totalTabs >= MAX_TABS_PER_SESSION) {
+      return res.status(429).json({ error: 'Maximum tabs per session reached' });
+    }
+    
     const group = getTabGroup(session, resolvedSessionKey);
     
     const page = await session.context.newPage();
@@ -404,7 +423,7 @@ app.post('/tabs', async (req, res) => {
     res.json({ tabId, url: page.url() });
   } catch (err) {
     console.error('Create tab error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -445,7 +464,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Navigate error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -521,7 +540,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Snapshot error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -539,7 +558,7 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
     res.json({ ok: true, ready });
   } catch (err) {
     console.error('Wait error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -632,7 +651,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Click error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -666,7 +685,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('Type error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -690,7 +709,7 @@ app.post('/tabs/:tabId/press', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('Press error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -712,7 +731,7 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('Scroll error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -738,7 +757,7 @@ app.post('/tabs/:tabId/back', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Back error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -764,7 +783,7 @@ app.post('/tabs/:tabId/forward', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Forward error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -790,7 +809,7 @@ app.post('/tabs/:tabId/refresh', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Refresh error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -831,7 +850,7 @@ app.get('/tabs/:tabId/links', async (req, res) => {
     });
   } catch (err) {
     console.error('Links error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -850,7 +869,7 @@ app.get('/tabs/:tabId/screenshot', async (req, res) => {
     res.send(buffer);
   } catch (err) {
     console.error('Screenshot error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -874,7 +893,7 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
     });
   } catch (err) {
     console.error('Stats error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -887,6 +906,7 @@ app.delete('/tabs/:tabId', async (req, res) => {
     if (found) {
       await found.tabState.page.close();
       found.group.delete(req.params.tabId);
+      tabLocks.delete(req.params.tabId);
       if (found.group.size === 0) {
         session.tabGroups.delete(found.listItemId);
       }
@@ -895,7 +915,7 @@ app.delete('/tabs/:tabId', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('Close tab error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -908,6 +928,7 @@ app.delete('/tabs/group/:listItemId', async (req, res) => {
     if (group) {
       for (const [tabId, tabState] of group) {
         await tabState.page.close().catch(() => {});
+        tabLocks.delete(tabId);
       }
       session.tabGroups.delete(req.params.listItemId);
       console.log(`Tab group ${req.params.listItemId} closed for user ${userId}`);
@@ -915,15 +936,15 @@ app.delete('/tabs/group/:listItemId', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('Close tab group error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
 // Close session
 app.delete('/sessions/:userId', async (req, res) => {
   try {
-    const userId = req.params.userId;
-    const session = sessions.get(normalizeUserId(userId));
+    const userId = normalizeUserId(req.params.userId);
+    const session = sessions.get(userId);
     if (session) {
       await session.context.close();
       sessions.delete(userId);
@@ -932,7 +953,7 @@ app.delete('/sessions/:userId', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('Close session error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -962,11 +983,10 @@ app.get('/', async (req, res) => {
       enabled: true,
       running: b.isConnected(),
       engine: 'camoufox',
-      sessions: sessions.size,
       browserConnected: b.isConnected()
     });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    res.status(500).json({ ok: false, error: safeError(err) });
   }
 });
 
@@ -996,14 +1016,17 @@ app.get('/tabs', async (req, res) => {
     res.json({ running: true, tabs });
   } catch (err) {
     console.error('List tabs error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
 // POST /tabs/open - Open tab (alias for POST /tabs, OpenClaw format)
 app.post('/tabs/open', async (req, res) => {
   try {
-    const { url, userId = 'openclaw', listItemId = 'default' } = req.body;
+    const { url, userId, listItemId = 'default' } = req.body;
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
     if (!url) {
       return res.status(400).json({ error: 'url is required' });
     }
@@ -1012,6 +1035,13 @@ app.post('/tabs/open', async (req, res) => {
     if (urlErr) return res.status(400).json({ error: urlErr });
     
     const session = await getSession(userId);
+    
+    let totalTabs = 0;
+    for (const g of session.tabGroups.values()) totalTabs += g.size;
+    if (totalTabs >= MAX_TABS_PER_SESSION) {
+      return res.status(429).json({ error: 'Maximum tabs per session reached' });
+    }
+    
     const group = getTabGroup(session, listItemId);
     
     const page = await session.context.newPage();
@@ -1032,7 +1062,7 @@ app.post('/tabs/open', async (req, res) => {
     });
   } catch (err) {
     console.error('Open tab error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -1042,13 +1072,17 @@ app.post('/start', async (req, res) => {
     await ensureBrowser();
     res.json({ ok: true, profile: 'camoufox' });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    res.status(500).json({ ok: false, error: safeError(err) });
   }
 });
 
 // POST /stop - Stop browser (OpenClaw expects this)
 app.post('/stop', async (req, res) => {
   try {
+    const adminKey = req.headers['x-admin-key'];
+    if (!adminKey || adminKey !== process.env.CAMOFOX_ADMIN_KEY) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     if (browser) {
       await browser.close().catch(() => {});
       browser = null;
@@ -1056,14 +1090,17 @@ app.post('/stop', async (req, res) => {
     sessions.clear();
     res.json({ ok: true, stopped: true, profile: 'camoufox' });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    res.status(500).json({ ok: false, error: safeError(err) });
   }
 });
 
 // POST /navigate - Navigate (OpenClaw format with targetId in body)
 app.post('/navigate', async (req, res) => {
   try {
-    const { targetId, url, userId = 'openclaw' } = req.body;
+    const { targetId, url, userId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
     if (!url) {
       return res.status(400).json({ error: 'url is required' });
     }
@@ -1090,14 +1127,17 @@ app.post('/navigate', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Navigate error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
 // GET /snapshot - Snapshot (OpenClaw format with query params)
 app.get('/snapshot', async (req, res) => {
   try {
-    const { targetId, userId = 'openclaw', format = 'text' } = req.query;
+    const { targetId, userId, format = 'text' } = req.query;
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
     
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, targetId);
@@ -1145,7 +1185,7 @@ app.get('/snapshot', async (req, res) => {
     });
   } catch (err) {
     console.error('Snapshot error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
@@ -1153,7 +1193,10 @@ app.get('/snapshot', async (req, res) => {
 // Routes to click/type/scroll/press/etc based on 'kind' parameter
 app.post('/act', async (req, res) => {
   try {
-    const { kind, targetId, userId = 'openclaw', ...params } = req.body;
+    const { kind, targetId, userId, ...params } = req.body;
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
     
     if (!kind) {
       return res.status(400).json({ error: 'kind is required' });
@@ -1277,6 +1320,7 @@ app.post('/act', async (req, res) => {
         case 'close': {
           await tabState.page.close();
           found.group.delete(targetId);
+          tabLocks.delete(targetId);
           return { ok: true, targetId };
         }
         
@@ -1288,7 +1332,7 @@ app.post('/act', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Act error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 
