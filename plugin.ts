@@ -8,6 +8,7 @@
 import { spawn, ChildProcess } from "child_process";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { randomUUID } from "crypto";
 
 // Get plugin directory - works in both ESM and CJS contexts
 const getPluginDir = (): string => {
@@ -198,6 +199,7 @@ export default function register(api: PluginApi) {
   const baseUrl = api.config.url || `http://localhost:${port}`;
   const autoStart = api.config.autoStart !== false; // default true
   const pluginDir = getPluginDir();
+  const fallbackUserId = `camofox-${randomUUID()}`;
 
   // Auto-start server if configured (default: true)
   if (autoStart) {
@@ -228,7 +230,7 @@ export default function register(api: PluginApi) {
     },
     async execute(_id, params) {
       const sessionKey = ctx.sessionKey || "default";
-      const userId = ctx.agentId || "openclaw";
+      const userId = ctx.agentId || fallbackUserId;
       const result = await fetchApi(baseUrl, "/tabs", {
         method: "POST",
         body: JSON.stringify({ ...params, userId, sessionKey }),
@@ -250,7 +252,7 @@ export default function register(api: PluginApi) {
     },
     async execute(_id, params) {
       const { tabId } = params as { tabId: string };
-      const userId = ctx.agentId || "openclaw";
+      const userId = ctx.agentId || fallbackUserId;
       const result = await fetchApi(baseUrl, `/tabs/${tabId}/snapshot?userId=${userId}`);
       return toToolResult(result);
     },
@@ -270,7 +272,7 @@ export default function register(api: PluginApi) {
     },
     async execute(_id, params) {
       const { tabId, ...rest } = params as { tabId: string } & Record<string, unknown>;
-      const userId = ctx.agentId || "openclaw";
+      const userId = ctx.agentId || fallbackUserId;
       const result = await fetchApi(baseUrl, `/tabs/${tabId}/click`, {
         method: "POST",
         body: JSON.stringify({ ...rest, userId }),
@@ -295,7 +297,7 @@ export default function register(api: PluginApi) {
     },
     async execute(_id, params) {
       const { tabId, ...rest } = params as { tabId: string } & Record<string, unknown>;
-      const userId = ctx.agentId || "openclaw";
+      const userId = ctx.agentId || fallbackUserId;
       const result = await fetchApi(baseUrl, `/tabs/${tabId}/type`, {
         method: "POST",
         body: JSON.stringify({ ...rest, userId }),
@@ -338,7 +340,7 @@ export default function register(api: PluginApi) {
     },
     async execute(_id, params) {
       const { tabId, ...rest } = params as { tabId: string } & Record<string, unknown>;
-      const userId = ctx.agentId || "openclaw";
+      const userId = ctx.agentId || fallbackUserId;
       const result = await fetchApi(baseUrl, `/tabs/${tabId}/navigate`, {
         method: "POST",
         body: JSON.stringify({ ...rest, userId }),
@@ -361,7 +363,7 @@ export default function register(api: PluginApi) {
     },
     async execute(_id, params) {
       const { tabId, ...rest } = params as { tabId: string } & Record<string, unknown>;
-      const userId = ctx.agentId || "openclaw";
+      const userId = ctx.agentId || fallbackUserId;
       const result = await fetchApi(baseUrl, `/tabs/${tabId}/scroll`, {
         method: "POST",
         body: JSON.stringify({ ...rest, userId }),
@@ -382,7 +384,7 @@ export default function register(api: PluginApi) {
     },
     async execute(_id, params) {
       const { tabId } = params as { tabId: string };
-      const userId = ctx.agentId || "openclaw";
+      const userId = ctx.agentId || fallbackUserId;
       const url = `${baseUrl}/tabs/${tabId}/screenshot?userId=${userId}`;
       const res = await fetch(url);
       if (!res.ok) {
@@ -415,7 +417,7 @@ export default function register(api: PluginApi) {
     },
     async execute(_id, params) {
       const { tabId } = params as { tabId: string };
-      const userId = ctx.agentId || "openclaw";
+      const userId = ctx.agentId || fallbackUserId;
       const result = await fetchApi(baseUrl, `/tabs/${tabId}?userId=${userId}`, {
         method: "DELETE",
       });
@@ -432,7 +434,7 @@ export default function register(api: PluginApi) {
       required: [],
     },
     async execute(_id, _params) {
-      const userId = ctx.agentId || "openclaw";
+      const userId = ctx.agentId || fallbackUserId;
       const result = await fetchApi(baseUrl, `/tabs?userId=${userId}`);
       return toToolResult(result);
     },
