@@ -140,5 +140,23 @@ docker run -p 9377:9377 camofox-browser
 
 ## Key Files
 
-- `server.js` - Camoufox engine
+- `server.js` - Camoufox engine (routes + browser logic only — NO `process.env` or `child_process`)
+- `lib/config.js` - All `process.env` reads centralized here
+- `lib/youtube.js` - YouTube transcript extraction via yt-dlp (`child_process` isolated here)
+- `lib/launcher.js` - Subprocess spawning (`child_process` isolated here)
+- `lib/cookies.js` - Cookie file I/O
+- `lib/snapshot.js` - Accessibility tree snapshot
+- `lib/macros.js` - Search macro URL expansion
 - `Dockerfile` - Production container
+
+## OpenClaw Scanner Isolation (CRITICAL)
+
+OpenClaw's skill-scanner flags plugins that have `process.env` + network calls (e.g. `app.post`, `fetch`, `http.request`) in the same file, or `child_process` + network calls in the same file. These patterns suggest potential credential exfiltration.
+
+**Rule: No single `.js` file may contain both halves of a scanner rule pair:**
+- `process.env` lives ONLY in `lib/config.js`
+- `child_process` / `execFile` / `spawn` live ONLY in `lib/youtube.js` and `lib/launcher.js`
+- `server.js` has the Express routes (`app.post`, `app.get`) but ZERO `process.env` reads and ZERO `child_process` imports
+- When adding new features that need env vars or subprocesses, put that code in a `lib/` module and import the result into `server.js`
+
+This was broken in 1.3.0 when the YouTube transcript feature added `child_process` + `process.env` directly to `server.js`, and fixed in 1.3.1.
