@@ -719,7 +719,12 @@ app.post('/youtube/transcript', async (req, res) => {
 
     let result;
     if (hasYtDlp()) {
-      result = await ytDlpTranscript(reqId, url, videoId, lang);
+      try {
+        result = await ytDlpTranscript(reqId, url, videoId, lang);
+      } catch (ytErr) {
+        log('warn', 'yt-dlp failed, falling back to browser', { reqId, error: ytErr.message });
+        result = await browserTranscript(reqId, url, videoId, lang);
+      }
     } else {
       result = await browserTranscript(reqId, url, videoId, lang);
     }
