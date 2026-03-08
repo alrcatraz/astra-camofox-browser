@@ -3,11 +3,17 @@ const { firefox } = require('playwright-core');
 const express = require('express');
 const crypto = require('crypto');
 const os = require('os');
-const path = require('path');
-const fs = require('node:fs/promises');
 const { expandMacro } = require('./lib/macros');
 const { loadConfig } = require('./lib/config');
 const { windowSnapshot } = require('./lib/snapshot');
+const {
+  MAX_DOWNLOAD_INLINE_BYTES,
+  clearTabDownloads,
+  clearSessionDownloads,
+  attachDownloadListener,
+  getDownloadsList,
+  extractPageImages,
+} = require('./lib/downloads');
 const { detectYtDlp, hasYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } = require('./lib/youtube');
 
 const CONFIG = loadConfig();
@@ -222,8 +228,6 @@ const BUILDREFS_TIMEOUT_MS = CONFIG.buildrefsTimeoutMs;
 const FAILURE_THRESHOLD = 3;
 const MAX_CONSECUTIVE_TIMEOUTS = 3;
 const TAB_LOCK_TIMEOUT_MS = 35000; // Must be > HANDLER_TIMEOUT_MS so active op times out first
-const MAX_DOWNLOAD_RECORDS_PER_TAB = 20;
-const MAX_DOWNLOAD_INLINE_BYTES = 20 * 1024 * 1024;
 
 // Proper mutex for tab serialization. The old Promise-chain lock on timeout proceeded
 // WITHOUT the lock, allowing concurrent Playwright operations that corrupt CDP state.
@@ -654,114 +658,7 @@ function createTabState(page) {
   };
 }
 
-function sanitizeFilename(value) {
-  return String(value || 'download.bin')
-    .replace(/[\\/:*?"<>|\u0000-\u001F]/g, '_')
-    .trim()
-    .slice(0, 200) || 'download.bin';
-}
 
-function guessMimeTypeFromName(value) {
-  const normalized = String(value || '').toLowerCase();
-  if (normalized.endsWith('.png')) return 'image/png';
-  if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) return 'image/jpeg';
-  if (normalized.endsWith('.webp')) return 'image/webp';
-  if (normalized.endsWith('.gif')) return 'image/gif';
-  if (normalized.endsWith('.svg')) return 'image/svg+xml';
-  return 'application/octet-stream';
-}
-
-async function removeDownloadFileIfPresent(record) {
-  const filePath = record?.filePath;
-  if (!filePath) return;
-  await fs.unlink(filePath).catch(() => {});
-}
-
-async function trimTabDownloads(tabState) {
-  while (tabState.downloads.length > MAX_DOWNLOAD_RECORDS_PER_TAB) {
-    const stale = tabState.downloads.shift();
-    await removeDownloadFileIfPresent(stale);
-  }
-}
-
-async function clearTabDownloads(tabState) {
-  const entries = Array.isArray(tabState.downloads) ? [...tabState.downloads] : [];
-  tabState.downloads = [];
-  await Promise.all(entries.map(removeDownloadFileIfPresent));
-}
-
-async function clearSessionDownloads(session) {
-  if (!session || !session.tabGroups) {
-    return;
-  }
-
-  const tasks = [];
-  for (const group of session.tabGroups.values()) {
-    for (const tabState of group.values()) {
-      tasks.push(clearTabDownloads(tabState));
-    }
-  }
-  await Promise.all(tasks);
-}
-
-function attachDownloadListener(tabState, tabId) {
-  if (tabState.downloadListenerAttached) {
-    return;
-  }
-
-  tabState.downloadListenerAttached = true;
-  tabState.page.on('download', async (download) => {
-    const downloadId = crypto.randomUUID();
-    const suggestedFilename = sanitizeFilename(download.suggestedFilename?.() || `download-${downloadId}.bin`);
-    const filePath = path.join(os.tmpdir(), `camofox-download-${downloadId}-${suggestedFilename}`);
-
-    let failure = null;
-    let bytes = null;
-
-    try {
-      await download.saveAs(filePath);
-      const stat = await fs.stat(filePath);
-      bytes = stat.size;
-    } catch (err) {
-      failure = String(err?.message || err || 'download_save_failed');
-      await fs.unlink(filePath).catch(() => {});
-    }
-
-    const reportedFailure = await download.failure().catch(() => null);
-    if (reportedFailure) {
-      failure = reportedFailure;
-    }
-
-    const url = String(download.url?.() || '').trim();
-    if (url) {
-      tabState.visitedUrls.add(url);
-    }
-
-    const mimeType = guessMimeTypeFromName(suggestedFilename) || guessMimeTypeFromName(url);
-    tabState.downloads.push({
-      id: downloadId,
-      tabId,
-      url,
-      suggestedFilename,
-      mimeType,
-      bytes,
-      createdAt: new Date().toISOString(),
-      filePath: failure ? null : filePath,
-      failure,
-    });
-
-    await trimTabDownloads(tabState);
-    log('info', 'download captured', {
-      tabId,
-      downloadId,
-      suggestedFilename,
-      mimeType,
-      bytes,
-      hasUrl: Boolean(url),
-      failure,
-    });
-  });
-}
 
 async function waitForPageReady(page, options = {}) {
   const { timeout = 10000, waitForNetwork = true } = options;
@@ -1352,7 +1249,6 @@ app.post('/tabs', async (req, res) => {
     })(), HANDLER_TIMEOUT_MS, 'tab create');
 
     res.json(result);
-=======
   } catch (err) {
     log('error', 'tab create failed', { reqId: req.reqId, error: err.message });
     handleRouteError(err, req, res);
@@ -1405,7 +1301,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         } else {
           const page = await session.context.newPage();
           tabState = createTabState(page);
-          attachDownloadListener(tabState, tabId);
+          attachDownloadListener(tabState, tabId, log);
           const group = getTabGroup(session, resolvedSessionKey);
           group.set(tabId, tabState);
           log('info', 'tab auto-created on navigate', { reqId: req.reqId, tabId, userId });
@@ -2002,44 +1898,14 @@ app.get('/tabs/:tabId/downloads', async (req, res) => {
 
     const { tabState } = found;
     tabState.toolCalls++;
-    const snapshot = Array.isArray(tabState.downloads) ? [...tabState.downloads] : [];
-    const downloads = [];
 
-    for (const entry of snapshot) {
-      const responseItem = {
-        id: entry.id,
-        url: entry.url,
-        suggestedFilename: entry.suggestedFilename,
-        mimeType: entry.mimeType,
-        bytes: entry.bytes,
-        createdAt: entry.createdAt,
-        failure: entry.failure,
-      };
-
-      if (includeData && entry.filePath && !entry.failure) {
-        if (typeof entry.bytes === 'number' && entry.bytes > maxBytes) {
-          responseItem.dataSkipped = 'max_bytes_exceeded';
-        } else {
-          try {
-            const raw = await fs.readFile(entry.filePath);
-            responseItem.dataBase64 = raw.toString('base64');
-          } catch (err) {
-            responseItem.readError = String(err?.message || err || 'download_read_failed');
-          }
-        }
-      }
-
-      downloads.push(responseItem);
-    }
+    const downloads = await getDownloadsList(tabState, { includeData, maxBytes });
 
     if (consume) {
       await clearTabDownloads(tabState);
     }
 
-    res.json({
-      tabId: req.params.tabId,
-      downloads,
-    });
+    res.json({ tabId: req.params.tabId, downloads });
   } catch (err) {
     log('error', 'downloads failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
@@ -2062,94 +1928,9 @@ app.get('/tabs/:tabId/images', async (req, res) => {
     const { tabState } = found;
     tabState.toolCalls++;
 
-    const images = await tabState.page.evaluate(
-      async ({ includeData, maxBytes, limit }) => {
-        const toDataUrl = (blob) =>
-          new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-            reader.onerror = () => reject(new Error('file_reader_failed'));
-            reader.readAsDataURL(blob);
-          });
+    const images = await extractPageImages(tabState.page, { includeData, maxBytes, limit });
 
-        const nodes = Array.from(document.querySelectorAll('img'));
-        const seen = new Set();
-        const candidates = [];
-
-        for (const node of nodes) {
-          const src = String(node.currentSrc || node.src || node.getAttribute('src') || '').trim();
-          if (!src || seen.has(src)) {
-            continue;
-          }
-          seen.add(src);
-
-          candidates.push({
-            src,
-            alt: String(node.alt || '').trim(),
-            width: Number(node.naturalWidth || node.width || 0) || undefined,
-            height: Number(node.naturalHeight || node.height || 0) || undefined,
-          });
-
-          if (candidates.length >= limit) {
-            break;
-          }
-        }
-
-        const results = [];
-        for (const image of candidates) {
-          const entry = {
-            src: image.src,
-            alt: image.alt,
-            width: image.width,
-            height: image.height,
-          };
-
-          if (includeData) {
-            try {
-              if (image.src.startsWith('data:')) {
-                const mimeMatch = image.src.match(/^data:([^;,]+)[;,]/i);
-                const isBase64 = /;base64,/i.test(image.src);
-                const payload = image.src.slice(image.src.indexOf(',') + 1);
-                const estimatedBytes = isBase64 ? Math.floor((payload.length * 3) / 4) : payload.length;
-                entry.mimeType = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
-                entry.bytes = estimatedBytes;
-                if (estimatedBytes <= maxBytes) {
-                  entry.dataUrl = image.src;
-                } else {
-                  entry.dataSkipped = 'max_bytes_exceeded';
-                }
-              } else {
-                const response = await fetch(image.src, { credentials: 'include' });
-                if (response.ok) {
-                  const blob = await response.blob();
-                  entry.mimeType = blob.type || 'application/octet-stream';
-                  entry.bytes = blob.size;
-                  if (blob.size <= maxBytes) {
-                    entry.dataUrl = await toDataUrl(blob);
-                  } else {
-                    entry.dataSkipped = 'max_bytes_exceeded';
-                  }
-                } else {
-                  entry.fetchError = `http_${response.status}`;
-                }
-              }
-            } catch (err) {
-              entry.fetchError = String(err?.message || err || 'image_fetch_failed');
-            }
-          }
-
-          results.push(entry);
-        }
-
-        return results;
-      },
-      { includeData, maxBytes, limit },
-    );
-
-    res.json({
-      tabId: req.params.tabId,
-      images,
-    });
+    res.json({ tabId: req.params.tabId, images });
   } catch (err) {
     log('error', 'images failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
@@ -2416,7 +2197,7 @@ app.post('/tabs/open', async (req, res) => {
     const page = await session.context.newPage();
     const tabId = crypto.randomUUID();
     const tabState = createTabState(page);
-    attachDownloadListener(tabState, tabId);
+    attachDownloadListener(tabState, tabId, log);
     group.set(tabId, tabState);
     
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
