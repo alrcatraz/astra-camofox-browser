@@ -1,7 +1,10 @@
-const path = require('path');
-const crypto = require('crypto');
-const { launchServer } = require('../../lib/launcher');
-const { loadConfig } = require('../../lib/config');
+import path from 'path';
+import { fileURLToPath } from 'url';
+import crypto from 'crypto';
+import { launchServer } from '../../lib/launcher.js';
+import { loadConfig } from '../../lib/config.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const TEST_API_KEY = 'test-cookie-key-' + crypto.randomUUID();
 let serverProcess = null;
@@ -295,13 +298,14 @@ describe('Cookie endpoint - without API key', () => {
     await stopServer();
   }, 30000);
 
-  test('returns 403 when CAMOFOX_API_KEY is not set', async () => {
+  test('allows unauthenticated loopback requests when CAMOFOX_API_KEY is not set', async () => {
     const cookies = [
       { name: 'a', value: '1', domain: '.example.com', path: '/' },
     ];
     const res = await postCookies('user1', cookies);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.error).toContain('disabled');
+    expect(data.ok).toBe(true);
+    expect(data.count).toBe(1);
   });
 });

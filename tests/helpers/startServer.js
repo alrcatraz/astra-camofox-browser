@@ -1,6 +1,9 @@
-const path = require('path');
-const { launchServer } = require('../../lib/launcher');
-const { loadConfig } = require('../../lib/config');
+import path from 'path';
+import { fileURLToPath } from 'node:url';
+import { launchServer } from '../../lib/launcher.js';
+import { loadConfig } from '../../lib/config.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let serverProcess = null;
 let serverPort = null;
@@ -78,7 +81,7 @@ function getServerPort() {
   return serverPort;
 }
 
-module.exports = {
+export {
   startServer,
   stopServer,
   getServerUrl,

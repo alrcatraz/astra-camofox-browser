@@ -1,20 +1,20 @@
-const { Camoufox, launchOptions } = require('camoufox-js');
-const { firefox } = require('playwright-core');
-const express = require('express');
-const crypto = require('crypto');
-const os = require('os');
-const { expandMacro } = require('./lib/macros');
-const { loadConfig } = require('./lib/config');
-const { windowSnapshot } = require('./lib/snapshot');
-const {
+import { Camoufox, launchOptions } from 'camoufox-js';
+import { firefox } from 'playwright-core';
+import express from 'express';
+import crypto from 'crypto';
+import os from 'os';
+import { expandMacro } from './lib/macros.js';
+import { loadConfig } from './lib/config.js';
+import { windowSnapshot } from './lib/snapshot.js';
+import {
   MAX_DOWNLOAD_INLINE_BYTES,
   clearTabDownloads,
   clearSessionDownloads,
   attachDownloadListener,
   getDownloadsList,
   extractPageImages,
-} = require('./lib/downloads');
-const { detectYtDlp, hasYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } = require('./lib/youtube');
+} from './lib/downloads.js';
+import { detectYtDlp, hasYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } from './lib/youtube.js';
 
 const CONFIG = loadConfig();
 
@@ -272,7 +272,6 @@ class TabLock {
     this.queue = [];
   }
 }
-=======
 
 // Per-tab locks to serialize operations on the same tab
 const tabLocks = new Map(); // tabId -> TabLock
