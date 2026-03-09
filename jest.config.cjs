@@ -1,4 +1,6 @@
 module.exports = {
+  // Disable transforms — we use native ESM via --experimental-vm-modules
+  transform: {},
   testEnvironment: 'node',
   testTimeout: 60000, // 60 seconds per test
   

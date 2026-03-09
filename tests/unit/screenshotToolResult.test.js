@@ -1,4 +1,4 @@
-const http = require('http');
+import http from 'http';
 
 /**
  * Unit tests for the plugin's camofox_screenshot tool result format.

@@ -1,7 +1,7 @@
-const { startServer, stopServer, getServerUrl } = require('../helpers/startServer');
-const { startTestSite, stopTestSite, getTestSiteUrl } = require('../helpers/testSite');
-const { createClient } = require('../helpers/client');
-const { PNG } = require('pngjs');
+import { startServer, stopServer, getServerUrl } from '../helpers/startServer.js';
+import { startTestSite, stopTestSite, getTestSiteUrl } from '../helpers/testSite.js';
+import { createClient } from '../helpers/client.js';
+import { PNG } from 'pngjs';
 
 describe('Snapshot with includeScreenshot', () => {
   let serverUrl;

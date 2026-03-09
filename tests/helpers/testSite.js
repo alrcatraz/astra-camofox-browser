@@ -1,4 +1,4 @@
-const express = require('express');
+import express from 'express';
 
 let server = null;
 let port = null;
@@ -317,7 +317,7 @@ function getTestSiteUrl() {
   return `http://localhost:${port}`;
 }
 
-module.exports = {
+export {
   startTestSite,
   stopTestSite,
   getTestSiteUrl

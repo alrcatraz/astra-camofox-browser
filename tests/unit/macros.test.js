@@ -1,4 +1,4 @@
-const { expandMacro, getSupportedMacros, MACROS } = require('../../lib/macros');
+import { expandMacro, getSupportedMacros, MACROS } from '../../lib/macros.js';
 
 describe('Macro URL Expansion (unit)', () => {
   

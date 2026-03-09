@@ -1,4 +1,4 @@
-const crypto = require('crypto');
+import crypto from 'crypto';
 
 class BrowserClient {
   constructor(baseUrl) {
@@ -236,7 +236,7 @@ function createClient(baseUrl) {
   return new BrowserClient(baseUrl);
 }
 
-module.exports = {
+export {
   BrowserClient,
   createClient
 };

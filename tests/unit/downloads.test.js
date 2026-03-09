@@ -1,14 +1,14 @@
-const {
+import {
   sanitizeFilename,
   guessMimeTypeFromName,
   clearTabDownloads,
   clearSessionDownloads,
   getDownloadsList,
-} = require('../../lib/downloads');
+} from '../../lib/downloads.js';
 
-const fs = require('node:fs/promises');
-const os = require('os');
-const path = require('path');
+import fs from 'node:fs/promises';
+import os from 'os';
+import path from 'path';
 
 describe('lib/downloads', () => {
   describe('sanitizeFilename', () => {

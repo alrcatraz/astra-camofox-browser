@@ -1,5 +1,5 @@
-const { startServer, stopServer, getServerUrl } = require('../helpers/startServer');
-const { createClient } = require('../helpers/client');
+import { startServer, stopServer, getServerUrl } from '../helpers/startServer.js';
+import { createClient } from '../helpers/client.js';
 
 // Live Google tests are opt-in due to potential captchas/rate limiting
 const SKIP_LIVE_TESTS = !process.env.RUN_LIVE_TESTS;
