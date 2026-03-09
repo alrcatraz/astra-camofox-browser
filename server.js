@@ -72,12 +72,33 @@ function timingSafeCompare(a, b) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
+// Custom error for stale/unknown element refs — returned as 422 instead of 500
+class StaleRefsError extends Error {
+  constructor(ref, maxRef, totalRefs) {
+    super(`Unknown ref: ${ref} (valid refs: e1-${maxRef}, ${totalRefs} total). Refs reset after navigation - call snapshot first.`);
+    this.name = 'StaleRefsError';
+    this.code = 'stale_refs';
+    this.ref = ref;
+  }
+}
+
 function safeError(err) {
   if (CONFIG.nodeEnv === 'production') {
     log('error', 'internal error', { error: err.message, stack: err.stack });
     return 'Internal server error';
   }
   return err.message;
+}
+
+// Send error response with appropriate status code (422 for stale refs, 500 otherwise)
+function sendError(res, err, extraFields = {}) {
+  const status = err instanceof StaleRefsError ? 422 : (err.statusCode || 500);
+  const body = { error: safeError(err), ...extraFields };
+  if (err instanceof StaleRefsError) {
+    body.code = 'stale_refs';
+    body.ref = err.ref;
+  }
+  res.status(status).json(body);
 }
 
 function validateUrl(url) {
@@ -185,39 +206,70 @@ const PAGE_CLOSE_TIMEOUT_MS = 5000;
 const NAVIGATE_TIMEOUT_MS = CONFIG.navigateTimeoutMs;
 const BUILDREFS_TIMEOUT_MS = CONFIG.buildrefsTimeoutMs;
 const FAILURE_THRESHOLD = 3;
-const TAB_LOCK_TIMEOUT_MS = 30000;
+const MAX_CONSECUTIVE_TIMEOUTS = 3;
+const TAB_LOCK_TIMEOUT_MS = 35000; // Must be > HANDLER_TIMEOUT_MS so active op times out first
+
+// Proper mutex for tab serialization. The old Promise-chain lock on timeout proceeded
+// WITHOUT the lock, allowing concurrent Playwright operations that corrupt CDP state.
+class TabLock {
+  constructor() {
+    this.queue = [];
+    this.active = false;
+  }
+
+  acquire(timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const entry = { resolve, reject, timer: null };
+      entry.timer = setTimeout(() => {
+        const idx = this.queue.indexOf(entry);
+        if (idx !== -1) this.queue.splice(idx, 1);
+        reject(new Error('Tab lock queue timeout'));
+      }, timeoutMs);
+      this.queue.push(entry);
+      this._tryNext();
+    });
+  }
+
+  release() {
+    this.active = false;
+    this._tryNext();
+  }
+
+  _tryNext() {
+    if (this.active || this.queue.length === 0) return;
+    this.active = true;
+    const entry = this.queue.shift();
+    clearTimeout(entry.timer);
+    entry.resolve();
+  }
+
+  drain() {
+    this.active = true;
+    for (const entry of this.queue) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error('Tab destroyed'));
+    }
+    this.queue = [];
+  }
+}
 
 // Per-tab locks to serialize operations on the same tab
-// tabId -> Promise (the currently executing operation)
-const tabLocks = new Map();
+const tabLocks = new Map(); // tabId -> TabLock
 
-async function withTabLock(tabId, operation) {
-  // Wait for any pending operation on this tab to complete
-  const pending = tabLocks.get(tabId);
-  if (pending) {
-    try {
-      await Promise.race([
-        pending,
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Tab lock timeout')), TAB_LOCK_TIMEOUT_MS))
-      ]);
-    } catch (e) {
-      if (e.message === 'Tab lock timeout') {
-        log('warn', 'tab lock timeout, proceeding', { tabId });
-      }
-    }
-  }
-  
-  // Execute this operation and store the promise
-  const promise = operation();
-  tabLocks.set(tabId, promise);
-  
+function getTabLock(tabId) {
+  if (!tabLocks.has(tabId)) tabLocks.set(tabId, new TabLock());
+  return tabLocks.get(tabId);
+}
+
+// Timeout is INSIDE the lock so each operation gets its full budget
+// regardless of how long it waited in the queue.
+async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
+  const lock = getTabLock(tabId);
+  await lock.acquire(TAB_LOCK_TIMEOUT_MS);
   try {
-    return await promise;
+    return await withTimeout(operation(), timeoutMs, 'action');
   } finally {
-    // Clean up if this is still the active lock
-    if (tabLocks.get(tabId) === promise) {
-      tabLocks.delete(tabId);
-    }
+    lock.release();
   }
 }
 
@@ -483,6 +535,77 @@ function isDeadContextError(err) {
          msg.includes('Browser closed');
 }
 
+function isTimeoutError(err) {
+  const msg = err && err.message || '';
+  return msg.includes('timed out after') ||
+         (msg.includes('Timeout') && msg.includes('exceeded'));
+}
+
+function isTabLockQueueTimeout(err) {
+  return err && err.message === 'Tab lock queue timeout';
+}
+
+function isTabDestroyedError(err) {
+  return err && err.message === 'Tab destroyed';
+}
+
+// Centralized error handler for route catch blocks.
+// Auto-destroys dead browser sessions and returns appropriate status codes.
+function handleRouteError(err, req, res, extraFields = {}) {
+  const userId = req.body?.userId || req.query?.userId;
+  if (userId && isDeadContextError(err)) {
+    destroySession(userId);
+  }
+  // Track consecutive timeouts per tab and auto-destroy stuck tabs
+  if (userId && isTimeoutError(err)) {
+    const tabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
+    const session = sessions.get(normalizeUserId(userId));
+    if (session && tabId) {
+      const found = findTab(session, tabId);
+      if (found) {
+        found.tabState.consecutiveTimeouts++;
+        if (found.tabState.consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
+          log('warn', 'auto-destroying tab after consecutive timeouts', { tabId, count: found.tabState.consecutiveTimeouts });
+          destroyTab(session, tabId);
+        }
+      }
+    }
+  }
+  // Lock queue timeout = tab is stuck. Destroy immediately.
+  if (userId && isTabLockQueueTimeout(err)) {
+    const tabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
+    const session = sessions.get(normalizeUserId(userId));
+    if (session && tabId) {
+      destroyTab(session, tabId);
+    }
+    return res.status(503).json({ error: 'Tab unresponsive and has been destroyed. Open a new tab.', ...extraFields });
+  }
+  // Tab was destroyed while this request was queued in the lock
+  if (isTabDestroyedError(err)) {
+    return res.status(410).json({ error: 'Tab was destroyed. Open a new tab.', ...extraFields });
+  }
+  sendError(res, err, extraFields);
+}
+
+function destroyTab(session, tabId) {
+  const lock = tabLocks.get(tabId);
+  if (lock) {
+    lock.drain();
+    tabLocks.delete(tabId);
+  }
+  for (const [listItemId, group] of session.tabGroups) {
+    if (group.has(tabId)) {
+      const tabState = group.get(tabId);
+      log('warn', 'destroying stuck tab', { tabId, listItemId, toolCalls: tabState.toolCalls });
+      safePageClose(tabState.page);
+      group.delete(tabId);
+      if (group.size === 0) session.tabGroups.delete(listItemId);
+      return true;
+    }
+  }
+  return false;
+}
+
 function destroySession(userId) {
   const key = normalizeUserId(userId);
   const session = sessions.get(key);
@@ -508,6 +631,7 @@ function createTabState(page) {
     refs: new Map(),
     visitedUrls: new Set(),
     toolCalls: 0,
+    consecutiveTimeouts: 0,
     lastSnapshot: null,
   };
 }
@@ -1071,15 +1195,14 @@ app.post('/tabs', async (req, res) => {
     const result = await withTimeout((async () => {
       const session = await getSession(userId);
       
-      // Check global tab limit first
-      if (getTotalTabCount() >= MAX_TABS_GLOBAL) {
-        throw Object.assign(new Error('Maximum global tabs reached'), { statusCode: 429 });
-      }
-      
       let totalTabs = 0;
       for (const group of session.tabGroups.values()) totalTabs += group.size;
       if (totalTabs >= MAX_TABS_PER_SESSION) {
         throw Object.assign(new Error('Maximum tabs per session reached'), { statusCode: 429 });
+      }
+      
+      if (getTotalTabCount() >= MAX_TABS_GLOBAL) {
+        throw Object.assign(new Error('Maximum global tabs reached'), { statusCode: 429 });
       }
       
       const group = getTabGroup(session, resolvedSessionKey);
@@ -1103,9 +1226,7 @@ app.post('/tabs', async (req, res) => {
     res.json(result);
   } catch (err) {
     log('error', 'tab create failed', { reqId: req.reqId, error: err.message });
-    if (isDeadContextError(err) && req.body && req.body.userId) destroySession(req.body.userId);
-    const status = err.statusCode || 500;
-    res.status(status).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1147,7 +1268,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
             const group = getTabGroup(session, resolvedSessionKey);
             if (oldestGroup) oldestGroup.delete(oldestTabId);
             group.set(tabId, tabState);
-            tabLocks.delete(oldestTabId);
+            { const _l = tabLocks.get(oldestTabId); if (_l) _l.drain(); tabLocks.delete(oldestTabId); }
             log('info', 'tab recycled (limit reached)', { reqId: req.reqId, tabId, recycledFrom: oldestTabId, userId });
           } else {
             throw new Error('Maximum tabs per session reached');
@@ -1162,7 +1283,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
       } else {
         tabState = found.tabState;
       }
-      tabState.toolCalls++;
+      tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
       
       let targetUrl = url;
       if (macro) {
@@ -1196,12 +1317,11 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
     res.json(result);
   } catch (err) {
     log('error', 'navigate failed', { reqId: req.reqId, tabId, error: err.message });
-    if (isDeadContextError(err)) {
-      const userId = req.body && req.body.userId;
-      if (userId) destroySession(userId);
-    }
     const status = err.message && err.message.startsWith('Blocked URL scheme') ? 400 : 500;
-    res.status(status).json({ error: safeError(err) });
+    if (status === 400) {
+      return res.status(400).json({ error: safeError(err) });
+    }
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1217,7 +1337,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
 
     // Cached chunk retrieval for offset>0 requests
     if (offset > 0 && tabState.lastSnapshot) {
@@ -1319,7 +1439,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     res.json(result);
   } catch (err) {
     log('error', 'snapshot failed', { reqId: req.reqId, tabId: req.params.tabId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1337,7 +1457,7 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
     res.json({ ok: true, ready });
   } catch (err) {
     log('error', 'wait failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1353,13 +1473,15 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
     if (!ref && !selector) {
       return res.status(400).json({ error: 'ref or selector required' });
     }
     
-    const result = await withUserLimit(userId, () => withTimeout(withTabLock(tabId, async () => {
+    const result = await withUserLimit(userId, () => withTabLock(tabId, async () => {
+      const clickStart = Date.now();
+      const remainingBudget = () => Math.max(0, HANDLER_TIMEOUT_MS - 2000 - (Date.now() - clickStart));
       // Full mouse event sequence for stubborn JS click handlers (mirrors Swift WebView.swift)
       // Dispatches: mouseover → mouseenter → mousedown → mouseup → click
       const dispatchMouseSequence = async (locator) => {
@@ -1390,7 +1512,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         
         if (onGoogleSerp) {
           try {
-            await locator.click({ timeout: 5000, force: true });
+            await locator.click({ timeout: 3000, force: true });
           } catch (forceErr) {
             log('warn', 'google force click failed, trying mouse sequence');
             await dispatchMouseSequence(locator);
@@ -1400,13 +1522,13 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         
         try {
           // First try normal click (respects visibility, enabled, not-obscured)
-          await locator.click({ timeout: 5000 });
+          await locator.click({ timeout: 3000 });
         } catch (err) {
           // Fallback 1: If intercepted by overlay, retry with force
           if (err.message.includes('intercepts pointer events')) {
             log('warn', 'click intercepted, retrying with force');
             try {
-              await locator.click({ timeout: 5000, force: true });
+              await locator.click({ timeout: 3000, force: true });
             } catch (forceErr) {
               // Fallback 2: Full mouse event sequence for stubborn JS handlers
               log('warn', 'force click failed, trying mouse sequence');
@@ -1425,13 +1547,25 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       if (ref) {
         let locator = refToLocator(tabState.page, ref, tabState.refs);
         if (!locator) {
+          // Use tight timeout (4s max) to leave budget for click + post-click buildRefs
           log('info', 'auto-refreshing refs before click', { ref, hadRefs: tabState.refs.size });
-          tabState.refs = await buildRefs(tabState.page);
+          try {
+            const preClickBudget = Math.min(4000, remainingBudget());
+            const refreshPromise = buildRefs(tabState.page);
+            const refreshBudget = new Promise((_, reject) => setTimeout(() => reject(new Error('pre_click_refs_timeout')), preClickBudget));
+            tabState.refs = await Promise.race([refreshPromise, refreshBudget]);
+          } catch (e) {
+            if (e.message === 'pre_click_refs_timeout' || e.message === 'buildRefs_timeout') {
+              log('warn', 'pre-click buildRefs timed out, proceeding without refresh');
+            } else {
+              throw e;
+            }
+          }
           locator = refToLocator(tabState.page, ref, tabState.refs);
         }
         if (!locator) {
           const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none';
-          throw new Error(`Unknown ref: ${ref} (valid refs: e1-${maxRef}, ${tabState.refs.size} total). Refs reset after navigation - call snapshot first.`);
+          throw new StaleRefsError(ref, maxRef, tabState.refs.size);
         }
         await doClick(locator, true);
       } else {
@@ -1455,12 +1589,26 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         await tabState.page.waitForTimeout(500);
       }
       tabState.lastSnapshot = null;
-      tabState.refs = await buildRefs(tabState.page);
+      // buildRefs after click — use remaining budget (min 2s) so we don't blow the handler timeout.
+      // If it times out, return without refs (caller's next /snapshot will rebuild them).
+      const postClickBudget = Math.max(2000, remainingBudget());
+      try {
+        const refsPromise = buildRefs(tabState.page);
+        const refsBudget = new Promise((_, reject) => setTimeout(() => reject(new Error('post_click_refs_timeout')), postClickBudget));
+        tabState.refs = await Promise.race([refsPromise, refsBudget]);
+      } catch (e) {
+        if (e.message === 'post_click_refs_timeout' || e.message === 'buildRefs_timeout') {
+          log('warn', 'post-click buildRefs timed out, returning without refs', { budget: postClickBudget, elapsed: Date.now() - clickStart });
+          tabState.refs = new Map();
+        } else {
+          throw e;
+        }
+      }
       
       const newUrl = tabState.page.url();
       tabState.visitedUrls.add(newUrl);
       return { ok: true, url: newUrl, refsAvailable: tabState.refs.size > 0 };
-    }), HANDLER_TIMEOUT_MS, 'click'));
+    }));
     
     log('info', 'clicked', { reqId: req.reqId, tabId, url: result.url });
     res.json(result);
@@ -1484,7 +1632,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         log('warn', 'post-timeout refresh failed', { error: refreshErr.message });
       }
     }
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1499,7 +1647,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
     if (!ref && !selector) {
       return res.status(400).json({ error: 'ref or selector required' });
@@ -1513,7 +1661,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
           tabState.refs = await buildRefs(tabState.page);
           locator = refToLocator(tabState.page, ref, tabState.refs);
         }
-        if (!locator) throw new Error(`Unknown ref: ${ref}`);
+        if (!locator) { const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none'; throw new StaleRefsError(ref, maxRef, tabState.refs.size); }
         await locator.fill(text, { timeout: 10000 });
       } else {
         await tabState.page.fill(selector, text, { timeout: 10000 });
@@ -1541,7 +1689,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
         log('warn', 'post-timeout refresh failed', { error: refreshErr.message });
       }
     }
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1556,7 +1704,7 @@ app.post('/tabs/:tabId/press', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
     await withTabLock(tabId, async () => {
       await tabState.page.keyboard.press(key);
@@ -1565,7 +1713,7 @@ app.post('/tabs/:tabId/press', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     log('error', 'press failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1578,7 +1726,7 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
     const delta = direction === 'up' ? -amount : amount;
     await tabState.page.mouse.wheel(0, delta);
@@ -1587,7 +1735,7 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     log('error', 'scroll failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1602,18 +1750,18 @@ app.post('/tabs/:tabId/back', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
-    const result = await withTimeout(withTabLock(tabId, async () => {
+    const result = await withTabLock(tabId, async () => {
       await tabState.page.goBack({ timeout: 10000 });
       tabState.refs = await buildRefs(tabState.page);
       return { ok: true, url: tabState.page.url() };
-    }), HANDLER_TIMEOUT_MS, 'back');
+    });
     
     res.json(result);
   } catch (err) {
     log('error', 'back failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1628,18 +1776,18 @@ app.post('/tabs/:tabId/forward', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
-    const result = await withTimeout(withTabLock(tabId, async () => {
+    const result = await withTabLock(tabId, async () => {
       await tabState.page.goForward({ timeout: 10000 });
       tabState.refs = await buildRefs(tabState.page);
       return { ok: true, url: tabState.page.url() };
-    }), HANDLER_TIMEOUT_MS, 'forward');
+    });
     
     res.json(result);
   } catch (err) {
     log('error', 'forward failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1654,18 +1802,18 @@ app.post('/tabs/:tabId/refresh', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
-    const result = await withTimeout(withTabLock(tabId, async () => {
+    const result = await withTabLock(tabId, async () => {
       await tabState.page.reload({ timeout: 30000 });
       tabState.refs = await buildRefs(tabState.page);
       return { ok: true, url: tabState.page.url() };
-    }), HANDLER_TIMEOUT_MS, 'refresh');
+    });
     
     res.json(result);
   } catch (err) {
     log('error', 'refresh failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1683,7 +1831,7 @@ app.get('/tabs/:tabId/links', async (req, res) => {
     }
     
     const { tabState } = found;
-    tabState.toolCalls++;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
     const allLinks = await tabState.page.evaluate(() => {
       const links = [];
@@ -1706,7 +1854,7 @@ app.get('/tabs/:tabId/links', async (req, res) => {
     });
   } catch (err) {
     log('error', 'links failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1725,7 +1873,7 @@ app.get('/tabs/:tabId/screenshot', async (req, res) => {
     res.send(buffer);
   } catch (err) {
     log('error', 'screenshot failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1749,7 +1897,7 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
     });
   } catch (err) {
     log('error', 'stats failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1766,7 +1914,7 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, re
 
     session.lastAccess = Date.now();
     const { tabState } = found;
-    tabState.toolCalls++;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
 
     const result = await tabState.page.evaluate(expression);
     log('info', 'evaluate', { reqId: req.reqId, tabId: req.params.tabId, userId, resultType: typeof result });
@@ -1786,7 +1934,7 @@ app.delete('/tabs/:tabId', async (req, res) => {
     if (found) {
       await safePageClose(found.tabState.page);
       found.group.delete(req.params.tabId);
-      tabLocks.delete(req.params.tabId);
+      { const _l = tabLocks.get(req.params.tabId); if (_l) _l.drain(); tabLocks.delete(req.params.tabId); }
       if (found.group.size === 0) {
         session.tabGroups.delete(found.listItemId);
       }
@@ -1795,7 +1943,7 @@ app.delete('/tabs/:tabId', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     log('error', 'tab close failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1816,7 +1964,7 @@ app.delete('/tabs/group/:listItemId', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     log('error', 'tab group close failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1834,7 +1982,7 @@ app.delete('/sessions/:userId', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     log('error', 'session close failed', { error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1871,7 +2019,7 @@ setInterval(() => {
             log('info', 'tab reaped (inactive)', { userId, tabId, listItemId, idleMs, toolCalls: tabState.toolCalls });
             safePageClose(tabState.page);
             group.delete(tabId);
-            tabLocks.delete(tabId);
+            { const _l = tabLocks.get(tabId); if (_l) _l.drain(); tabLocks.delete(tabId); }
           }
         } else {
           tabState._lastReaperCheck = now;
@@ -1929,7 +2077,7 @@ app.get('/tabs', async (req, res) => {
     res.json({ running: true, tabs });
   } catch (err) {
     log('error', 'list tabs failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -1980,11 +2128,7 @@ app.post('/tabs/open', async (req, res) => {
     });
   } catch (err) {
     log('error', 'openclaw tab open failed', { reqId: req.reqId, error: err.message });
-    if (isDeadContextError(err)) {
-      const userId = req.body && req.body.userId;
-      if (userId) destroySession(userId);
-    }
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -2037,9 +2181,9 @@ app.post('/navigate', async (req, res) => {
     }
     
     const { tabState } = found;
-    tabState.toolCalls++;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
-    const result = await withTimeout(withTabLock(targetId, async () => {
+    const result = await withTabLock(targetId, async () => {
       await tabState.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
       tabState.visitedUrls.add(url);
       tabState.lastSnapshot = null;
@@ -2052,12 +2196,12 @@ app.post('/navigate', async (req, res) => {
       
       tabState.refs = await buildRefs(tabState.page);
       return { ok: true, targetId, url: tabState.page.url() };
-    }), HANDLER_TIMEOUT_MS, 'openclaw-navigate');
+    });
     
     res.json(result);
   } catch (err) {
     log('error', 'openclaw navigate failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -2077,7 +2221,7 @@ app.get('/snapshot', async (req, res) => {
     }
     
     const { tabState } = found;
-    tabState.toolCalls++;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
 
     // Cached chunk retrieval
     if (offset > 0 && tabState.lastSnapshot) {
@@ -2164,7 +2308,7 @@ app.get('/snapshot', async (req, res) => {
     res.json(response);
   } catch (err) {
     log('error', 'openclaw snapshot failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -2188,9 +2332,9 @@ app.post('/act', async (req, res) => {
     }
     
     const { tabState } = found;
-    tabState.toolCalls++;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
-    const result = await withTimeout(withTabLock(targetId, async () => {
+    const result = await withTabLock(targetId, async () => {
       switch (kind) {
         case 'click': {
           const { ref, selector, doubleClick } = params;
@@ -2200,7 +2344,7 @@ app.post('/act', async (req, res) => {
           
           const doClick = async (locatorOrSelector, isLocator) => {
             const locator = isLocator ? locatorOrSelector : tabState.page.locator(locatorOrSelector);
-            const clickOpts = { timeout: 5000 };
+            const clickOpts = { timeout: 3000 };
             if (doubleClick) clickOpts.clickCount = 2;
             
             try {
@@ -2221,7 +2365,7 @@ app.post('/act', async (req, res) => {
               tabState.refs = await buildRefs(tabState.page);
               locator = refToLocator(tabState.page, ref, tabState.refs);
             }
-            if (!locator) throw new Error(`Unknown ref: ${ref}`);
+            if (!locator) { const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none'; throw new StaleRefsError(ref, maxRef, tabState.refs.size); }
             await doClick(locator, true);
           } else {
             await doClick(selector, false);
@@ -2248,7 +2392,7 @@ app.post('/act', async (req, res) => {
               tabState.refs = await buildRefs(tabState.page);
               locator = refToLocator(tabState.page, ref, tabState.refs);
             }
-            if (!locator) throw new Error(`Unknown ref: ${ref}`);
+            if (!locator) { const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none'; throw new StaleRefsError(ref, maxRef, tabState.refs.size); }
             await locator.fill(text, { timeout: 10000 });
             if (submit) await tabState.page.keyboard.press('Enter');
           } else {
@@ -2274,7 +2418,7 @@ app.post('/act', async (req, res) => {
               tabState.refs = await buildRefs(tabState.page);
               locator = refToLocator(tabState.page, ref, tabState.refs);
             }
-            if (!locator) throw new Error(`Unknown ref: ${ref}`);
+            if (!locator) { const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none'; throw new StaleRefsError(ref, maxRef, tabState.refs.size); }
             await locator.scrollIntoViewIfNeeded({ timeout: 5000 });
           } else {
             const delta = direction === 'up' ? -amount : amount;
@@ -2294,7 +2438,7 @@ app.post('/act', async (req, res) => {
               tabState.refs = await buildRefs(tabState.page);
               locator = refToLocator(tabState.page, ref, tabState.refs);
             }
-            if (!locator) throw new Error(`Unknown ref: ${ref}`);
+            if (!locator) { const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none'; throw new StaleRefsError(ref, maxRef, tabState.refs.size); }
             await locator.hover({ timeout: 5000 });
           } else {
             await tabState.page.locator(selector).hover({ timeout: 5000 });
@@ -2317,19 +2461,19 @@ app.post('/act', async (req, res) => {
         case 'close': {
           await safePageClose(tabState.page);
           found.group.delete(targetId);
-          tabLocks.delete(targetId);
+          { const _l = tabLocks.get(targetId); if (_l) _l.drain(); tabLocks.delete(targetId); }
           return { ok: true, targetId };
         }
         
         default:
           throw new Error(`Unsupported action kind: ${kind}`);
       }
-    }), HANDLER_TIMEOUT_MS, 'act');
+    });
     
     res.json(result);
   } catch (err) {
     log('error', 'act failed', { reqId: req.reqId, kind: req.body?.kind, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -2420,9 +2564,16 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 const PORT = CONFIG.port;
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, async () => {
   log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
-  // Browser launches lazily on first request (saves ~550MB when idle)
+  // Pre-warm browser so first request doesn't eat a 6-7s cold start
+  try {
+    const start = Date.now();
+    await ensureBrowser();
+    log('info', 'browser pre-warmed', { ms: Date.now() - start });
+  } catch (err) {
+    log('error', 'browser pre-warm failed (will retry on first request)', { error: err.message });
+  }
 });
 
 server.on('error', (err) => {
