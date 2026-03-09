@@ -1,7 +1,7 @@
-const { startServer, stopServer, getServerUrl } = require('../helpers/startServer');
-const { startTestSite, stopTestSite, getTestSiteUrl } = require('../helpers/testSite');
-const { createClient } = require('../helpers/client');
-const { MAX_SNAPSHOT_CHARS } = require('../../lib/snapshot');
+import { startServer, stopServer, getServerUrl } from '../helpers/startServer.js';
+import { startTestSite, stopTestSite, getTestSiteUrl } from '../helpers/testSite.js';
+import { createClient } from '../helpers/client.js';
+import { MAX_SNAPSHOT_CHARS } from '../../lib/snapshot.js';
 
 describe('Snapshot truncation (e2e)', () => {
   let serverUrl;

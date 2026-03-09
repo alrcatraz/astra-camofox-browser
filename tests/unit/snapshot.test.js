@@ -1,4 +1,4 @@
-const { windowSnapshot, MAX_SNAPSHOT_CHARS, SNAPSHOT_TAIL_CHARS } = require('../../lib/snapshot');
+import { windowSnapshot, MAX_SNAPSHOT_CHARS, SNAPSHOT_TAIL_CHARS } from '../../lib/snapshot.js';
 
 describe('windowSnapshot', () => {
   const CONTENT_BUDGET = MAX_SNAPSHOT_CHARS - SNAPSHOT_TAIL_CHARS - 200;
