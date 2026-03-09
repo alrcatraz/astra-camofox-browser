@@ -1,12 +1,20 @@
-const { Camoufox, launchOptions } = require('camoufox-js');
-const { firefox } = require('playwright-core');
-const express = require('express');
-const crypto = require('crypto');
-const os = require('os');
-const { expandMacro } = require('./lib/macros');
-const { loadConfig } = require('./lib/config');
-const { windowSnapshot } = require('./lib/snapshot');
-const { detectYtDlp, hasYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } = require('./lib/youtube');
+import { Camoufox, launchOptions } from 'camoufox-js';
+import { firefox } from 'playwright-core';
+import express from 'express';
+import crypto from 'crypto';
+import os from 'os';
+import { expandMacro } from './lib/macros.js';
+import { loadConfig } from './lib/config.js';
+import { windowSnapshot } from './lib/snapshot.js';
+import {
+  MAX_DOWNLOAD_INLINE_BYTES,
+  clearTabDownloads,
+  clearSessionDownloads,
+  attachDownloadListener,
+  getDownloadsList,
+  extractPageImages,
+} from './lib/downloads.js';
+import { detectYtDlp, hasYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } from './lib/youtube.js';
 
 const CONFIG = loadConfig();
 
@@ -113,26 +121,38 @@ function validateUrl(url) {
   }
 }
 
+function isLoopbackAddress(address) {
+  if (!address) return false;
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
 // Import cookies into a user's browser context (Playwright cookies format)
 // POST /sessions/:userId/cookies { cookies: Cookie[] }
 //
 // SECURITY:
 // Cookie injection moves this from "anonymous browsing" to "authenticated browsing".
-// This endpoint is DISABLED unless CAMOFOX_API_KEY is set.
-// When enabled, caller must send: Authorization: Bearer <CAMOFOX_API_KEY>
+// By default, this endpoint is protected by CAMOFOX_API_KEY.
+// For local development convenience, when CAMOFOX_API_KEY is NOT set, we allow
+// unauthenticated cookie import ONLY from loopback (127.0.0.1 / ::1) and ONLY
+// when NODE_ENV != production.
 app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (req, res) => {
   try {
-    if (!CONFIG.apiKey) {
-      return res.status(403).json({
-        error: 'Cookie import is disabled. Set CAMOFOX_API_KEY to enable this endpoint.',
-      });
-    }
-    const apiKey = CONFIG.apiKey;
-
-    const auth = String(req.headers['authorization'] || '');
-    const match = auth.match(/^Bearer\s+(.+)$/i);
-    if (!match || !timingSafeCompare(match[1], apiKey)) {
-      return res.status(403).json({ error: 'Forbidden' });
+    if (CONFIG.apiKey) {
+      const apiKey = CONFIG.apiKey;
+      const auth = String(req.headers['authorization'] || '');
+      const match = auth.match(/^Bearer\s+(.+)$/i);
+      if (!match || !timingSafeCompare(match[1], apiKey)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    } else {
+      const remoteAddress = req.socket?.remoteAddress || '';
+      const allowUnauthedLocal = CONFIG.nodeEnv !== 'production' && isLoopbackAddress(remoteAddress);
+      if (!allowUnauthedLocal) {
+        return res.status(403).json({
+          error:
+            'Cookie import is disabled without CAMOFOX_API_KEY except for loopback requests in non-production environments.',
+        });
+      }
     }
 
     const userId = req.params.userId;
@@ -190,7 +210,7 @@ app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (r
 
 let browser = null;
 // userId -> { context, tabGroups: Map<sessionKey, Map<tabId, TabState>>, lastAccess }
-// TabState = { page, refs: Map<refId, {role, name, nth}>, visitedUrls: Set, toolCalls: number }
+// TabState = { page, refs: Map<refId, {role, name, nth}>, visitedUrls: Set, downloads: Array, toolCalls: number }
 // Note: sessionKey was previously called listItemId - both are accepted for backward compatibility
 const sessions = new Map();
 
@@ -630,11 +650,14 @@ function createTabState(page) {
     page,
     refs: new Map(),
     visitedUrls: new Set(),
+    downloads: [],
     toolCalls: 0,
     consecutiveTimeouts: 0,
     lastSnapshot: null,
   };
 }
+
+
 
 async function waitForPageReady(page, options = {}) {
   const { timeout = 10000, waitForNetwork = true } = options;
@@ -1210,6 +1233,7 @@ app.post('/tabs', async (req, res) => {
       const page = await session.context.newPage();
       const tabId = crypto.randomUUID();
       const tabState = createTabState(page);
+      attachDownloadListener(tabState, tabId);
       group.set(tabId, tabState);
       
       if (url) {
@@ -1276,6 +1300,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         } else {
           const page = await session.context.newPage();
           tabState = createTabState(page);
+          attachDownloadListener(tabState, tabId, log);
           const group = getTabGroup(session, resolvedSessionKey);
           group.set(tabId, tabState);
           log('info', 'tab auto-created on navigate', { reqId: req.reqId, tabId, userId });
@@ -1858,6 +1883,59 @@ app.get('/tabs/:tabId/links', async (req, res) => {
   }
 });
 
+// Get captured downloads
+app.get('/tabs/:tabId/downloads', async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    const includeData = req.query.includeData === 'true';
+    const consume = req.query.consume === 'true';
+    const maxBytesRaw = Number(req.query.maxBytes);
+    const maxBytes = Number.isFinite(maxBytesRaw) && maxBytesRaw > 0 ? maxBytesRaw : MAX_DOWNLOAD_INLINE_BYTES;
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const { tabState } = found;
+    tabState.toolCalls++;
+
+    const downloads = await getDownloadsList(tabState, { includeData, maxBytes });
+
+    if (consume) {
+      await clearTabDownloads(tabState);
+    }
+
+    res.json({ tabId: req.params.tabId, downloads });
+  } catch (err) {
+    log('error', 'downloads failed', { reqId: req.reqId, error: err.message });
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
+// Get image elements from current page
+app.get('/tabs/:tabId/images', async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    const includeData = req.query.includeData === 'true';
+    const maxBytesRaw = Number(req.query.maxBytes);
+    const limitRaw = Number(req.query.limit);
+    const maxBytes = Number.isFinite(maxBytesRaw) && maxBytesRaw > 0 ? maxBytesRaw : MAX_DOWNLOAD_INLINE_BYTES;
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 20) : 8;
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const { tabState } = found;
+    tabState.toolCalls++;
+
+    const images = await extractPageImages(tabState.page, { includeData, maxBytes, limit });
+
+    res.json({ tabId: req.params.tabId, images });
+  } catch (err) {
+    log('error', 'images failed', { reqId: req.reqId, error: err.message });
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
 // Screenshot
 app.get('/tabs/:tabId/screenshot', async (req, res) => {
   try {
@@ -1892,6 +1970,7 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
       listItemId, // Legacy compatibility
       url: tabState.page.url(),
       visitedUrls: Array.from(tabState.visitedUrls),
+      downloadsCount: Array.isArray(tabState.downloads) ? tabState.downloads.length : 0,
       toolCalls: tabState.toolCalls,
       refsCount: tabState.refs.size
     });
@@ -1932,6 +2011,7 @@ app.delete('/tabs/:tabId', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (found) {
+      await clearTabDownloads(found.tabState);
       await safePageClose(found.tabState.page);
       found.group.delete(req.params.tabId);
       { const _l = tabLocks.get(req.params.tabId); if (_l) _l.drain(); tabLocks.delete(req.params.tabId); }
@@ -1955,6 +2035,7 @@ app.delete('/tabs/group/:listItemId', async (req, res) => {
     const group = session?.tabGroups.get(req.params.listItemId);
     if (group) {
       for (const [tabId, tabState] of group) {
+        await clearTabDownloads(tabState);
         await safePageClose(tabState.page);
         tabLocks.delete(tabId);
       }
@@ -1974,6 +2055,7 @@ app.delete('/sessions/:userId', async (req, res) => {
     const userId = normalizeUserId(req.params.userId);
     const session = sessions.get(userId);
     if (session) {
+      await clearSessionDownloads(session);
       await session.context.close();
       sessions.delete(userId);
       log('info', 'session closed', { userId });
@@ -1991,6 +2073,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [userId, session] of sessions) {
     if (now - session.lastAccess > SESSION_TIMEOUT_MS) {
+      clearSessionDownloads(session).catch(() => {});
       session.context.close().catch(() => {});
       sessions.delete(userId);
       log('info', 'session expired', { userId });
@@ -2113,6 +2196,7 @@ app.post('/tabs/open', async (req, res) => {
     const page = await session.context.newPage();
     const tabId = crypto.randomUUID();
     const tabState = createTabState(page);
+    attachDownloadListener(tabState, tabId, log);
     group.set(tabId, tabState);
     
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -2153,6 +2237,11 @@ app.post('/stop', async (req, res) => {
       await browser.close().catch(() => {});
       browser = null;
     }
+    const cleanupTasks = [];
+    for (const session of sessions.values()) {
+      cleanupTasks.push(clearSessionDownloads(session));
+    }
+    await Promise.all(cleanupTasks);
     sessions.clear();
     res.json({ ok: true, stopped: true, profile: 'camoufox' });
   } catch (err) {
