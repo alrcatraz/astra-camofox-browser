@@ -25,7 +25,7 @@ primary_region = "sjc"
   cpu_kind = "performance"
   cpus = 2
 
-[restart]
+[[restart]]
   policy = "always"
 
 [env]
