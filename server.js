@@ -1778,7 +1778,17 @@ app.post('/tabs/:tabId/back', async (req, res) => {
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
     const result = await withTabLock(tabId, async () => {
-      await tabState.page.goBack({ timeout: 10000 });
+      try {
+        await tabState.page.goBack({ timeout: 10000 });
+      } catch (navErr) {
+        // NS_BINDING_CANCELLED_OLD_LOAD: Firefox cancels the old load when going back.
+        // The navigation itself succeeded — just the prior page's load was interrupted.
+        if (navErr.message && navErr.message.includes('NS_BINDING_CANCELLED')) {
+          log('info', 'goBack cancelled old load (expected)', { reqId: req.reqId, tabId });
+        } else {
+          throw navErr;
+        }
+      }
       tabState.refs = await buildRefs(tabState.page);
       return { ok: true, url: tabState.page.url() };
     });
