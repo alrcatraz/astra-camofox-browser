@@ -1,0 +1,33 @@
+app = "jo-browser"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Internal-only service (Fly private network)
+[[services]]
+  internal_port = 9377
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 9377
+
+  [[services.http_checks]]
+    interval = 30000
+    timeout = 5000
+    path = "/health"
+
+[[vm]]
+  memory = "8gb"
+  cpu_kind = "performance"
+  cpus = 2
+
+[restart]
+  policy = "always"
+
+[env]
+  NODE_ENV = "production"
+  SESSION_TIMEOUT_MS = "86400000"

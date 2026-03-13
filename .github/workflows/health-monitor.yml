@@ -1,0 +1,71 @@
+name: Health Monitor
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # Every 5 minutes
+  workflow_dispatch:        # Manual trigger for testing
+
+jobs:
+  check:
+    name: Check jo-browser health
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Fly machine state
+        id: health
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          # Query Fly Machines API for jo-browser
+          RESPONSE=$(curl -sf --max-time 10 \
+            -H "Authorization: Bearer ${FLY_API_TOKEN}" \
+            "https://api.machines.dev/v1/apps/jo-browser/machines" 2>&1) || {
+            echo "status=api_error" >> $GITHUB_OUTPUT
+            echo "detail=Failed to reach Fly Machines API" >> $GITHUB_OUTPUT
+            exit 0
+          }
+
+          # Parse machine state and health checks
+          STATE=$(echo "$RESPONSE" | jq -r '.[0].state // "unknown"')
+          CHECKS=$(echo "$RESPONSE" | jq -r '.[0].checks[]? | select(.name | contains("http")) | .status // "unknown"')
+          MACHINE_ID=$(echo "$RESPONSE" | jq -r '.[0].id // "unknown"')
+          REGION=$(echo "$RESPONSE" | jq -r '.[0].region // "unknown"')
+
+          echo "machine_id=${MACHINE_ID}" >> $GITHUB_OUTPUT
+          echo "region=${REGION}" >> $GITHUB_OUTPUT
+
+          if [ "$STATE" != "started" ]; then
+            echo "status=down" >> $GITHUB_OUTPUT
+            echo "detail=Machine state: ${STATE}" >> $GITHUB_OUTPUT
+          elif [ "$CHECKS" != "passing" ] && [ -n "$CHECKS" ]; then
+            echo "status=unhealthy" >> $GITHUB_OUTPUT
+            echo "detail=Health check: ${CHECKS}" >> $GITHUB_OUTPUT
+          else
+            echo "status=ok" >> $GITHUB_OUTPUT
+            echo "detail=Machine running, health checks passing" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Alert Telegram
+        if: steps.health.outputs.status != 'ok'
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          STATUS="${{ steps.health.outputs.status }}"
+          DETAIL="${{ steps.health.outputs.detail }}"
+          MACHINE="${{ steps.health.outputs.machine_id }}"
+          REGION="${{ steps.health.outputs.region }}"
+
+          if [ "$STATUS" = "down" ]; then
+            EMOJI="🔴"
+          elif [ "$STATUS" = "unhealthy" ]; then
+            EMOJI="🟡"
+          else
+            EMOJI="⚠️"
+          fi
+
+          MSG=$(printf '%s jo-browser is %s\n\n%s\nMachine: %s (%s)\n\nhttps://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
+            "$EMOJI" "$STATUS" "$DETAIL" "$MACHINE" "$REGION")
+
+          curl -sf --max-time 10 -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TG_CHAT}" \
+            --data-urlencode "text=${MSG}" || echo "Failed to send Telegram alert"
