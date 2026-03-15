@@ -1311,7 +1311,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
       tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
       
       let targetUrl = url;
-      if (macro) {
+      if (macro && macro !== '__NO__' && macro !== 'none' && macro !== 'null') {
         targetUrl = expandMacro(macro, query) || url;
       }
       
@@ -1342,8 +1342,8 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
     res.json(result);
   } catch (err) {
     log('error', 'navigate failed', { reqId: req.reqId, tabId, error: err.message });
-    const status = err.message && err.message.startsWith('Blocked URL scheme') ? 400 : 500;
-    if (status === 400) {
+    const is400 = err.message && (err.message.startsWith('Blocked URL scheme') || err.message === 'url or macro required');
+    if (is400) {
       return res.status(400).json({ error: safeError(err) });
     }
     handleRouteError(err, req, res);
