@@ -15,6 +15,12 @@ import {
   extractPageImages,
 } from './lib/downloads.js';
 import { detectYtDlp, hasYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } from './lib/youtube.js';
+import {
+  register as metricsRegister,
+  requestsTotal, requestDuration, pageLoadDuration,
+  activeTabsGauge, tabLockQueueDepth,
+  tabLockTimeoutsTotal, startMemoryReporter, actionFromReq,
+} from './lib/metrics.js';
 
 const CONFIG = loadConfig();
 
@@ -37,20 +43,34 @@ function log(level, msg, fields = {}) {
 const app = express();
 app.use(express.json({ limit: '100kb' }));
 
-// Request logging middleware
+// Request logging + metrics middleware
 app.use((req, res, next) => {
-  if (req.path === '/health') return next();
   const reqId = crypto.randomUUID().slice(0, 8);
   req.reqId = reqId;
   req.startTime = Date.now();
+
   const userId = req.body?.userId || req.query?.userId || '-';
-  log('info', 'req', { reqId, method: req.method, path: req.path, userId });
+  if (req.path !== '/health') {
+    log('info', 'req', { reqId, method: req.method, path: req.path, userId });
+  }
+
+  const action = actionFromReq(req);
+  const done = requestDuration.startTimer({ action });
+
   const origEnd = res.end.bind(res);
   res.end = function (...args) {
     const ms = Date.now() - req.startTime;
-    log('info', 'res', { reqId, status: res.statusCode, ms });
+    const isErrorStatus = res.statusCode >= 400;
+    requestsTotal.labels(action, isErrorStatus ? 'error' : 'success').inc();
+    done();
+
+    if (req.path !== '/health') {
+      log('info', 'res', { reqId, status: res.statusCode, ms });
+    }
+
     return origEnd(...args);
   };
+
   next();
 });
 
@@ -243,9 +263,12 @@ class TabLock {
       entry.timer = setTimeout(() => {
         const idx = this.queue.indexOf(entry);
         if (idx !== -1) this.queue.splice(idx, 1);
+        tabLockTimeoutsTotal.inc();
+        refreshTabLockQueueDepth();
         reject(new Error('Tab lock queue timeout'));
       }, timeoutMs);
       this.queue.push(entry);
+      refreshTabLockQueueDepth();
       this._tryNext();
     });
   }
@@ -253,6 +276,7 @@ class TabLock {
   release() {
     this.active = false;
     this._tryNext();
+    refreshTabLockQueueDepth();
   }
 
   _tryNext() {
@@ -260,6 +284,7 @@ class TabLock {
     this.active = true;
     const entry = this.queue.shift();
     clearTimeout(entry.timer);
+    refreshTabLockQueueDepth();
     entry.resolve();
   }
 
@@ -270,6 +295,7 @@ class TabLock {
       entry.reject(new Error('Tab destroyed'));
     }
     this.queue = [];
+    refreshTabLockQueueDepth();
   }
 }
 
@@ -612,6 +638,7 @@ function destroyTab(session, tabId) {
   if (lock) {
     lock.drain();
     tabLocks.delete(tabId);
+    refreshTabLockQueueDepth();
   }
   for (const [listItemId, group] of session.tabGroups) {
     if (group.has(tabId)) {
@@ -620,6 +647,7 @@ function destroyTab(session, tabId) {
       safePageClose(tabState.page);
       group.delete(tabId);
       if (group.size === 0) session.tabGroups.delete(listItemId);
+      refreshActiveTabsGauge();
       return true;
     }
   }
@@ -655,6 +683,27 @@ function createTabState(page) {
     consecutiveTimeouts: 0,
     lastSnapshot: null,
   };
+}
+
+function refreshActiveTabsGauge() {
+  activeTabsGauge.set(getTotalTabCount());
+}
+
+function refreshTabLockQueueDepth() {
+  let queued = 0;
+  for (const lock of tabLocks.values()) {
+    if (lock?.queue) queued += lock.queue.length;
+  }
+  tabLockQueueDepth.set(queued);
+}
+
+async function withPageLoadDuration(action, fn) {
+  const end = pageLoadDuration.startTimer();
+  try {
+    return await fn();
+  } finally {
+    end();
+  }
 }
 
 
@@ -1205,6 +1254,11 @@ app.get('/health', (req, res) => {
   });
 });
 
+app.get('/metrics', async (_req, res) => {
+  res.set('Content-Type', metricsRegister.contentType);
+  res.send(await metricsRegister.metrics());
+});
+
 // Create new tab
 app.post('/tabs', async (req, res) => {
   try {
@@ -1235,11 +1289,12 @@ app.post('/tabs', async (req, res) => {
       const tabState = createTabState(page);
       attachDownloadListener(tabState, tabId);
       group.set(tabId, tabState);
+      refreshActiveTabsGauge();
       
       if (url) {
         const urlErr = validateUrl(url);
         if (urlErr) throw Object.assign(new Error(urlErr), { statusCode: 400 });
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
         tabState.visitedUrls.add(url);
       }
       
@@ -1303,6 +1358,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           attachDownloadListener(tabState, tabId, log);
           const group = getTabGroup(session, resolvedSessionKey);
           group.set(tabId, tabState);
+          refreshActiveTabsGauge();
           log('info', 'tab auto-created on navigate', { reqId: req.reqId, tabId, userId });
         }
       } else {
@@ -1321,7 +1377,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
       if (urlErr) throw new Error(urlErr);
       
       return await withTabLock(tabId, async () => {
-        await tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
         tabState.visitedUrls.add(targetUrl);
         tabState.lastSnapshot = null;
         
@@ -2024,10 +2080,11 @@ app.delete('/tabs/:tabId', async (req, res) => {
       await clearTabDownloads(found.tabState);
       await safePageClose(found.tabState.page);
       found.group.delete(req.params.tabId);
-      { const _l = tabLocks.get(req.params.tabId); if (_l) _l.drain(); tabLocks.delete(req.params.tabId); }
+      { const _l = tabLocks.get(req.params.tabId); if (_l) _l.drain(); tabLocks.delete(req.params.tabId); refreshTabLockQueueDepth(); }
       if (found.group.size === 0) {
         session.tabGroups.delete(found.listItemId);
       }
+      refreshActiveTabsGauge();
       log('info', 'tab closed', { reqId: req.reqId, tabId: req.params.tabId, userId });
     }
     res.json({ ok: true });
@@ -2047,9 +2104,15 @@ app.delete('/tabs/group/:listItemId', async (req, res) => {
       for (const [tabId, tabState] of group) {
         await clearTabDownloads(tabState);
         await safePageClose(tabState.page);
-        tabLocks.delete(tabId);
+        const lock = tabLocks.get(tabId);
+        if (lock) {
+          lock.drain();
+          tabLocks.delete(tabId);
+        }
       }
       session.tabGroups.delete(req.params.listItemId);
+      refreshTabLockQueueDepth();
+      refreshActiveTabsGauge();
       log('info', 'tab group closed', { reqId: req.reqId, listItemId: req.params.listItemId, userId });
     }
     res.json({ ok: true });
@@ -2068,6 +2131,18 @@ app.delete('/sessions/:userId', async (req, res) => {
       await clearSessionDownloads(session);
       await session.context.close();
       sessions.delete(userId);
+      // Remove any lingering tab locks for the session
+      for (const [listItemId, group] of session.tabGroups) {
+        for (const tabId of group.keys()) {
+          const lock = tabLocks.get(tabId);
+          if (lock) {
+            lock.drain();
+            tabLocks.delete(tabId);
+          }
+        }
+      }
+      refreshTabLockQueueDepth();
+      refreshActiveTabsGauge();
       log('info', 'session closed', { userId });
     }
     if (sessions.size === 0) scheduleBrowserIdleShutdown();
@@ -2086,6 +2161,7 @@ setInterval(() => {
       clearSessionDownloads(session).catch(() => {});
       session.context.close().catch(() => {});
       sessions.delete(userId);
+      refreshActiveTabsGauge();
       log('info', 'session expired', { userId });
     }
   }
@@ -2093,6 +2169,7 @@ setInterval(() => {
   if (sessions.size === 0) {
     scheduleBrowserIdleShutdown();
   }
+  refreshTabLockQueueDepth();
 }, 60_000);
 
 // Per-tab inactivity reaper — close tabs idle for TAB_INACTIVITY_MS
@@ -2113,6 +2190,8 @@ setInterval(() => {
             safePageClose(tabState.page);
             group.delete(tabId);
             { const _l = tabLocks.get(tabId); if (_l) _l.drain(); tabLocks.delete(tabId); }
+            refreshTabLockQueueDepth();
+            refreshActiveTabsGauge();
           }
         } else {
           tabState._lastReaperCheck = now;
@@ -2208,8 +2287,9 @@ app.post('/tabs/open', async (req, res) => {
     const tabState = createTabState(page);
     attachDownloadListener(tabState, tabId, log);
     group.set(tabId, tabState);
+    refreshActiveTabsGauge();
     
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
     tabState.visitedUrls.add(url);
     
     log('info', 'openclaw tab opened', { reqId: req.reqId, tabId, url: page.url() });
@@ -2252,7 +2332,21 @@ app.post('/stop', async (req, res) => {
       cleanupTasks.push(clearSessionDownloads(session));
     }
     await Promise.all(cleanupTasks);
+    for (const session of sessions.values()) {
+      for (const [, group] of session.tabGroups) {
+        for (const tabId of group.keys()) {
+          const lock = tabLocks.get(tabId);
+          if (lock) {
+            lock.drain();
+            tabLocks.delete(tabId);
+          }
+        }
+      }
+    }
+    tabLocks.clear();
     sessions.clear();
+    refreshActiveTabsGauge();
+    refreshTabLockQueueDepth();
     res.json({ ok: true, stopped: true, profile: 'camoufox' });
   } catch (err) {
     res.status(500).json({ ok: false, error: safeError(err) });
@@ -2283,7 +2377,7 @@ app.post('/navigate', async (req, res) => {
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
     const result = await withTabLock(targetId, async () => {
-      await tabState.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await withPageLoadDuration('navigate', () => tabState.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
       tabState.visitedUrls.add(url);
       tabState.lastSnapshot = null;
       
@@ -2651,6 +2745,7 @@ async function gracefulShutdown(signal) {
   forceTimeout.unref();
 
   server.close();
+  stopMemoryReporter();
 
   for (const [userId, session] of sessions) {
     await session.context.close().catch(() => {});
@@ -2664,6 +2759,9 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 const PORT = CONFIG.port;
 const server = app.listen(PORT, async () => {
+  startMemoryReporter();
+  refreshActiveTabsGauge();
+  refreshTabLockQueueDepth();
   log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
   // Pre-warm browser so first request doesn't eat a 6-7s cold start
   try {

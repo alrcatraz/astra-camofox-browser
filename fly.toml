@@ -20,6 +20,10 @@ primary_region = "sjc"
     timeout = 5000
     path = "/health"
 
+[metrics]
+  port = 9377
+  path = "/metrics"
+
 [[vm]]
   memory = "8gb"
   cpu_kind = "performance"
