@@ -4,20 +4,23 @@ primary_region = "sjc"
 [build]
   dockerfile = "Dockerfile"
 
-# Internal-only service (Fly private network)
-[[services]]
+# Horizontal scaling: Fly auto-starts stopped machines when running ones hit soft_limit.
+# Max machines = pool size set via: fly scale count N --region sjc
+# Self-managed idle shutdown (server.js) stops machines when tabs=0 for 5min.
+# Pool size target: 3 machines (2 always running, 1 on-demand burst).
+[http_service]
   internal_port = 9377
-  protocol = "tcp"
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
-
-  [[services.ports]]
-    port = 9377
-
-  [[services.http_checks]]
-    interval = 30000
-    timeout = 5000
+  force_https = false
+  auto_stop_machines = false       # we self-manage shutdown (tab-aware)
+  auto_start_machines = true       # Fly starts stopped machines on demand
+  min_machines_running = 2         # 2 always up for zero-downtime rolling deploys
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 8
+    hard_limit = 15
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
     path = "/health"
 
 [metrics]

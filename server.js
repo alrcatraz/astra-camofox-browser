@@ -74,6 +74,19 @@ app.use((req, res, next) => {
   next();
 });
 
+// --- fly-replay middleware: route tab requests to the owning machine ---
+// If a request targets a tab owned by a different machine, respond with
+// fly-replay header so Fly's proxy replays it to the correct instance.
+app.use('/tabs/:tabId', (req, res, next) => {
+  if (!FLY_MACHINE_ID) return next(); // not on Fly, skip
+  const tabId = req.params.tabId;
+  if (!tabId || isLocalTab(tabId)) return next();
+  const owner = parseTabOwner(tabId);
+  log('info', 'fly-replay', { reqId: req.reqId, tabId, owner, self: FLY_MACHINE_ID });
+  res.set('fly-replay', `instance=${owner}`);
+  res.status(307).send();
+});
+
 const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
 
 // Interactive roles to include - exclude combobox to avoid opening complex widgets
@@ -248,6 +261,35 @@ const BUILDREFS_TIMEOUT_MS = CONFIG.buildrefsTimeoutMs;
 const FAILURE_THRESHOLD = 3;
 const MAX_CONSECUTIVE_TIMEOUTS = 3;
 const TAB_LOCK_TIMEOUT_MS = 35000; // Must be > HANDLER_TIMEOUT_MS so active op times out first
+
+// --- Horizontal scaling (Fly.io multi-machine) ---
+// Tab IDs encode the owning machine: "{machineId}_{uuid}"
+// Requests for tabs on other machines get replayed via fly-replay header.
+const FLY_MACHINE_ID = CONFIG.flyMachineId;
+const FLY_APP_NAME = CONFIG.flyAppName;
+const FLY_API_TOKEN = CONFIG.flyApiToken;
+const IDLE_SHUTDOWN_MS = CONFIG.idleShutdownMs;
+
+function makeTabId() {
+  const uuid = crypto.randomUUID();
+  return FLY_MACHINE_ID ? `${FLY_MACHINE_ID}_${uuid}` : uuid;
+}
+
+function parseTabOwner(tabId) {
+  if (!FLY_MACHINE_ID || !tabId) return null;
+  const idx = tabId.indexOf('_');
+  if (idx === -1) return null; // legacy tab ID (no machine prefix)
+  const candidate = tabId.slice(0, idx);
+  // Fly machine IDs are hex strings (14 chars). UUIDs start with 8 hex chars then '-'.
+  // If the candidate contains '-', it's a UUID segment, not a machine ID.
+  if (candidate.includes('-')) return null;
+  return candidate;
+}
+
+function isLocalTab(tabId) {
+  const owner = parseTabOwner(tabId);
+  return owner === null || owner === FLY_MACHINE_ID;
+}
 
 // Proper mutex for tab serialization. The old Promise-chain lock on timeout proceeded
 // WITHOUT the lock, allowing concurrent Playwright operations that corrupt CDP state.
@@ -1250,7 +1292,9 @@ app.get('/health', (req, res) => {
     browserConnected: running,
     browserRunning: running,
     activeTabs: getTotalTabCount(),
+    activeSessions: sessions.size,
     consecutiveFailures: healthState.consecutiveNavFailures,
+    ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
   });
 });
 
@@ -1285,7 +1329,7 @@ app.post('/tabs', async (req, res) => {
       const group = getTabGroup(session, resolvedSessionKey);
       
       const page = await session.context.newPage();
-      const tabId = crypto.randomUUID();
+      const tabId = makeTabId();
       const tabState = createTabState(page);
       attachDownloadListener(tabState, tabId);
       group.set(tabId, tabState);
@@ -2283,7 +2327,7 @@ app.post('/tabs/open', async (req, res) => {
     const group = getTabGroup(session, listItemId);
     
     const page = await session.context.newPage();
-    const tabId = crypto.randomUUID();
+    const tabId = makeTabId();
     const tabState = createTabState(page);
     attachDownloadListener(tabState, tabId, log);
     group.set(tabId, tabState);
@@ -2757,12 +2801,66 @@ async function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
+// --- Idle self-shutdown for scaled-out machines ---
+// When running on Fly with multiple machines, non-primary machines self-stop
+// after IDLE_SHUTDOWN_MS with zero active tabs to avoid paying for idle capacity.
+let idleShutdownSince = null; // timestamp when tabs first hit zero
+
+async function checkIdleShutdown() {
+  if (!FLY_MACHINE_ID || !FLY_API_TOKEN || !FLY_APP_NAME) return;
+
+  const tabCount = getTotalTabCount();
+  if (tabCount > 0) {
+    idleShutdownSince = null;
+    return;
+  }
+
+  if (!idleShutdownSince) {
+    idleShutdownSince = Date.now();
+    return;
+  }
+
+  if (Date.now() - idleShutdownSince < IDLE_SHUTDOWN_MS) return;
+
+  // Check if we're the only machine — don't shut down the last one
+  try {
+    const resp = await fetch(
+      `https://api.machines.dev/v1/apps/${FLY_APP_NAME}/machines`,
+      { headers: { Authorization: `Bearer ${FLY_API_TOKEN}` } }
+    );
+    if (!resp.ok) {
+      log('warn', 'idle shutdown: failed to list machines', { status: resp.status });
+      return;
+    }
+    const machines = await resp.json();
+    const running = machines.filter(m => m.state === 'started' || m.state === 'starting');
+    const MIN_RUNNING = 2; // match fly.toml min_machines_running
+    if (running.length <= MIN_RUNNING) {
+      log('info', 'idle shutdown: skipped (at minimum running machines)', { running: running.length, min: MIN_RUNNING });
+      idleShutdownSince = null; // reset so we don't check every tick
+      return;
+    }
+
+    log('info', 'idle shutdown: stopping self', { machineId: FLY_MACHINE_ID, runningPeers: running.length - 1 });
+    await fetch(
+      `https://api.machines.dev/v1/apps/${FLY_APP_NAME}/machines/${FLY_MACHINE_ID}/stop`,
+      { method: 'POST', headers: { Authorization: `Bearer ${FLY_API_TOKEN}` } }
+    );
+  } catch (err) {
+    log('warn', 'idle shutdown: error', { error: err.message });
+  }
+}
+
 const PORT = CONFIG.port;
 const server = app.listen(PORT, async () => {
   startMemoryReporter();
   refreshActiveTabsGauge();
   refreshTabLockQueueDepth();
-  log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
+  if (FLY_MACHINE_ID) {
+    log('info', 'server started (fly)', { port: PORT, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
+  } else {
+    log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
+  }
   // Pre-warm browser so first request doesn't eat a 6-7s cold start
   try {
     const start = Date.now();
@@ -2770,6 +2868,10 @@ const server = app.listen(PORT, async () => {
     log('info', 'browser pre-warmed', { ms: Date.now() - start });
   } catch (err) {
     log('error', 'browser pre-warm failed (will retry on first request)', { error: err.message });
+  }
+  // Start idle shutdown checker (every 60s)
+  if (FLY_MACHINE_ID && FLY_API_TOKEN) {
+    setInterval(checkIdleShutdown, 60000);
   }
 });
 
