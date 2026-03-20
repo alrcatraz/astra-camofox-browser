@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import os from 'os';
 import { expandMacro } from './lib/macros.js';
 import { loadConfig } from './lib/config.js';
+import { normalizePlaywrightProxy } from './lib/proxy.js';
 import { windowSnapshot } from './lib/snapshot.js';
 import {
   MAX_DOWNLOAD_INLINE_BYTES,
@@ -489,6 +490,7 @@ async function launchBrowserInstance() {
     proxy: proxy,
     geoip: !!proxy,
   });
+  options.proxy = normalizePlaywrightProxy(options.proxy);
   
   browser = await firefox.launch(options);
   log('info', 'camoufox launched');
