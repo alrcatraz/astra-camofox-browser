@@ -1,6 +1,6 @@
 {
   "name": "@askjo/camofox-browser",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Headless browser automation server and OpenClaw plugin for AI agents - anti-detection, element refs, and session isolation",
   "type": "module",
   "main": "server.js",
@@ -66,6 +66,7 @@
     "playwright": "^1.50.0",
     "playwright-core": "^1.58.0",
     "playwright-extra": "^4.3.6",
+    "prom-client": "^15.1.3",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
   },
   "devDependencies": {
