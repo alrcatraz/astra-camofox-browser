@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import os from 'os';
 import { expandMacro } from './lib/macros.js';
 import { loadConfig } from './lib/config.js';
-import { normalizePlaywrightProxy } from './lib/proxy.js';
+import { normalizePlaywrightProxy, createProxyPool } from './lib/proxy.js';
 import { windowSnapshot } from './lib/snapshot.js';
 import {
   MAX_DOWNLOAD_INLINE_BYTES,
@@ -424,20 +424,13 @@ function getHostOS() {
   return 'linux';
 }
 
-function buildProxyConfig() {
-  const { host, port, username, password } = CONFIG.proxy;
-  
-  if (!host || !port) {
-    log('info', 'no proxy configured');
-    return null;
-  }
-  
-  log('info', 'proxy configured', { host, port });
-  return {
-    server: `http://${host}:${port}`,
-    username,
-    password,
-  };
+// Proxy pool for round-robin port rotation across sessions
+const proxyPool = createProxyPool(CONFIG.proxy);
+
+if (proxyPool) {
+  log('info', 'proxy pool created', { host: CONFIG.proxy.host, ports: CONFIG.proxy.ports, poolSize: proxyPool.size });
+} else {
+  log('info', 'no proxy configured');
 }
 
 const BROWSER_IDLE_TIMEOUT_MS = CONFIG.browserIdleTimeoutMs;
@@ -520,17 +513,18 @@ function getTotalTabCount() {
 
 async function launchBrowserInstance() {
   const hostOS = getHostOS();
-  const proxy = buildProxyConfig();
+  // Use first port for browser launch (geoip fingerprinting needs a valid proxy)
+  const launchProxy = proxyPool ? proxyPool.getLaunchProxy() : null;
   
-  log('info', 'launching camoufox', { hostOS, geoip: !!proxy });
+  log('info', 'launching camoufox', { hostOS, geoip: !!launchProxy, proxyPoolSize: proxyPool?.size || 0 });
   
   const options = await launchOptions({
     headless: true,
     os: hostOS,
     humanize: true,
     enable_cache: true,
-    proxy: proxy,
-    geoip: !!proxy,
+    proxy: launchProxy,
+    geoip: !!launchProxy,
   });
   options.proxy = normalizePlaywrightProxy(options.proxy);
   
@@ -597,6 +591,12 @@ async function getSession(userId) {
       contextOptions.locale = 'en-US';
       contextOptions.timezoneId = 'America/Los_Angeles';
       contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
+    }
+    // Rotate proxy port per session for load distribution
+    if (proxyPool) {
+      const sessionProxy = proxyPool.getNext();
+      contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
+      log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
     }
     const context = await b.newContext(contextOptions);
     
