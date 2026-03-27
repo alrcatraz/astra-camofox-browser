@@ -21,6 +21,8 @@ import {
   requestsTotal, requestDuration, pageLoadDuration,
   activeTabsGauge, tabLockQueueDepth,
   tabLockTimeoutsTotal, startMemoryReporter, actionFromReq,
+  failuresTotal, browserRestartsTotal, tabsDestroyedTotal,
+  sessionsExpiredTotal, tabsReapedTotal, classifyError,
 } from './lib/metrics.js';
 
 const CONFIG = loadConfig();
@@ -237,6 +239,7 @@ app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (r
     log('info', 'cookies imported', { reqId: req.reqId, userId: String(userId), count: sanitized.length });
     res.json(result);
   } catch (err) {
+    failuresTotal.labels(classifyError(err), 'set_cookies').inc();
     log('error', 'cookie import failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
@@ -479,6 +482,7 @@ function recordNavFailure() {
 async function restartBrowser(reason) {
   if (healthState.isRecovering) return;
   healthState.isRecovering = true;
+  browserRestartsTotal.labels(reason).inc();
   log('error', 'restarting browser', { reason, failures: healthState.consecutiveNavFailures });
   try {
     for (const [, session] of sessions) {
@@ -536,6 +540,7 @@ async function launchBrowserInstance() {
 async function ensureBrowser() {
   clearBrowserIdleTimer();
   if (browser && !browser.isConnected()) {
+    failuresTotal.labels('browser_disconnected', 'internal').inc();
     log('warn', 'browser disconnected, clearing dead sessions and relaunching', {
       deadSessions: sessions.size,
     });
@@ -642,6 +647,10 @@ function isTabDestroyedError(err) {
 // Centralized error handler for route catch blocks.
 // Auto-destroys dead browser sessions and returns appropriate status codes.
 function handleRouteError(err, req, res, extraFields = {}) {
+  const failureType = classifyError(err);
+  const action = actionFromReq(req);
+  failuresTotal.labels(failureType, action).inc();
+
   const userId = req.body?.userId || req.query?.userId;
   if (userId && isDeadContextError(err)) {
     destroySession(userId);
@@ -656,7 +665,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
         found.tabState.consecutiveTimeouts++;
         if (found.tabState.consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
           log('warn', 'auto-destroying tab after consecutive timeouts', { tabId, count: found.tabState.consecutiveTimeouts });
-          destroyTab(session, tabId);
+          destroyTab(session, tabId, 'consecutive_timeouts');
         }
       }
     }
@@ -666,7 +675,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
     const tabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
     const session = sessions.get(normalizeUserId(userId));
     if (session && tabId) {
-      destroyTab(session, tabId);
+      destroyTab(session, tabId, 'lock_queue');
     }
     return res.status(503).json({ error: 'Tab unresponsive and has been destroyed. Open a new tab.', ...extraFields });
   }
@@ -677,7 +686,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
   sendError(res, err, extraFields);
 }
 
-function destroyTab(session, tabId) {
+function destroyTab(session, tabId, reason) {
   const lock = tabLocks.get(tabId);
   if (lock) {
     lock.drain();
@@ -687,11 +696,12 @@ function destroyTab(session, tabId) {
   for (const [listItemId, group] of session.tabGroups) {
     if (group.has(tabId)) {
       const tabState = group.get(tabId);
-      log('warn', 'destroying stuck tab', { tabId, listItemId, toolCalls: tabState.toolCalls });
+      log('warn', 'destroying stuck tab', { tabId, listItemId, toolCalls: tabState.toolCalls, reason: reason || 'unknown' });
       safePageClose(tabState.page);
       group.delete(tabId);
       if (group.size === 0) session.tabGroups.delete(listItemId);
       refreshActiveTabsGauge();
+      if (reason) tabsDestroyedTotal.labels(reason).inc();
       return true;
     }
   }
@@ -1161,6 +1171,7 @@ app.post('/youtube/transcript', async (req, res) => {
     log('info', 'youtube transcript: done', { reqId, videoId, status: result.status, words: result.total_words });
     res.json(result);
   } catch (err) {
+    failuresTotal.labels(classifyError(err), 'youtube_transcript').inc();
     log('error', 'youtube transcript failed', { reqId, error: err.message, stack: err.stack });
     res.status(500).json({ error: safeError(err) });
   }
@@ -2018,6 +2029,7 @@ app.get('/tabs/:tabId/downloads', async (req, res) => {
 
     res.json({ tabId: req.params.tabId, downloads });
   } catch (err) {
+    failuresTotal.labels(classifyError(err), 'downloads').inc();
     log('error', 'downloads failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
@@ -2043,6 +2055,7 @@ app.get('/tabs/:tabId/images', async (req, res) => {
 
     res.json({ tabId: req.params.tabId, images });
   } catch (err) {
+    failuresTotal.labels(classifyError(err), 'images').inc();
     log('error', 'images failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
@@ -2111,6 +2124,7 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, re
     log('info', 'evaluate', { reqId: req.reqId, tabId: req.params.tabId, userId, resultType: typeof result });
     res.json({ ok: true, result });
   } catch (err) {
+    failuresTotal.labels(classifyError(err), 'evaluate').inc();
     log('error', 'evaluate failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
@@ -2204,6 +2218,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [userId, session] of sessions) {
     if (now - session.lastAccess > SESSION_TIMEOUT_MS) {
+      sessionsExpiredTotal.inc();
       clearSessionDownloads(session).catch(() => {});
       session.context.close().catch(() => {});
       sessions.delete(userId);
@@ -2232,6 +2247,7 @@ setInterval(() => {
         if (tabState.toolCalls === tabState._lastReaperToolCalls) {
           const idleMs = now - tabState._lastReaperCheck;
           if (idleMs >= TAB_INACTIVITY_MS) {
+            tabsReapedTotal.inc();
             log('info', 'tab reaped (inactive)', { userId, tabId, listItemId, idleMs, toolCalls: tabState.toolCalls });
             safePageClose(tabState.page);
             group.delete(tabId);
@@ -2358,6 +2374,7 @@ app.post('/start', async (req, res) => {
     await ensureBrowser();
     res.json({ ok: true, profile: 'camoufox' });
   } catch (err) {
+    failuresTotal.labels('browser_launch', 'start').inc();
     res.status(500).json({ ok: false, error: safeError(err) });
   }
 });
@@ -2761,6 +2778,7 @@ setInterval(async () => {
     await testContext.close();
     healthState.lastSuccessfulNav = Date.now();
   } catch (err) {
+    failuresTotal.labels('health_probe', 'internal').inc();
     log('warn', 'health probe failed', { error: err.message, timeSinceSuccessMs: timeSinceSuccess });
     if (testContext) await testContext.close().catch(() => {});
     restartBrowser('health probe failed').catch(() => {});
