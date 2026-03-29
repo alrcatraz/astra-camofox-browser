@@ -530,75 +530,137 @@ function getTotalTabCount() {
 let virtualDisplay = null;
 let browserLaunchProxy = null;
 
+async function probeGoogleSearch(candidateBrowser) {
+  let context = null;
+  try {
+    context = await candidateBrowser.newContext({
+      viewport: { width: 1280, height: 720 },
+      permissions: ['geolocation'],
+    });
+    const page = await context.newPage();
+    await page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(1200);
+    await page.goto('https://www.google.com/search?q=weather%20today', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(4000);
+
+    const blocked = await isGoogleSearchBlocked(page);
+    return {
+      ok: !blocked && isGoogleSerp(page.url()),
+      url: page.url(),
+      blocked,
+    };
+  } finally {
+    await context?.close().catch(() => {});
+  }
+}
+
+function attachBrowserCleanup(candidateBrowser, localVirtualDisplay) {
+  const origClose = candidateBrowser.close.bind(candidateBrowser);
+  candidateBrowser.close = async (...args) => {
+    await origClose(...args);
+    browserLaunchProxy = null;
+    if (localVirtualDisplay) {
+      localVirtualDisplay.kill();
+      if (virtualDisplay === localVirtualDisplay) virtualDisplay = null;
+    }
+  };
+}
+
 async function launchBrowserInstance() {
   const hostOS = getHostOS();
-  // Backconnect mode uses a sticky proxy session at the browser process level so
-  // the Camoufox fingerprint (geoip/timezone/WebRTC) aligns with the actual exit IP.
-  const launchProxy = proxyPool
-    ? proxyPool.getLaunchProxy(proxyPool.mode === 'backconnect' ? `browser-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}` : undefined)
-    : null;
-  browserLaunchProxy = launchProxy;
-  
-  // Start Xvfb virtual display if on Linux (Fly.io) — enables WebGL via Mesa
-  let vdDisplay = undefined;
-  if (os.platform() === 'linux') {
+  const maxAttempts = proxyPool?.mode === 'backconnect' ? 10 : 1;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const launchProxy = proxyPool
+      ? proxyPool.getLaunchProxy(proxyPool.mode === 'backconnect' ? `browser-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}` : undefined)
+      : null;
+
+    let localVirtualDisplay = null;
+    let vdDisplay = undefined;
+    let candidateBrowser = null;
+
     try {
-      if (virtualDisplay) {
-        virtualDisplay.kill();
+      if (os.platform() === 'linux') {
+        localVirtualDisplay = new VirtualDisplay();
+        vdDisplay = localVirtualDisplay.get();
+        log('info', 'xvfb virtual display started', { display: vdDisplay, attempt });
       }
-      virtualDisplay = new VirtualDisplay();
-      vdDisplay = virtualDisplay.get();
-      log('info', 'xvfb virtual display started', { display: vdDisplay });
     } catch (err) {
-      log('warn', 'xvfb not available, falling back to headless', { error: err.message });
-      virtualDisplay = null;
+      log('warn', 'xvfb not available, falling back to headless', { error: err.message, attempt });
+      localVirtualDisplay = null;
+    }
+
+    const useVirtualDisplay = !!vdDisplay;
+    log('info', 'launching camoufox', {
+      hostOS,
+      attempt,
+      maxAttempts,
+      geoip: !!launchProxy,
+      proxyMode: proxyPool?.mode || null,
+      proxyServer: launchProxy?.server || null,
+      proxySession: launchProxy?.sessionId || null,
+      proxyPoolSize: proxyPool?.size || 0,
+      virtualDisplay: useVirtualDisplay,
+    });
+
+    try {
+      const options = await launchOptions({
+        headless: useVirtualDisplay ? false : true,
+        os: hostOS,
+        humanize: true,
+        enable_cache: true,
+        proxy: launchProxy,
+        geoip: !!launchProxy,
+        virtual_display: vdDisplay,
+      });
+      options.proxy = normalizePlaywrightProxy(options.proxy);
+
+      candidateBrowser = await firefox.launch(options);
+
+      if (proxyPool?.mode === 'backconnect') {
+        const probe = await probeGoogleSearch(candidateBrowser);
+        if (!probe.ok) {
+          log('warn', 'browser launch google probe failed', {
+            attempt,
+            maxAttempts,
+            proxySession: launchProxy?.sessionId || null,
+            url: probe.url,
+          });
+          await candidateBrowser.close().catch(() => {});
+          if (localVirtualDisplay) localVirtualDisplay.kill();
+          continue;
+        }
+      }
+
+      virtualDisplay = localVirtualDisplay;
+      browserLaunchProxy = launchProxy;
+      browser = candidateBrowser;
+      attachBrowserCleanup(browser, localVirtualDisplay);
+
+      log('info', 'camoufox launched', {
+        attempt,
+        maxAttempts,
+        virtualDisplay: useVirtualDisplay,
+        proxyMode: proxyPool?.mode || null,
+        proxyServer: launchProxy?.server || null,
+        proxySession: launchProxy?.sessionId || null,
+      });
+      return browser;
+    } catch (err) {
+      lastError = err;
+      log('warn', 'camoufox launch attempt failed', {
+        attempt,
+        maxAttempts,
+        error: err.message,
+        proxySession: launchProxy?.sessionId || null,
+      });
+      await candidateBrowser?.close().catch(() => {});
+      if (localVirtualDisplay) localVirtualDisplay.kill();
     }
   }
-  
-  const useVirtualDisplay = !!vdDisplay;
-  log('info', 'launching camoufox', {
-    hostOS,
-    geoip: !!launchProxy,
-    proxyMode: proxyPool?.mode || null,
-    proxyServer: launchProxy?.server || null,
-    proxySession: launchProxy?.sessionId || null,
-    proxyPoolSize: proxyPool?.size || 0,
-    virtualDisplay: useVirtualDisplay,
-  });
-  
-  const options = await launchOptions({
-    headless: useVirtualDisplay ? false : true,
-    os: hostOS,
-    humanize: true,
-    enable_cache: true,
-    proxy: launchProxy,
-    geoip: !!launchProxy,
-    virtual_display: vdDisplay,
-  });
-  options.proxy = normalizePlaywrightProxy(options.proxy);
-  
-  browser = await firefox.launch(options);
-  
-  // Attach virtual display cleanup to browser close
-  if (virtualDisplay) {
-    const origClose = browser.close.bind(browser);
-    browser.close = async (...args) => {
-      await origClose(...args);
-      browserLaunchProxy = null;
-      if (virtualDisplay) {
-        virtualDisplay.kill();
-        virtualDisplay = null;
-      }
-    };
-  }
-  
-  log('info', 'camoufox launched', {
-    virtualDisplay: useVirtualDisplay,
-    proxyMode: proxyPool?.mode || null,
-    proxyServer: launchProxy?.server || null,
-    proxySession: launchProxy?.sessionId || null,
-  });
-  return browser;
+
+  throw lastError || new Error('Failed to launch a usable browser');
 }
 
 async function ensureBrowser() {
@@ -622,9 +684,10 @@ async function ensureBrowser() {
   }
   if (browser) return browser;
   if (browserLaunchPromise) return browserLaunchPromise;
+  const launchTimeoutMs = proxyPool?.mode === 'backconnect' ? 180000 : 60000;
   browserLaunchPromise = Promise.race([
     launchBrowserInstance(),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('Browser launch timeout (60s)')), 60000)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`Browser launch timeout (${Math.round(launchTimeoutMs / 1000)}s)`)), launchTimeoutMs)),
   ]).finally(() => { browserLaunchPromise = null; });
   return browserLaunchPromise;
 }
