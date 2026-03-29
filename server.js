@@ -375,6 +375,10 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
+function requestTimeoutMs(baseMs = HANDLER_TIMEOUT_MS) {
+  return proxyPool?.mode === 'backconnect' ? Math.max(baseMs, 180000) : baseMs;
+}
+
 const userConcurrency = new Map();
 
 async function withUserLimit(userId, operation) {
@@ -1580,7 +1584,7 @@ app.post('/tabs', async (req, res) => {
       
       log('info', 'tab created', { reqId: req.reqId, tabId, userId, sessionKey: resolvedSessionKey, url: page.url() });
       return { tabId, url: page.url() };
-    })(), HANDLER_TIMEOUT_MS, 'tab create');
+    })(), requestTimeoutMs(), 'tab create');
 
     res.json(result);
   } catch (err) {
@@ -1719,8 +1723,8 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         
         tabState.refs = await buildRefs(tabState.page);
         return { ok: true, tabId, url: tabState.page.url(), refsAvailable: tabState.refs.size > 0 };
-      });
-    })(), HANDLER_TIMEOUT_MS, 'navigate'));
+      }, requestTimeoutMs());
+    })(), requestTimeoutMs(), 'navigate'));
     
     log('info', 'navigated', { reqId: req.reqId, tabId, url: result.url });
     res.json(result);
@@ -1861,7 +1865,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
       }
 
       return response;
-    })(), HANDLER_TIMEOUT_MS, 'snapshot'));
+    })(), requestTimeoutMs(), 'snapshot'));
 
     log('info', 'snapshot', { reqId: req.reqId, tabId: req.params.tabId, url: result.url, snapshotLen: result.snapshot?.length, refsCount: result.refsCount, hasScreenshot: !!result.screenshot, truncated: result.truncated });
     res.json(result);
