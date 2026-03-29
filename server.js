@@ -1,4 +1,5 @@
 import { Camoufox, launchOptions } from 'camoufox-js';
+import { VirtualDisplay } from 'camoufox-js/dist/virtdisplay.js';
 import { firefox } from 'playwright-core';
 import express from 'express';
 import crypto from 'crypto';
@@ -515,25 +516,61 @@ function getTotalTabCount() {
   return total;
 }
 
+// Virtual display for WebGL support and anti-detection.
+// Xvfb gives Firefox a real X display with GLX, enabling software-rendered WebGL
+// via Mesa llvmpipe. Without this, WebGL returns "no context" — a massive bot signal.
+let virtualDisplay = null;
+
 async function launchBrowserInstance() {
   const hostOS = getHostOS();
   // Use first port for browser launch (geoip fingerprinting needs a valid proxy)
   const launchProxy = proxyPool ? proxyPool.getLaunchProxy() : null;
   
-  log('info', 'launching camoufox', { hostOS, geoip: !!launchProxy, proxyPoolSize: proxyPool?.size || 0 });
+  // Start Xvfb virtual display if on Linux (Fly.io) — enables WebGL via Mesa
+  let vdDisplay = undefined;
+  if (os.platform() === 'linux') {
+    try {
+      if (virtualDisplay) {
+        virtualDisplay.kill();
+      }
+      virtualDisplay = new VirtualDisplay();
+      vdDisplay = virtualDisplay.get();
+      log('info', 'xvfb virtual display started', { display: vdDisplay });
+    } catch (err) {
+      log('warn', 'xvfb not available, falling back to headless', { error: err.message });
+      virtualDisplay = null;
+    }
+  }
+  
+  const useVirtualDisplay = !!vdDisplay;
+  log('info', 'launching camoufox', { hostOS, geoip: !!launchProxy, proxyPoolSize: proxyPool?.size || 0, virtualDisplay: useVirtualDisplay });
   
   const options = await launchOptions({
-    headless: true,
+    headless: useVirtualDisplay ? false : true,
     os: hostOS,
     humanize: true,
     enable_cache: true,
     proxy: launchProxy,
     geoip: !!launchProxy,
+    virtual_display: vdDisplay,
   });
   options.proxy = normalizePlaywrightProxy(options.proxy);
   
   browser = await firefox.launch(options);
-  log('info', 'camoufox launched');
+  
+  // Attach virtual display cleanup to browser close
+  if (virtualDisplay) {
+    const origClose = browser.close.bind(browser);
+    browser.close = async (...args) => {
+      await origClose(...args);
+      if (virtualDisplay) {
+        virtualDisplay.kill();
+        virtualDisplay = null;
+      }
+    };
+  }
+  
+  log('info', 'camoufox launched', { virtualDisplay: useVirtualDisplay });
   return browser;
 }
 
@@ -548,6 +585,11 @@ async function ensureBrowser() {
       await session.context.close().catch(() => {});
     }
     sessions.clear();
+    // Clean up virtual display from dead browser before relaunching
+    if (virtualDisplay) {
+      virtualDisplay.kill();
+      virtualDisplay = null;
+    }
     browser = null;
   }
   if (browser) return browser;
