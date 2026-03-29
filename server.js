@@ -889,7 +889,46 @@ function createTabState(page) {
     toolCalls: 0,
     consecutiveTimeouts: 0,
     lastSnapshot: null,
+    lastRequestedUrl: null,
+    googleRetryCount: 0,
   };
+}
+
+async function isGoogleUnavailable(page) {
+  if (!page || page.isClosed()) return false;
+  const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 600) || '').catch(() => '');
+  return /Unable to connect|502 Bad Gateway or Proxy Error|Camoufox can’t establish a connection/.test(bodyText);
+}
+
+async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reason, reqId) {
+  if (!previousTabState?.lastRequestedUrl || !isGoogleSearchUrl(previousTabState.lastRequestedUrl)) return null;
+  if ((previousTabState.googleRetryCount || 0) >= 3) return null;
+
+  await restartBrowser(reason);
+  const session = await getSession(userId);
+  const group = getTabGroup(session, sessionKey);
+  const page = await session.context.newPage();
+  const tabState = createTabState(page);
+  tabState.googleRetryCount = (previousTabState.googleRetryCount || 0) + 1;
+  tabState.lastRequestedUrl = previousTabState.lastRequestedUrl;
+  attachDownloadListener(tabState, tabId, log);
+  group.set(tabId, tabState);
+  refreshActiveTabsGauge();
+
+  log('warn', 'replaying google search on fresh browser session', {
+    reqId,
+    tabId,
+    retryCount: tabState.googleRetryCount,
+    url: tabState.lastRequestedUrl,
+    proxySession: browserLaunchProxy?.sessionId || null,
+  });
+
+  await withPageLoadDuration('navigate', () => page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }));
+  tabState.visitedUrls.add('https://www.google.com/');
+  await page.waitForTimeout(1200);
+  await withPageLoadDuration('navigate', () => page.goto(tabState.lastRequestedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+  tabState.visitedUrls.add(tabState.lastRequestedUrl);
+  return { session, tabState };
 }
 
 function refreshActiveTabsGauge() {
@@ -1534,6 +1573,7 @@ app.post('/tabs', async (req, res) => {
       if (url) {
         const urlErr = validateUrl(url);
         if (urlErr) throw Object.assign(new Error(urlErr), { statusCode: 400 });
+        tabState.lastRequestedUrl = url;
         await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
         tabState.visitedUrls.add(url);
       }
@@ -1621,6 +1661,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         const isGoogleSearch = isGoogleSearchUrl(targetUrl);
 
         const navigateCurrentPage = async () => {
+          tabState.lastRequestedUrl = targetUrl;
           await withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
           tabState.visitedUrls.add(targetUrl);
           tabState.lastSnapshot = null;
@@ -1634,11 +1675,13 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         };
 
         const recreateTabOnFreshBrowser = async () => {
+          const previousRetryCount = tabState.googleRetryCount || 0;
           await restartBrowser('google_search_block');
           session = await getSession(userId);
           const group = getTabGroup(session, currentSessionKey);
           const page = await session.context.newPage();
           tabState = createTabState(page);
+          tabState.googleRetryCount = previousRetryCount + 1;
           attachDownloadListener(tabState, tabId, log);
           group.set(tabId, tabState);
           refreshActiveTabsGauge();
@@ -1718,6 +1761,25 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     }
 
     const result = await withUserLimit(userId, () => withTimeout((async () => {
+      if (proxyPool?.mode === 'backconnect' && isGoogleSearchUrl(tabState.lastRequestedUrl || '')) {
+        const blocked = await isGoogleSearchBlocked(tabState.page);
+        const unavailable = !blocked && await isGoogleUnavailable(tabState.page);
+        if (blocked || unavailable) {
+          const rotated = await rotateGoogleTab(userId, found.listItemId, req.params.tabId, tabState, blocked ? 'google_search_block_snapshot' : 'google_search_unavailable_snapshot', req.reqId);
+          if (rotated) {
+            tabState.page = rotated.tabState.page;
+            tabState.refs = rotated.tabState.refs;
+            tabState.visitedUrls = rotated.tabState.visitedUrls;
+            tabState.downloads = rotated.tabState.downloads;
+            tabState.toolCalls = rotated.tabState.toolCalls;
+            tabState.consecutiveTimeouts = rotated.tabState.consecutiveTimeouts;
+            tabState.lastSnapshot = rotated.tabState.lastSnapshot;
+            tabState.lastRequestedUrl = rotated.tabState.lastRequestedUrl;
+            tabState.googleRetryCount = rotated.tabState.googleRetryCount;
+          }
+        }
+      }
+
       const pageUrl = tabState.page.url();
       
       // Google SERP fast path — DOM extraction instead of ariaSnapshot
