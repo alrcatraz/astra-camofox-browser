@@ -21,7 +21,7 @@ import {
   register as metricsRegister,
   requestsTotal, requestDuration, pageLoadDuration,
   activeTabsGauge, tabLockQueueDepth,
-  tabLockTimeoutsTotal, startMemoryReporter, actionFromReq,
+  tabLockTimeoutsTotal, startMemoryReporter, stopMemoryReporter, actionFromReq,
   failuresTotal, browserRestartsTotal, tabsDestroyedTotal,
   sessionsExpiredTotal, tabsReapedTotal, classifyError,
 } from './lib/metrics.js';
@@ -959,7 +959,14 @@ async function withPageLoadDuration(action, fn) {
 
 
 async function waitForPageReady(page, options = {}) {
-  const { timeout = 10000, waitForNetwork = true } = options;
+  const {
+    timeout = 10000,
+    waitForNetwork = true,
+    waitForHydration = true,
+    settleMs = 200,
+    hydrationPollMs = 250,
+    hydrationTimeoutMs = Math.min(timeout, 10000),
+  } = options;
   
   try {
     await page.waitForLoadState('domcontentloaded', { timeout });
@@ -970,27 +977,28 @@ async function waitForPageReady(page, options = {}) {
       });
     }
     
-    // Framework hydration wait (React/Next.js/Vue) - mirrors Swift WebView.swift logic
-    // Wait for readyState === 'complete' + network quiet (40 iterations × 250ms max)
-    await page.evaluate(async () => {
-      for (let i = 0; i < 40; i++) {
-        // Check if network is quiet (no recent resource loads)
-        const entries = performance.getEntriesByType('resource');
-        const recentEntries = entries.slice(-5);
-        const netQuiet = recentEntries.every(e => (performance.now() - e.responseEnd) > 400);
-        
-        if (document.readyState === 'complete' && netQuiet) {
-          // Double RAF to ensure paint is complete
-          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-          break;
+    if (waitForHydration) {
+      const maxIterations = Math.max(1, Math.floor(hydrationTimeoutMs / hydrationPollMs));
+      await page.evaluate(async ({ maxIterations, hydrationPollMs }) => {
+        for (let i = 0; i < maxIterations; i++) {
+          const entries = performance.getEntriesByType('resource');
+          const recentEntries = entries.slice(-5);
+          const netQuiet = recentEntries.every(e => (performance.now() - e.responseEnd) > 400);
+          
+          if (document.readyState === 'complete' && netQuiet) {
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            break;
+          }
+          await new Promise(r => setTimeout(r, hydrationPollMs));
         }
-        await new Promise(r => setTimeout(r, 250));
-      }
-    }).catch(() => {
-      log('warn', 'hydration wait failed, continuing');
-    });
+      }, { maxIterations, hydrationPollMs }).catch(() => {
+        log('warn', 'hydration wait failed, continuing');
+      });
+    }
     
-    await page.waitForTimeout(200);
+    if (settleMs > 0) {
+      await page.waitForTimeout(settleMs);
+    }
     
     // Auto-dismiss common consent/privacy dialogs
     await dismissConsentDialogs(page);
@@ -1216,6 +1224,8 @@ async function extractGoogleSerp(page) {
   return { refs, snapshot: extracted.snapshot };
 }
 
+const REFRESH_READY_TIMEOUT_MS = 2500;
+
 async function buildRefs(page) {
   const refs = new Map();
   
@@ -1253,7 +1263,12 @@ async function buildRefs(page) {
 }
 
 async function _buildRefsInner(page, refs, start) {
-  await waitForPageReady(page, { waitForNetwork: false });
+  await waitForPageReady(page, {
+    timeout: REFRESH_READY_TIMEOUT_MS,
+    waitForNetwork: false,
+    waitForHydration: false,
+    settleMs: 100,
+  });
   
   // Budget remaining time for ariaSnapshot
   const elapsed = Date.now() - start;
@@ -1322,7 +1337,12 @@ async function getAriaSnapshot(page) {
   if (!page || page.isClosed()) {
     return null;
   }
-  await waitForPageReady(page, { waitForNetwork: false });
+  await waitForPageReady(page, {
+    timeout: REFRESH_READY_TIMEOUT_MS,
+    waitForNetwork: false,
+    waitForHydration: false,
+    settleMs: 100,
+  });
   try {
     return await page.locator('body').ariaSnapshot({ timeout: 5000 });
   } catch (err) {
@@ -1343,6 +1363,41 @@ function refToLocator(page, ref, refs) {
   locator = locator.nth(nth);
   
   return locator;
+}
+
+async function refreshTabRefs(tabState, options = {}) {
+  const {
+    reason = 'refresh',
+    timeoutMs = null,
+    preserveExistingOnEmpty = true,
+  } = options;
+
+  const beforeUrl = tabState.page?.url?.() || '';
+  const existingRefs = tabState.refs instanceof Map ? tabState.refs : new Map();
+  const refreshPromise = buildRefs(tabState.page);
+
+  let refreshedRefs;
+  if (timeoutMs) {
+    const timeoutLabel = `${reason}_refs_timeout`;
+    refreshedRefs = await Promise.race([
+      refreshPromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(timeoutLabel)), timeoutMs)),
+    ]);
+  } else {
+    refreshedRefs = await refreshPromise;
+  }
+
+  const afterUrl = tabState.page?.url?.() || beforeUrl;
+  if (preserveExistingOnEmpty && refreshedRefs.size === 0 && existingRefs.size > 0 && beforeUrl === afterUrl) {
+    log('warn', 'preserving previous refs after empty rebuild', {
+      reason,
+      url: afterUrl,
+      previousRefs: existingRefs.size,
+    });
+    return existingRefs;
+  }
+
+  return refreshedRefs;
 }
 
 // --- YouTube transcript ---
@@ -1809,7 +1864,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
         return response;
       }
       
-      tabState.refs = await buildRefs(tabState.page);
+      tabState.refs = await refreshTabRefs(tabState, { reason: 'snapshot' });
       const ariaYaml = await getAriaSnapshot(tabState.page);
       
       let annotatedYaml = ariaYaml || '';
@@ -1983,9 +2038,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
           log('info', 'auto-refreshing refs before click', { ref, hadRefs: tabState.refs.size });
           try {
             const preClickBudget = Math.min(4000, remainingBudget());
-            const refreshPromise = buildRefs(tabState.page);
-            const refreshBudget = new Promise((_, reject) => setTimeout(() => reject(new Error('pre_click_refs_timeout')), preClickBudget));
-            tabState.refs = await Promise.race([refreshPromise, refreshBudget]);
+            tabState.refs = await refreshTabRefs(tabState, { reason: 'pre_click', timeoutMs: preClickBudget });
           } catch (e) {
             if (e.message === 'pre_click_refs_timeout' || e.message === 'buildRefs_timeout') {
               log('warn', 'pre-click buildRefs timed out, proceeding without refresh');
@@ -2025,9 +2078,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       // If it times out, return without refs (caller's next /snapshot will rebuild them).
       const postClickBudget = Math.max(2000, remainingBudget());
       try {
-        const refsPromise = buildRefs(tabState.page);
-        const refsBudget = new Promise((_, reject) => setTimeout(() => reject(new Error('post_click_refs_timeout')), postClickBudget));
-        tabState.refs = await Promise.race([refsPromise, refsBudget]);
+        tabState.refs = await refreshTabRefs(tabState, { reason: 'post_click', timeoutMs: postClickBudget });
       } catch (e) {
         if (e.message === 'post_click_refs_timeout' || e.message === 'buildRefs_timeout') {
           log('warn', 'post-click buildRefs timed out, returning without refs', { budget: postClickBudget, elapsed: Date.now() - clickStart });
@@ -2051,7 +2102,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         const session = sessions.get(normalizeUserId(req.body.userId));
         const found = session && findTab(session, tabId);
         if (found?.tabState?.page && !found.tabState.page.isClosed()) {
-          found.tabState.refs = await buildRefs(found.tabState.page);
+          found.tabState.refs = await refreshTabRefs(found.tabState, { reason: 'click_timeout' });
           found.tabState.lastSnapshot = null;
           return res.status(500).json({
             error: safeError(err),
@@ -2090,7 +2141,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
         let locator = refToLocator(tabState.page, ref, tabState.refs);
         if (!locator) {
           log('info', 'auto-refreshing refs before fill', { ref, hadRefs: tabState.refs.size });
-          tabState.refs = await buildRefs(tabState.page);
+          tabState.refs = await refreshTabRefs(tabState, { reason: 'type' });
           locator = refToLocator(tabState.page, ref, tabState.refs);
         }
         if (!locator) { const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none'; throw new StaleRefsError(ref, maxRef, tabState.refs.size); }
@@ -2108,7 +2159,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
         const session = sessions.get(normalizeUserId(req.body.userId));
         const found = session && findTab(session, tabId);
         if (found?.tabState?.page && !found.tabState.page.isClosed()) {
-          found.tabState.refs = await buildRefs(found.tabState.page);
+          found.tabState.refs = await refreshTabRefs(found.tabState, { reason: 'type_timeout' });
           found.tabState.lastSnapshot = null;
           return res.status(500).json({
             error: safeError(err),
