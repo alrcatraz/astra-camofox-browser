@@ -23,7 +23,7 @@ import {
   activeTabsGauge, tabLockQueueDepth,
   tabLockTimeoutsTotal, startMemoryReporter, stopMemoryReporter, actionFromReq,
   failuresTotal, browserRestartsTotal, tabsDestroyedTotal,
-  sessionsExpiredTotal, tabsReapedTotal, classifyError,
+  sessionsExpiredTotal, tabsReapedTotal, tabsRecycledTotal, classifyError,
 } from './lib/metrics.js';
 
 const CONFIG = loadConfig();
@@ -865,6 +865,39 @@ function destroyTab(session, tabId, reason) {
   return false;
 }
 
+/**
+ * Recycle the oldest (least-used) tab in a session to free a slot.
+ * Closes the old tab's page and removes it from its group.
+ * Returns { recycledTabId, recycledFromGroup } or null if no tab to recycle.
+ */
+async function recycleOldestTab(session, reqId) {
+  let oldestTab = null;
+  let oldestGroup = null;
+  let oldestGroupKey = null;
+  let oldestTabId = null;
+  for (const [gKey, group] of session.tabGroups) {
+    for (const [tid, ts] of group) {
+      if (!oldestTab || ts.toolCalls < oldestTab.toolCalls) {
+        oldestTab = ts;
+        oldestGroup = group;
+        oldestGroupKey = gKey;
+        oldestTabId = tid;
+      }
+    }
+  }
+  if (!oldestTab) return null;
+
+  await safePageClose(oldestTab.page);
+  oldestGroup.delete(oldestTabId);
+  if (oldestGroup.size === 0) session.tabGroups.delete(oldestGroupKey);
+  const lock = tabLocks.get(oldestTabId);
+  if (lock) { lock.drain(); tabLocks.delete(oldestTabId); }
+  refreshTabLockQueueDepth();
+  tabsRecycledTotal.inc();
+  log('info', 'tab recycled (limit reached)', { reqId, recycledTabId: oldestTabId, recycledFromGroup: oldestGroupKey });
+  return { recycledTabId: oldestTabId, recycledFromGroup: oldestGroupKey };
+}
+
 function destroySession(userId) {
   const key = normalizeUserId(userId);
   const session = sessions.get(key);
@@ -1612,12 +1645,13 @@ app.post('/tabs', async (req, res) => {
       
       let totalTabs = 0;
       for (const group of session.tabGroups.values()) totalTabs += group.size;
-      if (totalTabs >= MAX_TABS_PER_SESSION) {
-        throw Object.assign(new Error('Maximum tabs per session reached'), { statusCode: 429 });
-      }
       
-      if (getTotalTabCount() >= MAX_TABS_GLOBAL) {
-        throw Object.assign(new Error('Maximum global tabs reached'), { statusCode: 429 });
+      // Recycle oldest tab when limits are reached instead of rejecting
+      if (totalTabs >= MAX_TABS_PER_SESSION || getTotalTabCount() >= MAX_TABS_GLOBAL) {
+        const recycled = await recycleOldestTab(session, req.reqId);
+        if (!recycled) {
+          throw Object.assign(new Error('Maximum tabs per session reached'), { statusCode: 429 });
+        }
       }
       
       const group = getTabGroup(session, resolvedSessionKey);
@@ -1668,30 +1702,13 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         let sessionTabs = 0;
         for (const g of session.tabGroups.values()) sessionTabs += g.size;
         if (getTotalTabCount() >= MAX_TABS_GLOBAL || sessionTabs >= MAX_TABS_PER_SESSION) {
-          // Reuse oldest tab in session instead of rejecting
-          let oldestTab = null;
-          let oldestGroup = null;
-          let oldestTabId = null;
-          for (const [gKey, group] of session.tabGroups) {
-            for (const [tid, ts] of group) {
-              if (!oldestTab || ts.toolCalls < oldestTab.toolCalls) {
-                oldestTab = ts;
-                oldestGroup = group;
-                oldestTabId = tid;
-              }
-            }
-          }
-          if (oldestTab) {
-            tabState = oldestTab;
-            const group = getTabGroup(session, resolvedSessionKey);
-            if (oldestGroup) oldestGroup.delete(oldestTabId);
-            group.set(tabId, tabState);
-            { const _l = tabLocks.get(oldestTabId); if (_l) _l.drain(); tabLocks.delete(oldestTabId); }
-            log('info', 'tab recycled (limit reached)', { reqId: req.reqId, tabId, recycledFrom: oldestTabId, userId });
-          } else {
+          // Recycle oldest tab to free a slot, then create new page
+          const recycled = await recycleOldestTab(session, req.reqId);
+          if (!recycled) {
             throw new Error('Maximum tabs per session reached');
           }
-        } else {
+        }
+        {
           const page = await session.context.newPage();
           tabState = createTabState(page);
           attachDownloadListener(tabState, tabId, log);
@@ -2676,15 +2693,14 @@ app.post('/tabs/open', async (req, res) => {
     
     const session = await getSession(userId);
     
-    // Check global tab limit first
-    if (getTotalTabCount() >= MAX_TABS_GLOBAL) {
-      return res.status(429).json({ error: 'Maximum global tabs reached' });
-    }
-    
+    // Recycle oldest tab when limits are reached instead of rejecting
     let totalTabs = 0;
     for (const g of session.tabGroups.values()) totalTabs += g.size;
-    if (totalTabs >= MAX_TABS_PER_SESSION) {
-      return res.status(429).json({ error: 'Maximum tabs per session reached' });
+    if (totalTabs >= MAX_TABS_PER_SESSION || getTotalTabCount() >= MAX_TABS_GLOBAL) {
+      const recycled = await recycleOldestTab(session, req.reqId);
+      if (!recycled) {
+        return res.status(429).json({ error: 'Maximum tabs per session reached' });
+      }
     }
     
     const group = getTabGroup(session, listItemId);
