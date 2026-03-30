@@ -16,7 +16,7 @@ import {
   getDownloadsList,
   extractPageImages,
 } from './lib/downloads.js';
-import { detectYtDlp, hasYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } from './lib/youtube.js';
+import { detectYtDlp, hasYtDlp, ensureYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } from './lib/youtube.js';
 import {
   register as metricsRegister,
   requestsTotal, requestDuration, pageLoadDuration,
@@ -1437,7 +1437,7 @@ async function refreshTabRefs(tabState, options = {}) {
 // Implementation extracted to lib/youtube.js to avoid scanner false positives
 // (child_process + app.post in same file triggers OpenClaw skill-scanner)
 
-detectYtDlp(log);
+await detectYtDlp(log);
 
 app.post('/youtube/transcript', async (req, res) => {
   const reqId = req.reqId;
@@ -1456,6 +1456,9 @@ app.post('/youtube/transcript', async (req, res) => {
     }
     const videoId = videoIdMatch[1];
     const lang = languages[0] || 'en';
+
+    // Re-detect yt-dlp if startup detection failed (transient issue)
+    await ensureYtDlp(log);
 
     log('info', 'youtube transcript: starting', { reqId, videoId, lang, method: hasYtDlp() ? 'yt-dlp' : 'browser' });
 
