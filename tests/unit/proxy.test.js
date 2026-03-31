@@ -2,6 +2,7 @@ import {
   normalizePlaywrightProxy,
   createProxyPool,
   buildDecodoBackconnectUsername,
+  buildProxyUrl,
 } from '../../lib/proxy.js';
 
 describe('normalizePlaywrightProxy', () => {
@@ -116,5 +117,67 @@ describe('createProxyPool', () => {
     const next = pool.getNext('ctx-1');
     expect(next.server).toBe('http://gate.decodo.com:7000');
     expect(next.username).toBe('user-sp6incny2a-country-us-state-us_california-session-ctx_1-sessionduration-10');
+  });
+});
+
+describe('buildProxyUrl', () => {
+  test('returns null when pool is null', () => {
+    expect(buildProxyUrl(null, {})).toBeNull();
+  });
+
+  test('builds backconnect proxy URL with encoded credentials', () => {
+    const config = {
+      strategy: 'backconnect',
+      username: 'sp6incny2a',
+      password: 'u4q4iklLj3Jof0=IuT',
+      backconnectHost: 'gate.decodo.com',
+      backconnectPort: 7000,
+      country: 'us',
+    };
+    const pool = createProxyPool(config);
+    const url = buildProxyUrl(pool, config);
+    expect(url).toMatch(/^http:\/\/user-sp6incny2a.*@gate\.decodo\.com:7000$/);
+    // Password with = should be percent-encoded
+    expect(url).toContain(encodeURIComponent('u4q4iklLj3Jof0=IuT'));
+  });
+
+  test('builds round_robin proxy URL', () => {
+    const config = {
+      strategy: 'round_robin',
+      host: 'us.proxy.com',
+      ports: [10001, 10002],
+      username: 'myuser',
+      password: 'mypass',
+    };
+    const pool = createProxyPool(config);
+    const url = buildProxyUrl(pool, config);
+    expect(url).toBe('http://myuser:mypass@us.proxy.com:10001');
+  });
+
+  test('round_robin without auth', () => {
+    const config = {
+      strategy: 'round_robin',
+      host: 'proxy.local',
+      ports: [8080],
+      username: '',
+      password: '',
+    };
+    const pool = createProxyPool(config);
+    const url = buildProxyUrl(pool, config);
+    expect(url).toBe('http://proxy.local:8080');
+  });
+
+  test('returns null for backconnect pool with missing password', () => {
+    const config = {
+      strategy: 'backconnect',
+      username: 'user',
+      password: '',
+      backconnectHost: 'gate.decodo.com',
+      backconnectPort: 7000,
+    };
+    const pool = createProxyPool(config);
+    // Pool won't be created without password
+    expect(pool).toBeNull();
+    expect(buildProxyUrl(pool, config)).toBeNull();
   });
 });

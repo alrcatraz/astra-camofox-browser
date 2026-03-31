@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import os from 'os';
 import { expandMacro } from './lib/macros.js';
 import { loadConfig } from './lib/config.js';
-import { normalizePlaywrightProxy, createProxyPool } from './lib/proxy.js';
+import { normalizePlaywrightProxy, createProxyPool, buildProxyUrl } from './lib/proxy.js';
 import { windowSnapshot } from './lib/snapshot.js';
 import {
   MAX_DOWNLOAD_INLINE_BYTES,
@@ -1460,14 +1460,20 @@ app.post('/youtube/transcript', async (req, res) => {
     // Re-detect yt-dlp if startup detection failed (transient issue)
     await ensureYtDlp(log);
 
-    log('info', 'youtube transcript: starting', { reqId, videoId, lang, method: hasYtDlp() ? 'yt-dlp' : 'browser' });
+    const ytDlpProxyUrl = buildProxyUrl(proxyPool, CONFIG.proxy);
+    log('info', 'youtube transcript: starting', { reqId, videoId, lang, method: hasYtDlp() ? 'yt-dlp' : 'browser', hasProxy: !!ytDlpProxyUrl });
 
     let result;
     if (hasYtDlp()) {
       try {
-        result = await ytDlpTranscript(reqId, url, videoId, lang);
+        result = await ytDlpTranscript(reqId, url, videoId, lang, ytDlpProxyUrl);
       } catch (ytErr) {
-        log('warn', 'yt-dlp failed, falling back to browser', { reqId, error: ytErr.message });
+        log('warn', 'yt-dlp threw, falling back to browser', { reqId, error: ytErr.message });
+        result = null;
+      }
+      // If yt-dlp returned an error result (e.g. no captions) or threw, try browser
+      if (!result || result.status !== 'ok') {
+        if (result) log('warn', 'yt-dlp returned error, falling back to browser', { reqId, status: result.status, code: result.code });
         result = await browserTranscript(reqId, url, videoId, lang);
       }
     } else {
