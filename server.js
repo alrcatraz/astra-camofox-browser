@@ -647,9 +647,17 @@ async function launchBrowserInstance() {
             proxySession: launchProxy?.sessionId || null,
             url: probe.url,
           });
-          await candidateBrowser.close().catch(() => {});
-          if (localVirtualDisplay) localVirtualDisplay.kill();
-          continue;
+          if (attempt < maxAttempts) {
+            await candidateBrowser.close().catch(() => {});
+            if (localVirtualDisplay) localVirtualDisplay.kill();
+            continue;
+          }
+          // Last attempt: accept browser in degraded mode rather than death-spiraling.
+          // Non-Google sites will still work; Google requests will get blocked responses.
+          log('error', 'all proxy sessions Google-blocked, accepting browser in degraded mode', {
+            maxAttempts,
+            proxySession: launchProxy?.sessionId || null,
+          });
         }
       }
 
