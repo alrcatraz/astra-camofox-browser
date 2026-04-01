@@ -811,6 +811,12 @@ function isTabDestroyedError(err) {
 
 // Centralized error handler for route catch blocks.
 // Auto-destroys dead browser sessions and returns appropriate status codes.
+function isProxyError(err) {
+  if (!err) return false;
+  const msg = err.message || '';
+  return msg.includes('NS_ERROR_PROXY') || msg.includes('proxy connection') || msg.includes('Proxy connection');
+}
+
 function handleRouteError(err, req, res, extraFields = {}) {
   const failureType = classifyError(err);
   const action = actionFromReq(req);
@@ -819,6 +825,15 @@ function handleRouteError(err, req, res, extraFields = {}) {
   const userId = req.body?.userId || req.query?.userId;
   if (userId && isDeadContextError(err)) {
     destroySession(userId);
+  }
+  // Proxy errors mean the Decodo session is dead — restart browser with fresh session
+  if (isProxyError(err) && proxyPool?.mode === 'backconnect') {
+    log('warn', 'proxy error detected, scheduling browser restart with fresh proxy session', {
+      action, userId, error: err.message,
+    });
+    restartBrowser('proxy_error').catch(e =>
+      log('error', 'proxy error browser restart failed', { error: e.message })
+    );
   }
   // Track consecutive timeouts per tab and auto-destroy stuck tabs
   if (userId && isTimeoutError(err)) {
