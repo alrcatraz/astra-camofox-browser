@@ -758,20 +758,25 @@ async function getSession(userId) {
       contextOptions.timezoneId = 'America/Los_Angeles';
       contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
     }
+    let sessionProxy = null;
     if (proxyPool?.mode === 'round_robin') {
-      const sessionProxy = proxyPool.getNext();
+      sessionProxy = proxyPool.getNext();
       contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
       log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
+    } else if (proxyPool?.mode === 'backconnect') {
+      sessionProxy = proxyPool.getNext(`ctx-${key}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`);
+      contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
+      log('info', 'session proxy assigned (backconnect)', { userId: key, sessionId: sessionProxy.sessionId });
     }
     const context = await b.newContext(contextOptions);
     
-    session = { context, tabGroups: new Map(), lastAccess: Date.now() };
+    session = { context, tabGroups: new Map(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null };
     sessions.set(key, session);
     log('info', 'session created', {
       userId: key,
       proxyMode: proxyPool?.mode || null,
-      proxyServer: browserLaunchProxy?.server || null,
-      proxySession: browserLaunchProxy?.sessionId || null,
+      proxyServer: sessionProxy?.server || browserLaunchProxy?.server || null,
+      proxySession: sessionProxy?.sessionId || browserLaunchProxy?.sessionId || null,
     });
   }
   session.lastAccess = Date.now();
@@ -826,14 +831,14 @@ function handleRouteError(err, req, res, extraFields = {}) {
   if (userId && isDeadContextError(err)) {
     destroySession(userId);
   }
-  // Proxy errors mean the Decodo session is dead — restart browser with fresh session
-  if (isProxyError(err) && proxyPool?.mode === 'backconnect') {
-    log('warn', 'proxy error detected, scheduling browser restart with fresh proxy session', {
+  // Proxy errors mean the Decodo session is dead — rotate at context level.
+  // Destroy the user's session so the next request gets a fresh context with a new proxy.
+  if (isProxyError(err) && proxyPool?.mode === 'backconnect' && userId) {
+    log('warn', 'proxy error detected, destroying user session for fresh proxy on next request', {
       action, userId, error: err.message,
     });
-    restartBrowser('proxy_error').catch(e =>
-      log('error', 'proxy error browser restart failed', { error: e.message })
-    );
+    browserRestartsTotal.labels('proxy_error').inc();
+    destroySession(userId);
   }
   // Track consecutive timeouts per tab and auto-destroy stuck tabs
   if (userId && isTimeoutError(err)) {
@@ -964,7 +969,16 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
   if (!previousTabState?.lastRequestedUrl || !isGoogleSearchUrl(previousTabState.lastRequestedUrl)) return null;
   if ((previousTabState.googleRetryCount || 0) >= 3) return null;
 
-  await restartBrowser(reason);
+  browserRestartsTotal.labels(reason).inc(); // track rotation events (not a full restart)
+
+  // Rotate at context level — create a fresh context with a new proxy session
+  // instead of restarting the entire browser (which kills ALL sessions/tabs).
+  const key = normalizeUserId(userId);
+  const oldSession = sessions.get(key);
+  if (oldSession) {
+    await oldSession.context.close().catch(() => {});
+    sessions.delete(key);
+  }
   const session = await getSession(userId);
   const group = getTabGroup(session, sessionKey);
   const page = await session.context.newPage();
@@ -975,12 +989,12 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
   group.set(tabId, tabState);
   refreshActiveTabsGauge();
 
-  log('warn', 'replaying google search on fresh browser session', {
+  log('warn', 'replaying google search on fresh context (per-context proxy rotation)', {
     reqId,
     tabId,
     retryCount: tabState.googleRetryCount,
     url: tabState.lastRequestedUrl,
-    proxySession: browserLaunchProxy?.sessionId || null,
+    proxySession: session.proxySessionId || null,
   });
 
   await withPageLoadDuration('navigate', () => page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }));
@@ -1782,9 +1796,17 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           await tabState.page.waitForTimeout(1200);
         };
 
-        const recreateTabOnFreshBrowser = async () => {
+        const recreateTabOnFreshContext = async () => {
           const previousRetryCount = tabState.googleRetryCount || 0;
-          await restartBrowser('google_search_block');
+          browserRestartsTotal.labels('google_search_block').inc();
+          // Rotate at context level — destroy this user's session and create
+          // a fresh one with a new proxy session. Does NOT restart the browser.
+          const key = normalizeUserId(userId);
+          const oldSession = sessions.get(key);
+          if (oldSession) {
+            await oldSession.context.close().catch(() => {});
+            sessions.delete(key);
+          }
           session = await getSession(userId);
           const group = getTabGroup(session, currentSessionKey);
           const page = await session.context.newPage();
@@ -1808,7 +1830,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
             url: tabState.page.url(),
             proxySession: browserLaunchProxy?.sessionId || null,
           });
-          await recreateTabOnFreshBrowser();
+          await recreateTabOnFreshContext();
           await prewarmGoogleHome();
           await navigateCurrentPage();
         }
