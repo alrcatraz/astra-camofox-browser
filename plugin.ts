@@ -449,7 +449,7 @@ export default function register(api: PluginApi) {
       const userId = ctx.agentId || fallbackUserId;
       const result = await fetchApi(baseUrl, `/tabs/${tabId}/evaluate`, {
         method: "POST",
-        body: { userId, expression },
+        body: JSON.stringify({ userId, expression }),
       });
       return toToolResult(result);
     },
