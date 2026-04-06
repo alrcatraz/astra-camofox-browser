@@ -151,6 +151,7 @@ async function startServer(
       // Server not ready yet
     }
   }
+  proc.kill();
   throw new Error("Server failed to start within 15 seconds");
 }
 
