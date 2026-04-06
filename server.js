@@ -15,19 +15,24 @@ import {
   clearSessionDownloads,
   attachDownloadListener,
   getDownloadsList,
-  extractPageImages,
 } from './lib/downloads.js';
+import { extractPageImages } from './lib/images.js';
 import { detectYtDlp, hasYtDlp, ensureYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } from './lib/youtube.js';
 import {
-  register as metricsRegister,
-  requestsTotal, requestDuration, pageLoadDuration,
-  activeTabsGauge, tabLockQueueDepth,
-  tabLockTimeoutsTotal, startMemoryReporter, stopMemoryReporter, actionFromReq,
-  failuresTotal, browserRestartsTotal, tabsDestroyedTotal,
-  sessionsExpiredTotal, tabsReapedTotal, tabsRecycledTotal, classifyError,
+  initMetrics, getRegister, isMetricsEnabled,
+  startMemoryReporter, stopMemoryReporter,
 } from './lib/metrics.js';
+import { actionFromReq, classifyError } from './lib/request-utils.js';
 
 const CONFIG = loadConfig();
+
+const {
+  requestsTotal, requestDuration, pageLoadDuration,
+  activeTabsGauge, tabLockQueueDepth,
+  tabLockTimeoutsTotal,
+  failuresTotal, browserRestartsTotal, tabsDestroyedTotal,
+  sessionsExpiredTotal, tabsReapedTotal, tabsRecycledTotal,
+} = await initMetrics({ enabled: CONFIG.prometheusEnabled });
 
 // --- Structured logging ---
 function log(level, msg, fields = {}) {
@@ -1654,8 +1659,13 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/metrics', async (_req, res) => {
-  res.set('Content-Type', metricsRegister.contentType);
-  res.send(await metricsRegister.metrics());
+  const reg = getRegister();
+  if (!reg) {
+    res.status(404).json({ error: 'Prometheus metrics disabled. Set PROMETHEUS_ENABLED=1 to enable.' });
+    return;
+  }
+  res.set('Content-Type', reg.contentType);
+  res.send(await reg.metrics());
 });
 
 // Create new tab
