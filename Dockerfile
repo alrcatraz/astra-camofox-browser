@@ -65,6 +65,6 @@ COPY lib/ ./lib/
 ENV NODE_ENV=production
 ENV CAMOFOX_PORT=3000
 
-EXPOSE 3000
+EXPOSE 9377
 
 CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
