@@ -7,6 +7,7 @@ import os from 'os';
 import { expandMacro } from './lib/macros.js';
 import { loadConfig } from './lib/config.js';
 import { normalizePlaywrightProxy, createProxyPool, buildProxyUrl } from './lib/proxy.js';
+import { createFlyHelpers } from './lib/fly.js';
 import { windowSnapshot } from './lib/snapshot.js';
 import {
   MAX_DOWNLOAD_INLINE_BYTES,
@@ -78,18 +79,12 @@ app.use((req, res, next) => {
   next();
 });
 
-// --- fly-replay middleware: route tab requests to the owning machine ---
-// If a request targets a tab owned by a different machine, respond with
-// fly-replay header so Fly's proxy replays it to the correct instance.
-app.use('/tabs/:tabId', (req, res, next) => {
-  if (!FLY_MACHINE_ID) return next(); // not on Fly, skip
-  const tabId = req.params.tabId;
-  if (!tabId || isLocalTab(tabId)) return next();
-  const owner = parseTabOwner(tabId);
-  log('info', 'fly-replay', { reqId: req.reqId, tabId, owner, self: FLY_MACHINE_ID });
-  res.set('fly-replay', `instance=${owner}`);
-  res.status(307).send();
-});
+// --- Horizontal scaling (Fly.io multi-machine) ---
+const fly = createFlyHelpers(CONFIG);
+const FLY_MACHINE_ID = fly.machineId;
+
+// Route tab requests to the owning machine via fly-replay header.
+app.use('/tabs/:tabId', fly.replayMiddleware(log));
 
 const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
 
@@ -267,34 +262,7 @@ const FAILURE_THRESHOLD = 3;
 const MAX_CONSECUTIVE_TIMEOUTS = 3;
 const TAB_LOCK_TIMEOUT_MS = 35000; // Must be > HANDLER_TIMEOUT_MS so active op times out first
 
-// --- Horizontal scaling (Fly.io multi-machine) ---
-// Tab IDs encode the owning machine: "{machineId}_{uuid}"
-// Requests for tabs on other machines get replayed via fly-replay header.
-const FLY_MACHINE_ID = CONFIG.flyMachineId;
-const FLY_APP_NAME = CONFIG.flyAppName;
-const FLY_API_TOKEN = CONFIG.flyApiToken;
-// IDLE_SHUTDOWN_MS removed — idle self-shutdown disabled
 
-function makeTabId() {
-  const uuid = crypto.randomUUID();
-  return FLY_MACHINE_ID ? `${FLY_MACHINE_ID}_${uuid}` : uuid;
-}
-
-function parseTabOwner(tabId) {
-  if (!FLY_MACHINE_ID || !tabId) return null;
-  const idx = tabId.indexOf('_');
-  if (idx === -1) return null; // legacy tab ID (no machine prefix)
-  const candidate = tabId.slice(0, idx);
-  // Fly machine IDs are hex strings (14 chars). UUIDs start with 8 hex chars then '-'.
-  // If the candidate contains '-', it's a UUID segment, not a machine ID.
-  if (candidate.includes('-')) return null;
-  return candidate;
-}
-
-function isLocalTab(tabId) {
-  const owner = parseTabOwner(tabId);
-  return owner === null || owner === FLY_MACHINE_ID;
-}
 
 // Proper mutex for tab serialization. The old Promise-chain lock on timeout proceeded
 // WITHOUT the lock, allowing concurrent Playwright operations that corrupt CDP state.
@@ -1703,7 +1671,7 @@ app.post('/tabs', async (req, res) => {
       const group = getTabGroup(session, resolvedSessionKey);
       
       const page = await session.context.newPage();
-      const tabId = makeTabId();
+      const tabId = fly.makeTabId();
       const tabState = createTabState(page);
       attachDownloadListener(tabState, tabId);
       group.set(tabId, tabState);
@@ -2760,7 +2728,7 @@ app.post('/tabs/open', async (req, res) => {
     const group = getTabGroup(session, listItemId);
     
     const page = await session.context.newPage();
-    const tabId = makeTabId();
+    const tabId = fly.makeTabId();
     const tabState = createTabState(page);
     attachDownloadListener(tabState, tabId, log);
     group.set(tabId, tabState);

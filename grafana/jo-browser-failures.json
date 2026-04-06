@@ -64,7 +64,7 @@
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum", "lastNotNull"] }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "sum by (type) (rate(jo_browser_failures_total[$interval]))",
+          "expr": "sum by (type) (rate(camofox_failures_total[$interval]))",
           "legendFormat": "{{type}}",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
@@ -84,7 +84,7 @@
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
       "targets": [
         {
-          "expr": "sum(increase(jo_browser_failures_total[24h]))",
+          "expr": "sum(increase(camofox_failures_total[24h]))",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
       ]
@@ -103,7 +103,7 @@
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
       "targets": [
         {
-          "expr": "sum(increase(jo_browser_restarts_total[24h]))",
+          "expr": "sum(increase(camofox_restarts_total[24h]))",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
       ]
@@ -122,7 +122,7 @@
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
       "targets": [
         {
-          "expr": "sum(increase(jo_browser_sessions_expired_total[24h]))",
+          "expr": "sum(increase(camofox_sessions_expired_total[24h]))",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
       ]
@@ -141,7 +141,7 @@
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
       "targets": [
         {
-          "expr": "sum(increase(jo_browser_tabs_reaped_total[24h]))",
+          "expr": "sum(increase(camofox_tabs_reaped_total[24h]))",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
       ]
@@ -161,7 +161,7 @@
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "sum by (action) (rate(jo_browser_failures_total[$interval]))",
+          "expr": "sum by (action) (rate(camofox_failures_total[$interval]))",
           "legendFormat": "{{action}}",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
@@ -182,7 +182,7 @@
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "sum by (reason) (increase(jo_browser_tabs_destroyed_total[$interval]))",
+          "expr": "sum by (reason) (increase(camofox_tabs_destroyed_total[$interval]))",
           "legendFormat": "{{reason}}",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
@@ -207,12 +207,12 @@
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "sum(rate(jo_browser_requests_total{status=\"success\"}[$interval]))",
+          "expr": "sum(rate(camofox_requests_total{status=\"success\"}[$interval]))",
           "legendFormat": "success",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         },
         {
-          "expr": "sum(rate(jo_browser_requests_total{status=\"error\"}[$interval]))",
+          "expr": "sum(rate(camofox_requests_total{status=\"error\"}[$interval]))",
           "legendFormat": "errors",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
@@ -233,7 +233,7 @@
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
       "targets": [
         {
-          "expr": "sum by (reason) (increase(jo_browser_restarts_total[$interval]))",
+          "expr": "sum by (reason) (increase(camofox_restarts_total[$interval]))",
           "legendFormat": "{{reason}}",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
@@ -258,7 +258,7 @@
       ],
       "targets": [
         {
-          "expr": "topk(15, sum by (type, action) (increase(jo_browser_failures_total[24h])) > 0)",
+          "expr": "topk(15, sum by (type, action) (increase(camofox_failures_total[24h])) > 0)",
           "format": "table",
           "instant": true,
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
@@ -281,7 +281,7 @@
       "options": { "sortBy": [{ "displayName": "Error %", "desc": true }] },
       "targets": [
         {
-          "expr": "sum by (action) (increase(jo_browser_requests_total{status=\"error\"}[24h])) / sum by (action) (increase(jo_browser_requests_total[24h])) > 0",
+          "expr": "sum by (action) (increase(camofox_requests_total{status=\"error\"}[24h])) / sum by (action) (increase(camofox_requests_total[24h])) > 0",
           "format": "table",
           "instant": true,
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
@@ -303,12 +303,12 @@
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "jo_browser_active_tabs",
+          "expr": "camofox_active_tabs",
           "legendFormat": "tabs",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         },
         {
-          "expr": "jo_browser_memory_usage_bytes",
+          "expr": "camofox_memory_usage_bytes",
           "legendFormat": "memory",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
@@ -329,7 +329,7 @@
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
       "targets": [
         {
-          "expr": "jo_browser_tab_lock_queue_depth",
+          "expr": "camofox_tab_lock_queue_depth",
           "legendFormat": "queued",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }
@@ -354,17 +354,17 @@
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(jo_browser_request_duration_seconds_bucket[$interval])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(camofox_request_duration_seconds_bucket[$interval])) by (le))",
           "legendFormat": "p50",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(jo_browser_request_duration_seconds_bucket[$interval])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(camofox_request_duration_seconds_bucket[$interval])) by (le))",
           "legendFormat": "p95",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         },
         {
-          "expr": "histogram_quantile(0.99, sum(rate(jo_browser_request_duration_seconds_bucket[$interval])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(camofox_request_duration_seconds_bucket[$interval])) by (le))",
           "legendFormat": "p99",
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
         }

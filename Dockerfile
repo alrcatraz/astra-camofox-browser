@@ -67,7 +67,7 @@ COPY lib/ ./lib/
 
 ENV NODE_ENV=production
 ENV CAMOFOX_PORT=9377
-
+# Note: override with CAMOFOX_PORT env var. Default upstream is 3000.
 EXPOSE 9377
 
 CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
