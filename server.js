@@ -2675,7 +2675,17 @@ setInterval(() => {
         session.tabGroups.delete(listItemId);
       }
     }
+    // Clean up sessions with zero tabs remaining — free browser context memory
+    if (session.tabGroups.size === 0) {
+      log('info', 'session empty after tab reaper, closing', { userId });
+      clearSessionDownloads(session).catch(() => {});
+      session.context.close().catch(() => {});
+      sessions.delete(userId);
+      sessionsExpiredTotal.inc();
+      refreshActiveTabsGauge();
+    }
   }
+  if (sessions.size === 0) scheduleBrowserIdleShutdown();
 }, 60_000);
 
 // =============================================================================
