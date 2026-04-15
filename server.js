@@ -23,6 +23,7 @@ import {
   startMemoryReporter, stopMemoryReporter,
 } from './lib/metrics.js';
 import { actionFromReq, classifyError } from './lib/request-utils.js';
+import { cleanupOrphanedTempFiles } from './lib/tmp-cleanup.js';
 
 const CONFIG = loadConfig();
 
@@ -3256,6 +3257,10 @@ const server = app.listen(PORT, async () => {
     log('info', 'server started (fly)', { port: PORT, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
   } else {
     log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
+  }
+  const tmpCleanup = cleanupOrphanedTempFiles({ tmpDir: os.tmpdir() });
+  if (tmpCleanup.removed > 0) {
+    log('info', 'cleaned up orphaned camoufox temp files', tmpCleanup);
   }
   // Pre-warm browser so first request doesn't eat a 6-7s cold start
   try {
