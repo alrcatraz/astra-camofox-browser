@@ -20,7 +20,7 @@ import {
 import { detectYtDlp, hasYtDlp, ensureYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } from './lib/youtube.js';
 import {
   register as metricsRegister,
-  requestsTotal, requestDuration, pageLoadDuration,
+  requestsTotal, requestDuration, pageLoadDuration, snapshotBytes,
   activeTabsGauge, tabLockQueueDepth,
   tabLockTimeoutsTotal, startMemoryReporter, stopMemoryReporter, actionFromReq,
   failuresTotal, browserRestartsTotal, tabsDestroyedTotal,
@@ -924,6 +924,7 @@ function createTabState(page) {
     lastSnapshot: null,
     lastRequestedUrl: null,
     googleRetryCount: 0,
+    navigateAbort: null,
   };
 }
 
@@ -1752,9 +1753,21 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
 
         const navigateCurrentPage = async () => {
           tabState.lastRequestedUrl = targetUrl;
-          await withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
-          tabState.visitedUrls.add(targetUrl);
-          tabState.lastSnapshot = null;
+          const ac = tabState.navigateAbort = new AbortController();
+          const gotoP = withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+          try {
+            await Promise.race([
+              gotoP,
+              new Promise((_, reject) => ac.signal.addEventListener('abort', () => reject(new Error('Navigation aborted: tab deleted')), { once: true })),
+            ]);
+            tabState.visitedUrls.add(targetUrl);
+            tabState.lastSnapshot = null;
+          } catch (err) {
+            gotoP.catch(() => {}); // suppress unhandled rejection from still-pending goto
+            throw err;
+          } finally {
+            tabState.navigateAbort = null;
+          }
         };
 
         const prewarmGoogleHome = async () => {
@@ -1885,6 +1898,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
         const { refs: googleRefs, snapshot: googleSnapshot } = await extractGoogleSerp(tabState.page);
         tabState.refs = googleRefs;
         tabState.lastSnapshot = googleSnapshot;
+        snapshotBytes.labels('google_serp').observe(Buffer.byteLength(googleSnapshot, 'utf8'));
         const annotatedYaml = googleSnapshot;
         const win = windowSnapshot(annotatedYaml, 0);
         const response = {
@@ -1941,6 +1955,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
       }
       
       tabState.lastSnapshot = annotatedYaml;
+      if (annotatedYaml) snapshotBytes.labels('full').observe(Buffer.byteLength(annotatedYaml, 'utf8'));
       const win = windowSnapshot(annotatedYaml, 0);
 
       const response = {
@@ -2521,6 +2536,7 @@ app.delete('/tabs/:tabId', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (found) {
+      if (found.tabState.navigateAbort) found.tabState.navigateAbort.abort();
       await clearTabDownloads(found.tabState);
       await safePageClose(found.tabState.page);
       found.group.delete(req.params.tabId);
@@ -2880,6 +2896,7 @@ app.get('/snapshot', async (req, res) => {
       const { refs: googleRefs, snapshot: googleSnapshot } = await extractGoogleSerp(tabState.page);
       tabState.refs = googleRefs;
       tabState.lastSnapshot = googleSnapshot;
+      snapshotBytes.labels('google_serp').observe(Buffer.byteLength(googleSnapshot, 'utf8'));
       const annotatedYaml = googleSnapshot;
       const win = windowSnapshot(annotatedYaml, 0);
       const response = {
@@ -2924,6 +2941,7 @@ app.get('/snapshot', async (req, res) => {
     }
     
     tabState.lastSnapshot = annotatedYaml;
+    if (annotatedYaml) snapshotBytes.labels('full').observe(Buffer.byteLength(annotatedYaml, 'utf8'));
     const win = windowSnapshot(annotatedYaml, 0);
 
     const response = {
