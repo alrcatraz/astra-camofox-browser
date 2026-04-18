@@ -9,7 +9,9 @@ module.exports = {
   
   // Test file patterns
   testMatch: [
-    '**/tests/**/*.test.js'
+    '**/tests/**/*.test.js',
+    '**/plugins/**/*.test.js',
+    '**/scripts/**/*.test.js'
   ],
   
   // Ignore patterns

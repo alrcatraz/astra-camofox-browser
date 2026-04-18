@@ -37,6 +37,8 @@
   "files": [
     "server.js",
     "lib/",
+    "plugins/",
+    "camofox.config.json",
     "plugin.ts",
     "openclaw.plugin.json",
     "scripts/",
@@ -54,8 +56,10 @@
     "start": "node server.js",
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit",
     "test:e2e": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit tests/e2e",
+    "test:plugins": "NODE_OPTIONS='--experimental-vm-modules' jest --forceExit plugins/",
     "test:live": "RUN_LIVE_TESTS=1 NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit tests/live",
     "test:debug": "DEBUG_SERVER=1 NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit",
+    "plugin": "node scripts/plugin.js",
     "version:sync": "node scripts/sync-version.js",
     "version": "node scripts/sync-version.js && git add openclaw.plugin.json",
     "postinstall": "npx camoufox-js fetch || true"
