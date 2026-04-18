@@ -26,6 +26,7 @@ import {
 } from './lib/metrics.js';
 import { actionFromReq, classifyError } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles } from './lib/tmp-cleanup.js';
+import { coalesceInflight } from './lib/inflight.js';
 
 const CONFIG = loadConfig();
 
@@ -488,10 +489,7 @@ async function restartBrowser(reason) {
   log('error', 'restarting browser', { reason, failures: healthState.consecutiveNavFailures });
   pluginEvents.emit('browser:restart', { reason });
   try {
-    for (const [, session] of sessions) {
-      await session.context.close().catch(() => {});
-    }
-    sessions.clear();
+    await closeAllSessions(`browser_restart:${reason}`, { clearDownloads: true, clearLocks: true });
     if (browser) {
       await browser.close().catch(() => {});
       browser = null;
@@ -675,10 +673,7 @@ async function ensureBrowser() {
     log('warn', 'browser disconnected, clearing dead sessions and relaunching', {
       deadSessions: sessions.size,
     });
-    for (const [userId, session] of sessions) {
-      await session.context.close().catch(() => {});
-    }
-    sessions.clear();
+    await closeAllSessions('browser_disconnected', { clearDownloads: true, clearLocks: true });
     // Clean up virtual display from dead browser before relaunching
     if (virtualDisplay) {
       virtualDisplay.kill();
@@ -702,6 +697,53 @@ function normalizeUserId(userId) {
   return String(userId);
 }
 
+const sessionCreations = new Map();
+
+function clearSessionLocks(session) {
+  if (!session?.tabGroups) return;
+  for (const [, group] of session.tabGroups) {
+    for (const tabId of group.keys()) {
+      const lock = tabLocks.get(tabId);
+      if (lock) {
+        lock.drain();
+        tabLocks.delete(tabId);
+      }
+    }
+  }
+  refreshTabLockQueueDepth();
+}
+
+async function closeSession(userId, session, {
+  reason = 'session_closed',
+  clearDownloads = true,
+  clearLocks = true,
+} = {}) {
+  if (!session) return;
+
+  const key = normalizeUserId(userId);
+
+  if (clearDownloads) {
+    await clearSessionDownloads(session).catch(() => {});
+  }
+
+  await session.context.close().catch(() => {});
+  sessions.delete(key);
+  pluginEvents.emit('session:destroyed', { userId: key, reason });
+
+  if (clearLocks) {
+    clearSessionLocks(session);
+  }
+
+  refreshActiveTabsGauge();
+}
+
+async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {
+  const openSessions = Array.from(sessions.entries());
+  for (const [userId, session] of openSessions) {
+    await closeSession(userId, session, { reason, clearDownloads, clearLocks });
+  }
+}
+
 async function getSession(userId) {
   const key = normalizeUserId(userId);
   let session = sessions.get(key);
@@ -717,50 +759,52 @@ async function getSession(userId) {
         session.context.pages();
       } catch (err) {
         log('warn', 'session context dead, recreating', { userId: key, error: err.message });
-        session.context.close().catch(() => {});
-        sessions.delete(key);
+        await closeSession(key, session, { reason: 'dead_context', clearDownloads: true, clearLocks: true });
         session = null;
       }
     }
   }
   
   if (!session) {
-    if (sessions.size >= MAX_SESSIONS) {
-      throw new Error('Maximum concurrent sessions reached');
-    }
-    const b = await ensureBrowser();
-    const contextOptions = {
-      viewport: { width: 1280, height: 720 },
-      permissions: ['geolocation'],
-    };
-    // When geoip is active (proxy configured), camoufox auto-configures
-    // locale/timezone/geolocation from the proxy IP. Without proxy, use defaults.
-    if (!CONFIG.proxy.host) {
-      contextOptions.locale = 'en-US';
-      contextOptions.timezoneId = 'America/Los_Angeles';
-      contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
-    }
-    let sessionProxy = null;
-    if (proxyPool?.canRotateSessions) {
-      sessionProxy = proxyPool.getNext(`ctx-${key}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`);
-      contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
-      log('info', 'session proxy assigned', { userId: key, sessionId: sessionProxy.sessionId });
-    } else if (proxyPool) {
-      sessionProxy = proxyPool.getNext();
-      contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
-      log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
-    }
-    pluginEvents.emit('session:creating', { userId: key, contextOptions });
-    const context = await b.newContext(contextOptions);
-    
-    session = { context, tabGroups: new Map(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null };
-    sessions.set(key, session);
-    pluginEvents.emit('session:created', { userId: key, context });
-    log('info', 'session created', {
-      userId: key,
-      proxyMode: proxyPool?.mode || null,
-      proxyServer: sessionProxy?.server || browserLaunchProxy?.server || null,
-      proxySession: sessionProxy?.sessionId || browserLaunchProxy?.sessionId || null,
+    session = await coalesceInflight(sessionCreations, key, async () => {
+      if (sessions.size >= MAX_SESSIONS) {
+        throw new Error('Maximum concurrent sessions reached');
+      }
+      const b = await ensureBrowser();
+      const contextOptions = {
+        viewport: { width: 1280, height: 720 },
+        permissions: ['geolocation'],
+      };
+      // When geoip is active (proxy configured), camoufox auto-configures
+      // locale/timezone/geolocation from the proxy IP. Without proxy, use defaults.
+      if (!CONFIG.proxy.host) {
+        contextOptions.locale = 'en-US';
+        contextOptions.timezoneId = 'America/Los_Angeles';
+        contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
+      }
+      let sessionProxy = null;
+      if (proxyPool?.canRotateSessions) {
+        sessionProxy = proxyPool.getNext(`ctx-${key}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`);
+        contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
+        log('info', 'session proxy assigned', { userId: key, sessionId: sessionProxy.sessionId });
+      } else if (proxyPool) {
+        sessionProxy = proxyPool.getNext();
+        contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
+        log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
+      }
+      pluginEvents.emit('session:creating', { userId: key, contextOptions });
+      const context = await b.newContext(contextOptions);
+      
+      const created = { context, tabGroups: new Map(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null };
+      sessions.set(key, created);
+      pluginEvents.emit('session:created', { userId: key, context });
+      log('info', 'session created', {
+        userId: key,
+        proxyMode: proxyPool?.mode || null,
+        proxyServer: sessionProxy?.server || browserLaunchProxy?.server || null,
+        proxySession: sessionProxy?.sessionId || browserLaunchProxy?.sessionId || null,
+      });
+      return created;
     });
   }
   session.lastAccess = Date.now();
@@ -921,9 +965,8 @@ function destroySession(userId) {
   const session = sessions.get(key);
   if (!session) return;
   log('warn', 'destroying dead session', { userId: key });
-  session.context.close().catch(() => {});
   sessions.delete(key);
-  pluginEvents.emit('session:destroyed', { userId: key, reason: 'destroyed' });
+  closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
 }
 
 function findTab(session, tabId) {
@@ -968,8 +1011,7 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
   const key = normalizeUserId(userId);
   const oldSession = sessions.get(key);
   if (oldSession) {
-    await oldSession.context.close().catch(() => {});
-    sessions.delete(key);
+    await closeSession(key, oldSession, { reason: 'google_rotate_context', clearDownloads: true, clearLocks: true });
   }
   const session = await getSession(userId);
   const group = getTabGroup(session, sessionKey);
@@ -1646,8 +1688,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           const key = normalizeUserId(userId);
           const oldSession = sessions.get(key);
           if (oldSession) {
-            await oldSession.context.close().catch(() => {});
-            sessions.delete(key);
+            await closeSession(key, oldSession, { reason: 'google_blocked_context_rotate', clearDownloads: true, clearLocks: true });
           }
           session = await getSession(userId);
           const group = getTabGroup(session, currentSessionKey);
@@ -2485,21 +2526,7 @@ app.delete('/sessions/:userId', async (req, res) => {
     const userId = normalizeUserId(req.params.userId);
     const session = sessions.get(userId);
     if (session) {
-      await clearSessionDownloads(session);
-      await session.context.close();
-      sessions.delete(userId);
-      // Remove any lingering tab locks for the session
-      for (const [listItemId, group] of session.tabGroups) {
-        for (const tabId of group.keys()) {
-          const lock = tabLocks.get(tabId);
-          if (lock) {
-            lock.drain();
-            tabLocks.delete(tabId);
-          }
-        }
-      }
-      refreshTabLockQueueDepth();
-      refreshActiveTabsGauge();
+      await closeSession(userId, session, { reason: 'api_delete_session', clearDownloads: true, clearLocks: true });
       log('info', 'session closed', { userId });
     }
     if (sessions.size === 0) scheduleBrowserIdleShutdown();
@@ -2513,17 +2540,13 @@ app.delete('/sessions/:userId', async (req, res) => {
 // Cleanup stale sessions
 setInterval(() => {
   const now = Date.now();
-  for (const [userId, session] of sessions) {
+  for (const [userId, session] of Array.from(sessions.entries())) {
     if (now - session.lastAccess > SESSION_TIMEOUT_MS) {
       session._closing = true;
       const idleMs = now - session.lastAccess;
       sessionsExpiredTotal.inc();
       pluginEvents.emit('session:expired', { userId, idleMs });
-      clearSessionDownloads(session).catch(() => {});
-      session.context.close().catch(() => {});
-      sessions.delete(userId);
-      pluginEvents.emit('session:destroyed', { userId, reason: 'expired' });
-      refreshActiveTabsGauge();
+      closeSession(userId, session, { reason: 'session_timeout', clearDownloads: true, clearLocks: true }).catch(() => {});
       log('info', 'session expired', { userId });
     }
   }
@@ -2569,12 +2592,8 @@ setInterval(() => {
     if (session.tabGroups.size === 0) {
       session._closing = true;
       log('info', 'session empty after tab reaper, closing', { userId });
-      clearSessionDownloads(session).catch(() => {});
-      session.context.close().catch(() => {});
-      sessions.delete(userId);
-      pluginEvents.emit('session:destroyed', { userId, reason: 'tab_reaper_empty' });
+      closeSession(userId, session, { reason: 'tab_reaper_empty_session', clearDownloads: true, clearLocks: true }).catch(() => {});
       sessionsExpiredTotal.inc();
-      refreshActiveTabsGauge();
     }
   }
   if (sessions.size === 0) scheduleBrowserIdleShutdown();
@@ -2702,26 +2721,7 @@ app.post('/stop', async (req, res) => {
       await browser.close().catch(() => {});
       browser = null;
     }
-    const cleanupTasks = [];
-    for (const session of sessions.values()) {
-      cleanupTasks.push(clearSessionDownloads(session));
-    }
-    await Promise.all(cleanupTasks);
-    for (const session of sessions.values()) {
-      for (const [, group] of session.tabGroups) {
-        for (const tabId of group.keys()) {
-          const lock = tabLocks.get(tabId);
-          if (lock) {
-            lock.drain();
-            tabLocks.delete(tabId);
-          }
-        }
-      }
-    }
-    tabLocks.clear();
-    sessions.clear();
-    refreshActiveTabsGauge();
-    refreshTabLockQueueDepth();
+    await closeAllSessions('admin_stop', { clearDownloads: true, clearLocks: true });
     res.json({ ok: true, stopped: true, profile: 'camoufox' });
   } catch (err) {
     res.status(500).json({ ok: false, error: safeError(err) });
@@ -3143,9 +3143,11 @@ async function gracefulShutdown(signal) {
   server.close();
   stopMemoryReporter();
 
-  for (const [userId, session] of sessions) {
-    await session.context.close().catch(() => {});
-  }
+  await closeAllSessions(`shutdown:${signal}`, {
+    clearDownloads: false,
+    clearLocks: false,
+  });
+
   if (browser) await browser.close().catch(() => {});
   process.exit(0);
 }
@@ -3171,6 +3173,7 @@ const pluginCtx = {
   ensureBrowser,
   getSession,
   destroySession,
+  closeSession,
   withUserLimit,
   safePageClose,
   normalizeUserId,
