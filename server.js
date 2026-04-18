@@ -8,6 +8,8 @@ import { expandMacro } from './lib/macros.js';
 import { loadConfig } from './lib/config.js';
 import { normalizePlaywrightProxy, createProxyPool, buildProxyUrl } from './lib/proxy.js';
 import { createFlyHelpers } from './lib/fly.js';
+import { createPluginEvents, loadPlugins } from './lib/plugins.js';
+import { requireAuth, timingSafeCompare as _timingSafeCompare, isLoopbackAddress as _isLoopbackAddress } from './lib/auth.js';
 import { windowSnapshot } from './lib/snapshot.js';
 import {
   MAX_DOWNLOAD_INLINE_BYTES,
@@ -17,7 +19,7 @@ import {
   getDownloadsList,
 } from './lib/downloads.js';
 import { extractPageImages } from './lib/images.js';
-import { detectYtDlp, hasYtDlp, ensureYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } from './lib/youtube.js';
+
 import {
   initMetrics, getRegister, isMetricsEnabled,
   startMemoryReporter, stopMemoryReporter,
@@ -26,6 +28,12 @@ import { actionFromReq, classifyError } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles } from './lib/tmp-cleanup.js';
 
 const CONFIG = loadConfig();
+
+// --- Plugin event bus ---
+const pluginEvents = createPluginEvents();
+
+// --- Shared auth middleware ---
+const authMiddleware = () => requireAuth(CONFIG);
 
 const {
   requestsTotal, requestDuration, pageLoadDuration, snapshotBytes,
@@ -107,16 +115,9 @@ const SKIP_PATTERNS = [
   /date/i, /calendar/i, /picker/i, /datepicker/i
 ];
 
-function timingSafeCompare(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) {
-    crypto.timingSafeEqual(bufA, bufA);
-    return false;
-  }
-  return crypto.timingSafeEqual(bufA, bufB);
-}
+// timingSafeCompare and isLoopbackAddress imported from lib/auth.js
+const timingSafeCompare = _timingSafeCompare;
+const isLoopbackAddress = _isLoopbackAddress;
 
 // Custom error for stale/unknown element refs — returned as 422 instead of 500
 class StaleRefsError extends Error {
@@ -159,10 +160,7 @@ function validateUrl(url) {
   }
 }
 
-function isLoopbackAddress(address) {
-  if (!address) return false;
-  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
-}
+// isLoopbackAddress — now imported from lib/auth.js (see top of file)
 
 // Import cookies into a user's browser context (Playwright cookies format)
 // POST /sessions/:userId/cookies { cookies: Cookie[] }
@@ -239,6 +237,7 @@ app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (r
     await session.context.addCookies(sanitized);
     const result = { ok: true, userId: String(userId), count: sanitized.length };
     log('info', 'cookies imported', { reqId: req.reqId, userId: String(userId), count: sanitized.length });
+    pluginEvents.emit('session:cookies:import', { userId: String(userId), count: sanitized.length });
     res.json(result);
   } catch (err) {
     failuresTotal.labels(classifyError(err), 'set_cookies').inc();
@@ -487,6 +486,7 @@ async function restartBrowser(reason) {
   healthState.isRecovering = true;
   browserRestartsTotal.labels(reason).inc();
   log('error', 'restarting browser', { reason, failures: healthState.consecutiveNavFailures });
+  pluginEvents.emit('browser:restart', { reason });
   try {
     for (const [, session] of sessions) {
       await session.context.close().catch(() => {});
@@ -496,6 +496,7 @@ async function restartBrowser(reason) {
       await browser.close().catch(() => {});
       browser = null;
     }
+    pluginEvents.emit('browser:closed', { reason });
     browserLaunchPromise = null;
     await ensureBrowser();
     healthState.consecutiveNavFailures = 0;
@@ -609,6 +610,7 @@ async function launchBrowserInstance() {
         virtual_display: vdDisplay,
       });
       options.proxy = normalizePlaywrightProxy(options.proxy);
+      pluginEvents.emit('browser:launching', { options });
 
       candidateBrowser = await firefox.launch(options);
 
@@ -639,6 +641,7 @@ async function launchBrowserInstance() {
       browserLaunchProxy = launchProxy;
       browser = candidateBrowser;
       attachBrowserCleanup(browser, localVirtualDisplay);
+      pluginEvents.emit('browser:launched', { browser, display: vdDisplay });
 
       log('info', 'camoufox launched', {
         attempt,
@@ -747,10 +750,12 @@ async function getSession(userId) {
       contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
       log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
     }
+    pluginEvents.emit('session:creating', { userId: key, contextOptions });
     const context = await b.newContext(contextOptions);
     
     session = { context, tabGroups: new Map(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null };
     sessions.set(key, session);
+    pluginEvents.emit('session:created', { userId: key, context });
     log('info', 'session created', {
       userId: key,
       proxyMode: proxyPool?.mode || null,
@@ -807,6 +812,10 @@ function handleRouteError(err, req, res, extraFields = {}) {
   failuresTotal.labels(failureType, action).inc();
 
   const userId = req.body?.userId || req.query?.userId;
+  const tabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
+  if (tabId) {
+    pluginEvents.emit('tab:error', { userId, tabId, error: err });
+  }
   if (userId && isDeadContextError(err)) {
     destroySession(userId);
   }
@@ -866,6 +875,7 @@ function destroyTab(session, tabId, reason) {
       if (group.size === 0) session.tabGroups.delete(listItemId);
       refreshActiveTabsGauge();
       if (reason) tabsDestroyedTotal.labels(reason).inc();
+      pluginEvents.emit('tab:destroyed', { userId: null, tabId, reason: reason || 'unknown' });
       return true;
     }
   }
@@ -901,6 +911,7 @@ async function recycleOldestTab(session, reqId) {
   if (lock) { lock.drain(); tabLocks.delete(oldestTabId); }
   refreshTabLockQueueDepth();
   tabsRecycledTotal.inc();
+  pluginEvents.emit('tab:recycled', { userId: null, tabId: oldestTabId });
   log('info', 'tab recycled (limit reached)', { reqId, recycledTabId: oldestTabId, recycledFromGroup: oldestGroupKey });
   return { recycledTabId: oldestTabId, recycledFromGroup: oldestGroupKey };
 }
@@ -912,6 +923,7 @@ function destroySession(userId) {
   log('warn', 'destroying dead session', { userId: key });
   session.context.close().catch(() => {});
   sessions.delete(key);
+  pluginEvents.emit('session:destroyed', { userId: key, reason: 'destroyed' });
 }
 
 function findTab(session, tabId) {
@@ -965,7 +977,7 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
   const tabState = createTabState(page);
   tabState.googleRetryCount = (previousTabState.googleRetryCount || 0) + 1;
   tabState.lastRequestedUrl = previousTabState.lastRequestedUrl;
-  attachDownloadListener(tabState, tabId, log);
+  attachDownloadListener(tabState, tabId, log, pluginEvents);
   group.set(tabId, tabState);
   refreshActiveTabsGauge();
 
@@ -1454,196 +1466,6 @@ async function refreshTabRefs(tabState, options = {}) {
   return refreshedRefs;
 }
 
-// --- YouTube transcript ---
-// Implementation extracted to lib/youtube.js to avoid scanner false positives
-// (child_process + app.post in same file triggers OpenClaw skill-scanner)
-
-await detectYtDlp(log);
-
-app.post('/youtube/transcript', async (req, res) => {
-  const reqId = req.reqId;
-  try {
-    const { url, languages = ['en'] } = req.body;
-    if (!url) return res.status(400).json({ error: 'url is required' });
-
-    const urlErr = validateUrl(url);
-    if (urlErr) return res.status(400).json({ error: urlErr });
-
-    const videoIdMatch = url.match(
-      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/
-    );
-    if (!videoIdMatch) {
-      return res.status(400).json({ error: 'Could not extract YouTube video ID from URL' });
-    }
-    const videoId = videoIdMatch[1];
-    const lang = languages[0] || 'en';
-
-    // Re-detect yt-dlp if startup detection failed (transient issue)
-    await ensureYtDlp(log);
-
-    const ytDlpProxyUrl = buildProxyUrl(proxyPool, CONFIG.proxy);
-    log('info', 'youtube transcript: starting', { reqId, videoId, lang, method: hasYtDlp() ? 'yt-dlp' : 'browser', hasProxy: !!ytDlpProxyUrl });
-
-    let result;
-    if (hasYtDlp()) {
-      try {
-        result = await ytDlpTranscript(reqId, url, videoId, lang, ytDlpProxyUrl);
-      } catch (ytErr) {
-        log('warn', 'yt-dlp threw, falling back to browser', { reqId, error: ytErr.message });
-        result = null;
-      }
-      // If yt-dlp returned an error result (e.g. no captions) or threw, try browser
-      if (!result || result.status !== 'ok') {
-        if (result) log('warn', 'yt-dlp returned error, falling back to browser', { reqId, status: result.status, code: result.code });
-        result = await browserTranscript(reqId, url, videoId, lang);
-      }
-    } else {
-      result = await browserTranscript(reqId, url, videoId, lang);
-    }
-
-    log('info', 'youtube transcript: done', { reqId, videoId, status: result.status, words: result.total_words });
-    res.json(result);
-  } catch (err) {
-    failuresTotal.labels(classifyError(err), 'youtube_transcript').inc();
-    log('error', 'youtube transcript failed', { reqId, error: err.message, stack: err.stack });
-    res.status(500).json({ error: safeError(err) });
-  }
-});
-
-// Browser fallback — play video, intercept timedtext network response
-async function browserTranscript(reqId, url, videoId, lang) {
-  return await withUserLimit('__yt_transcript__', async () => {
-    await ensureBrowser();
-    const session = await getSession('__yt_transcript__');
-    const page = await session.context.newPage();
-
-    try {
-      await page.addInitScript(() => {
-        const origPlay = HTMLMediaElement.prototype.play;
-        HTMLMediaElement.prototype.play = function() { this.volume = 0; this.muted = true; return origPlay.call(this); };
-      });
-
-      let interceptedCaptions = null;
-      page.on('response', async (response) => {
-        const respUrl = response.url();
-        if (respUrl.includes('/api/timedtext') && respUrl.includes(`v=${videoId}`) && !interceptedCaptions) {
-          try {
-            const body = await response.text();
-            if (body && body.length > 0) interceptedCaptions = body;
-          } catch {}
-        }
-      });
-
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAVIGATE_TIMEOUT_MS });
-      await page.waitForTimeout(2000);
-
-      // Extract caption track URLs and metadata from ytInitialPlayerResponse
-      const meta = await page.evaluate(() => {
-        const r = window.ytInitialPlayerResponse || (typeof ytInitialPlayerResponse !== 'undefined' ? ytInitialPlayerResponse : null);
-        if (!r) return { title: '', tracks: [] };
-        const tracks = r?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
-        return {
-          title: r?.videoDetails?.title || '',
-          tracks: tracks.map(t => ({ code: t.languageCode, name: t.name?.simpleText || t.languageCode, kind: t.kind || 'manual', url: t.baseUrl })),
-        };
-      });
-
-      log('info', 'youtube transcript: extracted caption tracks', { reqId, title: meta.title, trackCount: meta.tracks.length, tracks: meta.tracks.map(t => t.code) });
-
-      // Strategy A: Fetch caption track URL directly from ytInitialPlayerResponse
-      // These URLs are freshly signed by YouTube and work immediately
-      if (meta.tracks && meta.tracks.length > 0) {
-        const track = meta.tracks.find(t => t.code === lang) || meta.tracks[0];
-        if (track && track.url) {
-          const captionUrl = track.url + (track.url.includes('?') ? '&' : '?') + 'fmt=json3';
-          log('info', 'youtube transcript: fetching caption track', { reqId, lang: track.code, url: captionUrl.substring(0, 100) });
-          try {
-            const captionResp = await page.evaluate(async (fetchUrl) => {
-              const resp = await fetch(fetchUrl);
-              return resp.ok ? await resp.text() : null;
-            }, captionUrl);
-            if (captionResp && captionResp.length > 0) {
-              let transcriptText = null;
-              if (captionResp.trimStart().startsWith('{')) transcriptText = parseJson3(captionResp);
-              else if (captionResp.includes('WEBVTT')) transcriptText = parseVtt(captionResp);
-              else if (captionResp.includes('<text')) transcriptText = parseXml(captionResp);
-              if (transcriptText && transcriptText.trim()) {
-                return {
-                  status: 'ok', transcript: transcriptText,
-                  video_url: url, video_id: videoId, video_title: meta.title,
-                  language: track.code, total_words: transcriptText.split(/\s+/).length,
-                  available_languages: meta.tracks.map(t => ({ code: t.code, name: t.name, kind: t.kind })),
-                };
-              }
-            }
-          } catch (fetchErr) {
-            log('warn', 'youtube transcript: caption track fetch failed', { reqId, error: fetchErr.message });
-          }
-        }
-      }
-
-      // Strategy B: Play video and intercept timedtext network response
-      await page.evaluate(() => {
-        const v = document.querySelector('video');
-        if (v) { v.muted = true; v.play().catch(() => {}); }
-      }).catch(() => {});
-
-      for (let i = 0; i < 40 && !interceptedCaptions; i++) {
-        await page.waitForTimeout(500);
-      }
-
-      if (!interceptedCaptions) {
-        return {
-          status: 'error', code: 404,
-          message: 'No captions available for this video',
-          video_url: url, video_id: videoId, title: meta.title,
-        };
-      }
-
-      log('info', 'youtube transcript: intercepted captions', { reqId, len: interceptedCaptions.length });
-
-      let transcriptText = null;
-      if (interceptedCaptions.trimStart().startsWith('{')) transcriptText = parseJson3(interceptedCaptions);
-      else if (interceptedCaptions.includes('WEBVTT')) transcriptText = parseVtt(interceptedCaptions);
-      else if (interceptedCaptions.includes('<text')) transcriptText = parseXml(interceptedCaptions);
-
-      if (!transcriptText || !transcriptText.trim()) {
-        return {
-          status: 'error', code: 404,
-          message: 'Caption data intercepted but could not be parsed',
-          video_url: url, video_id: videoId, title: meta.title,
-        };
-      }
-
-      return {
-        status: 'ok', transcript: transcriptText,
-        video_url: url, video_id: videoId, video_title: meta.title,
-        language: lang, total_words: transcriptText.split(/\s+/).length,
-        available_languages: meta.languages,
-      };
-    } finally {
-      await safePageClose(page);
-      // Clean up transcript session if no live pages remain.
-      // YT transcript pages aren't tracked in tabGroups, so we must check
-      // actual context pages to avoid closing while concurrent requests are active.
-      const ytKey = normalizeUserId('__yt_transcript__');
-      const ytSession = sessions.get(ytKey);
-      if (ytSession && !ytSession._closing) {
-        try {
-          const remainingPages = ytSession.context.pages();
-          if (remainingPages.length === 0) {
-            ytSession._closing = true;
-            ytSession.context.close().catch(() => {});
-            sessions.delete(ytKey);
-          }
-        } catch {
-          // Context already dead — just clean up the map entry
-          sessions.delete(ytKey);
-        }
-      }
-    }
-  });
-}
 
 app.get('/health', (req, res) => {
   if (healthState.isRecovering) {
@@ -1712,7 +1534,7 @@ app.post('/tabs', async (req, res) => {
       const page = await session.context.newPage();
       const tabId = fly.makeTabId();
       const tabState = createTabState(page);
-      attachDownloadListener(tabState, tabId);
+      attachDownloadListener(tabState, tabId, log, pluginEvents);
       group.set(tabId, tabState);
       refreshActiveTabsGauge();
       
@@ -1724,6 +1546,7 @@ app.post('/tabs', async (req, res) => {
         tabState.visitedUrls.add(url);
       }
       
+      pluginEvents.emit('tab:created', { userId, tabId, page, url: page.url() });
       log('info', 'tab created', { reqId: req.reqId, tabId, userId, sessionKey: resolvedSessionKey, url: page.url() });
       return { tabId, url: page.url() };
     })(), requestTimeoutMs(), 'tab create');
@@ -1764,7 +1587,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         {
           const page = await session.context.newPage();
           tabState = createTabState(page);
-          attachDownloadListener(tabState, tabId, log);
+          attachDownloadListener(tabState, tabId, log, pluginEvents);
           const group = getTabGroup(session, resolvedSessionKey);
           group.set(tabId, tabState);
           refreshActiveTabsGauge();
@@ -1831,7 +1654,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           const page = await session.context.newPage();
           tabState = createTabState(page);
           tabState.googleRetryCount = previousRetryCount + 1;
-          attachDownloadListener(tabState, tabId, log);
+          attachDownloadListener(tabState, tabId, log, pluginEvents);
           group.set(tabId, tabState);
           refreshActiveTabsGauge();
         };
@@ -1872,6 +1695,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
     })(), requestTimeoutMs(), 'navigate'));
     
     log('info', 'navigated', { reqId: req.reqId, tabId, url: result.url });
+    pluginEvents.emit('tab:navigated', { userId: req.body.userId, tabId, url: result.url, prevUrl: null });
     res.json(result);
   } catch (err) {
     log('error', 'navigate failed', { reqId: req.reqId, tabId, error: err.message });
@@ -2014,6 +1838,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
       return response;
     })(), requestTimeoutMs(), 'snapshot'));
 
+    pluginEvents.emit('tab:snapshot', { userId: req.query.userId, tabId: req.params.tabId, snapshot: result.snapshot });
     log('info', 'snapshot', { reqId: req.reqId, tabId: req.params.tabId, url: result.url, snapshotLen: result.snapshot?.length, refsCount: result.refsCount, hasScreenshot: !!result.screenshot, truncated: result.truncated });
     res.json(result);
   } catch (err) {
@@ -2186,6 +2011,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     }));
     
     log('info', 'clicked', { reqId: req.reqId, tabId, url: result.url });
+    pluginEvents.emit('tab:click', { userId: req.body.userId, tabId, ref: req.body.ref, selector: req.body.selector });
     res.json(result);
   } catch (err) {
     log('error', 'click failed', { reqId: req.reqId, tabId, error: err.message });
@@ -2267,6 +2093,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
       if (shouldSubmit) await tabState.page.keyboard.press('Enter');
     });
     
+    pluginEvents.emit('tab:type', { userId: req.body.userId, tabId, text: req.body.text, ref: req.body.ref, mode: req.body.mode || 'fill' });
     res.json({ ok: true });
   } catch (err) {
     log('error', 'type failed', { reqId: req.reqId, error: err.message });
@@ -2309,6 +2136,7 @@ app.post('/tabs/:tabId/press', async (req, res) => {
       await tabState.page.keyboard.press(key);
     });
     
+    pluginEvents.emit('tab:press', { userId, tabId, key });
     res.json({ ok: true });
   } catch (err) {
     log('error', 'press failed', { reqId: req.reqId, error: err.message });
@@ -2332,6 +2160,7 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     await tabState.page.mouse.wheel(isVertical ? 0 : delta, isVertical ? delta : 0);
     await tabState.page.waitForTimeout(300);
     
+    pluginEvents.emit('tab:scroll', { userId, tabId: req.params.tabId, direction, amount });
     res.json({ ok: true });
   } catch (err) {
     log('error', 'scroll failed', { reqId: req.reqId, error: err.message });
@@ -2534,6 +2363,7 @@ app.get('/tabs/:tabId/screenshot', async (req, res) => {
     
     const { tabState } = found;
     const buffer = await tabState.page.screenshot({ type: 'png', fullPage });
+    pluginEvents.emit('tab:screenshot', { userId, tabId: req.params.tabId, buffer });
     res.set('Content-Type', 'image/png');
     res.send(buffer);
   } catch (err) {
@@ -2582,7 +2412,9 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, re
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
 
+    pluginEvents.emit('tab:evaluate', { userId, tabId: req.params.tabId, expression });
     const result = await tabState.page.evaluate(expression);
+    pluginEvents.emit('tab:evaluated', { userId, tabId: req.params.tabId, result });
     log('info', 'evaluate', { reqId: req.reqId, tabId: req.params.tabId, userId, resultType: typeof result });
     res.json({ ok: true, result });
   } catch (err) {
@@ -2684,10 +2516,13 @@ setInterval(() => {
   for (const [userId, session] of sessions) {
     if (now - session.lastAccess > SESSION_TIMEOUT_MS) {
       session._closing = true;
+      const idleMs = now - session.lastAccess;
       sessionsExpiredTotal.inc();
+      pluginEvents.emit('session:expired', { userId, idleMs });
       clearSessionDownloads(session).catch(() => {});
       session.context.close().catch(() => {});
       sessions.delete(userId);
+      pluginEvents.emit('session:destroyed', { userId, reason: 'expired' });
       refreshActiveTabsGauge();
       log('info', 'session expired', { userId });
     }
@@ -2737,6 +2572,7 @@ setInterval(() => {
       clearSessionDownloads(session).catch(() => {});
       session.context.close().catch(() => {});
       sessions.delete(userId);
+      pluginEvents.emit('session:destroyed', { userId, reason: 'tab_reaper_empty' });
       sessionsExpiredTotal.inc();
       refreshActiveTabsGauge();
     }
@@ -2823,7 +2659,7 @@ app.post('/tabs/open', async (req, res) => {
     const page = await session.context.newPage();
     const tabId = fly.makeTabId();
     const tabState = createTabState(page);
-    attachDownloadListener(tabState, tabId, log);
+    attachDownloadListener(tabState, tabId, log, pluginEvents);
     group.set(tabId, tabState);
     refreshActiveTabsGauge();
     
@@ -3281,6 +3117,7 @@ setInterval(async () => {
 
 // Crash logging
 process.on('uncaughtException', (err) => {
+  pluginEvents.emit('browser:error', { error: err });
   log('error', 'uncaughtException', { error: err.message, stack: err.stack });
   process.exit(1);
 });
@@ -3295,6 +3132,7 @@ async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   log('info', 'shutting down', { signal });
+  pluginEvents.emit('server:shutdown', { signal });
 
   const forceTimeout = setTimeout(() => {
     log('error', 'shutdown timed out, forcing exit');
@@ -3321,10 +3159,34 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // Fly's auto_stop_machines=false + min_machines_running=2 handles scaling.
 
 const PORT = CONFIG.port;
+pluginEvents.emit('server:starting', { port: PORT });
+
+// Load plugins before starting the server
+const pluginCtx = {
+  sessions,
+  config: CONFIG,
+  log,
+  events: pluginEvents,
+  auth: authMiddleware,
+  ensureBrowser,
+  getSession,
+  destroySession,
+  withUserLimit,
+  safePageClose,
+  normalizeUserId,
+  validateUrl,
+  safeError,
+  buildProxyUrl,
+  proxyPool,
+  failuresTotal,
+};
+const loadedPlugins = await loadPlugins(app, pluginCtx);
+
 const server = app.listen(PORT, async () => {
   startMemoryReporter();
   refreshActiveTabsGauge();
   refreshTabLockQueueDepth();
+  pluginEvents.emit('server:started', { port: PORT, pid: process.pid, plugins: loadedPlugins });
   if (FLY_MACHINE_ID) {
     log('info', 'server started (fly)', { port: PORT, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
   } else {
