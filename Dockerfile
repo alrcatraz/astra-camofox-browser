@@ -65,6 +65,7 @@ COPY package.json ./
 RUN npm install --production
 
 COPY server.js ./
+COPY camofox.config.json ./
 COPY lib/ ./lib/
 COPY plugins/ ./plugins/
 COPY scripts/ ./scripts/

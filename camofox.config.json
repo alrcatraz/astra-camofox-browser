@@ -1,0 +1,8 @@
+{
+  "id": "camofox-browser",
+  "name": "Camofox Browser",
+  "version": "1.5.2",
+  "plugins": [
+    "youtube"
+  ]
+}

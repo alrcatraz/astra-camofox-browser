@@ -21,7 +21,7 @@ import {
 import { extractPageImages } from './lib/images.js';
 
 import {
-  initMetrics, getRegister, isMetricsEnabled,
+  initMetrics, getRegister, isMetricsEnabled, createMetric,
   startMemoryReporter, stopMemoryReporter,
 } from './lib/metrics.js';
 import { actionFromReq, classifyError } from './lib/request-utils.js';
@@ -3179,6 +3179,8 @@ const pluginCtx = {
   buildProxyUrl,
   proxyPool,
   failuresTotal,
+  metricsRegistry: getRegister,
+  createMetric,
 };
 const loadedPlugins = await loadPlugins(app, pluginCtx);
 
