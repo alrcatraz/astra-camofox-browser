@@ -1,4 +1,4 @@
-import { parseJson3, parseVtt, parseXml } from '../../lib/youtube.js';
+import { parseJson3, parseVtt, parseXml } from '../../plugins/youtube/youtube.js';
 
 describe('YouTube transcript parsers', () => {
   test('parseJson3 extracts timestamped text', () => {

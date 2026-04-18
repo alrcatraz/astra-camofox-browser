@@ -38,13 +38,8 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     unzip \
-    # yt-dlp runtime dependency
-    python3-minimal \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp for YouTube transcript extraction (no browser needed)
-RUN curl -fL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
-    && chmod +x /usr/local/bin/yt-dlp
 
 # Pre-bake Camoufox browser binary into image
 # This avoids downloading at runtime and pins the version
@@ -71,6 +66,8 @@ RUN npm install --production
 
 COPY server.js ./
 COPY lib/ ./lib/
+COPY plugins/ ./plugins/
+COPY scripts/ ./scripts/
 
 ENV NODE_ENV=production
 ENV CAMOFOX_PORT=9377
@@ -78,3 +75,13 @@ ENV CAMOFOX_PORT=9377
 EXPOSE 9377
 
 CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
+
+# Optional: build with plugin system dependencies (apt packages from plugins/*/apt.txt)
+# Usage: docker build --target with-plugins -t camofox-browser .
+FROM camofox-browser AS with-plugins
+COPY scripts/install-plugin-deps.sh /tmp/install-plugin-deps.sh
+RUN /tmp/install-plugin-deps.sh && rm /tmp/install-plugin-deps.sh
+
+# Install yt-dlp for YouTube transcript plugin
+RUN curl -fL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp
