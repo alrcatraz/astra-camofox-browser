@@ -46,20 +46,52 @@ function writeConfig(config) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
 }
 
+/**
+ * Get the set of enabled plugin names from config.
+ * Handles both array format ["youtube"] and object format { "youtube": { "enabled": true } }.
+ */
+function getEnabledPlugins(config) {
+  if (!config.plugins) return new Set();
+  if (Array.isArray(config.plugins)) return new Set(config.plugins);
+  if (typeof config.plugins === 'object') {
+    const enabled = new Set();
+    for (const [name, conf] of Object.entries(config.plugins)) {
+      if (conf === false || (typeof conf === 'object' && conf.enabled === false)) continue;
+      enabled.add(name);
+    }
+    return enabled;
+  }
+  return new Set();
+}
+
 function addToConfig(name) {
   const config = readConfig();
-  if (!Array.isArray(config.plugins)) config.plugins = [];
-  if (!config.plugins.includes(name)) {
-    config.plugins.push(name);
+  if (Array.isArray(config.plugins)) {
+    if (!config.plugins.includes(name)) {
+      config.plugins.push(name);
+      writeConfig(config);
+    }
+  } else if (typeof config.plugins === 'object') {
+    if (!config.plugins[name] || config.plugins[name].enabled === false) {
+      config.plugins[name] = config.plugins[name] || {};
+      config.plugins[name].enabled = true;
+      writeConfig(config);
+    }
+  } else {
+    config.plugins = [name];
     writeConfig(config);
   }
 }
 
 function removeFromConfig(name) {
   const config = readConfig();
-  if (!Array.isArray(config.plugins)) return;
-  config.plugins = config.plugins.filter(p => p !== name);
-  writeConfig(config);
+  if (Array.isArray(config.plugins)) {
+    config.plugins = config.plugins.filter(p => p !== name);
+    writeConfig(config);
+  } else if (typeof config.plugins === 'object' && config.plugins[name] !== undefined) {
+    delete config.plugins[name];
+    writeConfig(config);
+  }
 }
 
 // ── Source parsing ──────────────────────────────────────────────────────────
@@ -192,7 +224,7 @@ function removePlugin(name) {
 
 function listPlugins() {
   const config = readConfig();
-  const configPlugins = new Set(config.plugins || []);
+  const configPlugins = getEnabledPlugins(config);
 
   if (!fs.existsSync(PLUGINS_DIR)) {
     console.log('No plugins directory.');

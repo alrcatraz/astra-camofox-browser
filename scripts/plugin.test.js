@@ -62,7 +62,11 @@ describe('plugin install (local)', () => {
 
     // Config updated
     const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-    expect(config.plugins).toContain('.tmp-test-plugin');
+    if (Array.isArray(config.plugins)) {
+      expect(config.plugins).toContain('.tmp-test-plugin');
+    } else {
+      expect(config.plugins['.tmp-test-plugin']).toBeDefined();
+    }
   });
 
   test('rejects duplicate install', () => {

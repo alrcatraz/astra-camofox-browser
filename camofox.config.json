@@ -2,7 +2,8 @@
   "id": "camofox-browser",
   "name": "Camofox Browser",
   "version": "1.5.2",
-  "plugins": [
-    "youtube"
-  ]
+  "plugins": {
+    "youtube": { "enabled": true },
+    "persistence": { "enabled": false, "profileDir": "" }
+  }
 }
