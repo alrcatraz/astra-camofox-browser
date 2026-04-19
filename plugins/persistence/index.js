@@ -33,8 +33,8 @@ import { importBootstrapCookies } from '../../lib/cookies.js';
 export async function register(app, ctx, pluginConfig = {}) {
   const { events, config, log } = ctx;
 
-  // Resolve profileDir: env var overrides config file
-  const profileDir = process.env.CAMOFOX_PROFILE_DIR || pluginConfig.profileDir;
+  // Resolve profileDir: env var > plugin config > global config default (~/.camofox/profiles)
+  const profileDir = process.env.CAMOFOX_PROFILE_DIR || pluginConfig.profileDir || config.profileDir;
   if (!profileDir) {
     log('warn', 'persistence plugin: no profileDir configured, plugin disabled');
     return;
