@@ -79,5 +79,7 @@ CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js
 # Optional: rebuild plugin deps after adding third-party plugins
 # Usage: docker build --target with-plugins -t camofox-browser .
 FROM camofox-browser AS with-plugins
+COPY plugins/ ./plugins/
+COPY camofox.config.json ./
 COPY scripts/install-plugin-deps.sh /tmp/install-plugin-deps.sh
 RUN /tmp/install-plugin-deps.sh && rm /tmp/install-plugin-deps.sh

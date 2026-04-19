@@ -12,7 +12,14 @@ PLUGINS_DIR="/app/plugins"
 if [ -f "$CONFIG" ] && command -v node >/dev/null 2>&1; then
   PLUGIN_LIST=$(node -e "
     const c = JSON.parse(require('fs').readFileSync('$CONFIG','utf-8'));
-    if (Array.isArray(c.plugins)) console.log(c.plugins.join(' '));
+    if (Array.isArray(c.plugins)) {
+      console.log(c.plugins.join(' '));
+    } else if (c.plugins && typeof c.plugins === 'object') {
+      console.log(Object.entries(c.plugins)
+        .filter(([, v]) => v && v.enabled !== false)
+        .map(([k]) => k)
+        .join(' '));
+    }
   " 2>/dev/null || echo "")
 fi
 
