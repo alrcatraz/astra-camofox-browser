@@ -1,10 +1,10 @@
-FROM node:20-slim
+FROM node:20-slim AS camofox-browser
 
 # Pinned Camoufox version for reproducible builds
 # Update these when upgrading Camoufox
 ARG CAMOUFOX_VERSION=135.0.1
 ARG CAMOUFOX_RELEASE=beta.24
-ARG TARGETARCH
+ARG ARCH=x86_64
 
 # Install dependencies for Camoufox (Firefox-based)
 RUN apt-get update && apt-get install -y \
@@ -38,26 +38,22 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     unzip \
+    # yt-dlp runtime dependency
+    python3-minimal \
     && rm -rf /var/lib/apt/lists/*
 
-
-# Pre-bake Camoufox browser binary into image
-# This avoids downloading at runtime and pins the version
+# Pre-bake Camoufox browser binary into image via bind mount (downloaded by Makefile)
 # Note: unzip returns exit code 1 for warnings (Unicode filenames), so we use || true and verify
-# TARGETARCH is injected by Docker buildx as "amd64"/"arm64"; Camoufox uses "x86_64"/"aarch64"
-RUN case "${TARGETARCH}" in \
-      arm64) CAMOUFOX_ARCH=aarch64 ;; \
-      amd64|"") CAMOUFOX_ARCH=x86_64 ;; \
-      *) echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
-    esac \
-    && CAMOUFOX_URL="https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.${CAMOUFOX_ARCH}.zip" \
-    && mkdir -p /root/.cache/camoufox \
-    && curl -L -o /tmp/camoufox.zip "${CAMOUFOX_URL}" \
-    && (unzip -q /tmp/camoufox.zip -d /root/.cache/camoufox || true) \
-    && rm /tmp/camoufox.zip \
+RUN --mount=type=bind,source=dist,target=/dist \
+    mkdir -p /root/.cache/camoufox \
+    && (unzip -q /dist/camoufox-${ARCH}.zip -d /root/.cache/camoufox || true) \
     && chmod -R 755 /root/.cache/camoufox \
     && echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > /root/.cache/camoufox/version.json \
     && test -f /root/.cache/camoufox/camoufox-bin && echo "Camoufox installed successfully"
+
+# Install yt-dlp for YouTube transcript extraction (no browser needed)
+RUN --mount=type=bind,source=dist,target=/dist \
+    install -m 755 /dist/yt-dlp-${ARCH} /usr/local/bin/yt-dlp
 
 WORKDIR /app
 
@@ -71,7 +67,6 @@ COPY plugins/ ./plugins/
 COPY scripts/ ./scripts/
 
 # Install default plugin dependencies (apt packages + post-install hooks)
-# Default plugins are shipped in plugins/ and listed in openclaw.plugin.json
 RUN scripts/install-plugin-deps.sh
 
 ENV NODE_ENV=production

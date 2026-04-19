@@ -30,8 +30,8 @@ import {
 } from '../../lib/persistence.js';
 import { importBootstrapCookies } from '../../lib/cookies.js';
 
-export async function register(app, ctx) {
-  const { events, config, log, pluginConfig = {} } = ctx;
+export async function register(app, ctx, pluginConfig = {}) {
+  const { events, config, log } = ctx;
 
   // Resolve profileDir: env var overrides config file
   const profileDir = process.env.CAMOFOX_PROFILE_DIR || pluginConfig.profileDir;

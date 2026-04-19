@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { jest } from '@jest/globals';
-import { register } from '../../plugins/persistence/index.js';
+import { register } from './index.js';
 
 describe('persistence plugin', () => {
   let tmpDir, events, ctx, mockApp;
@@ -17,7 +17,6 @@ describe('persistence plugin', () => {
       events,
       config: { cookiesDir: path.join(tmpDir, 'cookies') },
       log: jest.fn(),
-      pluginConfig: { profileDir: tmpDir },
     };
   });
 
@@ -26,12 +25,12 @@ describe('persistence plugin', () => {
   });
 
   test('skips registration when no profileDir configured', async () => {
-    await register(mockApp, { ...ctx, pluginConfig: {} });
+    await register(mockApp, ctx, {});
     expect(ctx.log).toHaveBeenCalledWith('warn', expect.stringContaining('no profileDir'));
   });
 
   test('restores persisted state on session:creating', async () => {
-    await register(mockApp, ctx);
+    await register(mockApp, ctx, { profileDir: tmpDir });
 
     // Simulate a prior persisted state
     const { getUserPersistencePaths } = await import('../../lib/persistence.js');
@@ -52,7 +51,7 @@ describe('persistence plugin', () => {
   });
 
   test('checkpoints on session:cookies:import', async () => {
-    await register(mockApp, ctx);
+    await register(mockApp, ctx, { profileDir: tmpDir });
 
     const mockContext = {
       storageState: jest.fn(async ({ path: p }) => {
@@ -78,7 +77,7 @@ describe('persistence plugin', () => {
   });
 
   test('checkpoints on session:destroyed', async () => {
-    await register(mockApp, ctx);
+    await register(mockApp, ctx, { profileDir: tmpDir });
 
     const mockContext = {
       storageState: jest.fn(async ({ path: p }) => {
@@ -101,7 +100,7 @@ describe('persistence plugin', () => {
     const orig = process.env.CAMOFOX_PROFILE_DIR;
     process.env.CAMOFOX_PROFILE_DIR = envDir;
     try {
-      await register(mockApp, { ...ctx, pluginConfig: { profileDir: '/should/not/use' } });
+      await register(mockApp, ctx, { profileDir: '/should/not/use' });
       expect(ctx.log).toHaveBeenCalledWith('info', 'persistence plugin enabled', { profileDir: envDir });
     } finally {
       if (orig === undefined) delete process.env.CAMOFOX_PROFILE_DIR;
