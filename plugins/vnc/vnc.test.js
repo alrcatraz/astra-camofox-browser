@@ -1,16 +1,29 @@
 import { EventEmitter } from 'node:events';
 import { jest } from '@jest/globals';
 
-// Mock child_process.spawn to avoid actually starting vnc-watcher.sh
-const mockSpawn = jest.fn(() => {
+// Mock the launcher module — index.js no longer imports child_process directly
+const mockWatcher = () => {
   const proc = new EventEmitter();
   proc.pid = 12345;
   proc.exitCode = null;
   proc.kill = jest.fn();
   return proc;
-});
-jest.unstable_mockModule('node:child_process', () => ({
-  spawn: mockSpawn,
+};
+const mockStartWatcher = jest.fn(mockWatcher);
+const mockResolveVncConfig = jest.fn((pluginConfig = {}) => ({
+  enabled: pluginConfig.enabled || false,
+  resolution: pluginConfig.resolution
+    ? (pluginConfig.resolution.split('x').length > 2 ? pluginConfig.resolution : `${pluginConfig.resolution}x24`)
+    : '1920x1080x24',
+  vncPassword: pluginConfig.password || '',
+  viewOnly: pluginConfig.viewOnly || false,
+  vncPort: pluginConfig.vncPort || '5900',
+  novncPort: pluginConfig.novncPort || '6080',
+}));
+
+jest.unstable_mockModule('./vnc-launcher.js', () => ({
+  resolveVncConfig: mockResolveVncConfig,
+  startWatcher: mockStartWatcher,
 }));
 
 // Mock auth middleware
@@ -42,42 +55,54 @@ describe('vnc plugin', () => {
       config: {},
       log: jest.fn(),
       sessions: new Map(),
+      safeError: (err) => typeof err === 'string' ? err : (err?.message || 'Internal error'),
       VirtualDisplay: MockVirtualDisplay,
       createVirtualDisplay: () => new MockVirtualDisplay(),
     };
-    mockSpawn.mockClear();
+    mockStartWatcher.mockClear();
+    mockStartWatcher.mockImplementation(mockWatcher);
+    mockResolveVncConfig.mockClear();
+    mockResolveVncConfig.mockImplementation((pluginConfig = {}) => ({
+      enabled: pluginConfig.enabled || false,
+      resolution: pluginConfig.resolution
+        ? (pluginConfig.resolution.split('x').length > 2 ? pluginConfig.resolution : `${pluginConfig.resolution}x24`)
+        : '1920x1080x24',
+      vncPassword: pluginConfig.password || '',
+      viewOnly: pluginConfig.viewOnly || false,
+      vncPort: pluginConfig.vncPort || '5900',
+      novncPort: pluginConfig.novncPort || '6080',
+    }));
   });
 
-  test('does not register when ENABLE_VNC is not set', async () => {
-    delete process.env.ENABLE_VNC;
+  test('does not register when disabled', async () => {
     await register(mockApp, ctx, {});
-    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(mockStartWatcher).not.toHaveBeenCalled();
     expect(mockApp.get).not.toHaveBeenCalled();
   });
 
-  test('registers when ENABLE_VNC=1', async () => {
-    process.env.ENABLE_VNC = '1';
-    try {
-      await register(mockApp, ctx, {});
-      expect(mockSpawn).toHaveBeenCalled();
-      expect(mockApp.get).toHaveBeenCalledWith(
-        '/sessions/:userId/storage_state',
-        expect.any(Function),
-        expect.any(Function),
-      );
-    } finally {
-      delete process.env.ENABLE_VNC;
-    }
+  test('registers when pluginConfig.enabled is true', async () => {
+    await register(mockApp, ctx, { enabled: true });
+    expect(mockStartWatcher).toHaveBeenCalled();
+    expect(mockApp.get).toHaveBeenCalledWith(
+      '/sessions/:userId/storage_state',
+      expect.any(Function),
+      expect.any(Function),
+    );
   });
 
-  test('registers when pluginConfig.enabled is true', async () => {
-    delete process.env.ENABLE_VNC;
-    await register(mockApp, ctx, { enabled: true });
-    expect(mockSpawn).toHaveBeenCalled();
+  test('passes resolved config to startWatcher', async () => {
+    await register(mockApp, ctx, { enabled: true, password: 'secret', vncPort: 5901 });
+    expect(mockStartWatcher).toHaveBeenCalledWith(
+      expect.objectContaining({
+        vncPassword: 'secret',
+        vncPort: 5901,
+        log: ctx.log,
+        events,
+      }),
+    );
   });
 
   test('overrides createVirtualDisplay with custom resolution', async () => {
-    delete process.env.ENABLE_VNC;
     await register(mockApp, ctx, { enabled: true, resolution: '1280x720' });
 
     const vd = ctx.createVirtualDisplay();
@@ -87,7 +112,6 @@ describe('vnc plugin', () => {
   });
 
   test('appends x24 depth to WxH resolution', async () => {
-    delete process.env.ENABLE_VNC;
     await register(mockApp, ctx, { enabled: true, resolution: '1920x1080' });
 
     const vd = ctx.createVirtualDisplay();
@@ -97,7 +121,6 @@ describe('vnc plugin', () => {
   });
 
   test('preserves explicit depth in resolution', async () => {
-    delete process.env.ENABLE_VNC;
     await register(mockApp, ctx, { enabled: true, resolution: '1920x1080x32' });
 
     const vd = ctx.createVirtualDisplay();
@@ -107,7 +130,6 @@ describe('vnc plugin', () => {
   });
 
   test('storage_state endpoint returns 404 for unknown user', async () => {
-    delete process.env.ENABLE_VNC;
     await register(mockApp, ctx, { enabled: true });
 
     const handler = routes['GET /sessions/:userId/storage_state'].at(-1);
@@ -119,7 +141,6 @@ describe('vnc plugin', () => {
   });
 
   test('storage_state endpoint returns state for active session', async () => {
-    delete process.env.ENABLE_VNC;
     await register(mockApp, ctx, { enabled: true });
 
     const mockState = { cookies: [{ name: 'sid', value: 'abc' }], origins: [] };
@@ -135,8 +156,24 @@ describe('vnc plugin', () => {
     expect(res.json).toHaveBeenCalledWith(mockState);
   });
 
+  test('storage_state endpoint uses safeError on failure', async () => {
+    await register(mockApp, ctx, { enabled: true });
+
+    ctx.sessions.set('user-1', {
+      context: { storageState: jest.fn(async () => { throw new Error('context destroyed'); }) },
+    });
+
+    const handler = routes['GET /sessions/:userId/storage_state'].at(-1);
+    const req = { params: { userId: 'user-1' }, reqId: 'test' };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+
+    await handler(req, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+    // safeError returns the message string — not the raw Error object
+    expect(res.json).toHaveBeenCalledWith({ error: 'context destroyed' });
+  });
+
   test('emits vnc:storage:exported and session:storage:export on export', async () => {
-    delete process.env.ENABLE_VNC;
     await register(mockApp, ctx, { enabled: true });
 
     ctx.sessions.set('user-1', {
@@ -158,10 +195,9 @@ describe('vnc plugin', () => {
   });
 
   test('watcher is killed on server:shutdown', async () => {
-    delete process.env.ENABLE_VNC;
     await register(mockApp, ctx, { enabled: true });
 
-    const proc = mockSpawn.mock.results[0].value;
+    const proc = mockStartWatcher.mock.results[0].value;
     events.emit('server:shutdown');
     expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
   });

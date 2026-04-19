@@ -38,8 +38,9 @@ if [ ! -d "$NOVNC_DIR" ]; then
   log "ERROR: $NOVNC_DIR not found; noVNC cannot start"
   exit 1
 fi
-log "Starting noVNC (websockify) on 0.0.0.0:$NOVNC_PORT -> 127.0.0.1:$VNC_PORT"
-websockify --web "$NOVNC_DIR" "0.0.0.0:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/var/log/novnc.log 2>&1 &
+VNC_BIND="${VNC_BIND:-127.0.0.1}"
+log "Starting noVNC (websockify) on $VNC_BIND:$NOVNC_PORT -> 127.0.0.1:$VNC_PORT"
+websockify --web "$NOVNC_DIR" "$VNC_BIND:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/var/log/novnc.log 2>&1 &
 
 log "VNC watcher started — will attach x11vnc when Camoufox's Xvfb appears"
 
