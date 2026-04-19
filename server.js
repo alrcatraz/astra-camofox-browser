@@ -608,7 +608,7 @@ async function launchBrowserInstance() {
         virtual_display: vdDisplay,
       });
       options.proxy = normalizePlaywrightProxy(options.proxy);
-      pluginEvents.emit('browser:launching', { options });
+      await pluginEvents.emitAsync('browser:launching', { options });
 
       candidateBrowser = await firefox.launch(options);
 
@@ -728,7 +728,7 @@ async function closeSession(userId, session, {
 
   await session.context.close().catch(() => {});
   sessions.delete(key);
-  pluginEvents.emit('session:destroyed', { userId: key, reason });
+  await pluginEvents.emitAsync('session:destroyed', { userId: key, reason });
 
   if (clearLocks) {
     clearSessionLocks(session);
@@ -792,12 +792,12 @@ async function getSession(userId) {
         contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
         log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
       }
-      pluginEvents.emit('session:creating', { userId: key, contextOptions });
+      await pluginEvents.emitAsync('session:creating', { userId: key, contextOptions });
       const context = await b.newContext(contextOptions);
       
       const created = { context, tabGroups: new Map(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null };
       sessions.set(key, created);
-      pluginEvents.emit('session:created', { userId: key, context });
+      await pluginEvents.emitAsync('session:created', { userId: key, context });
       log('info', 'session created', {
         userId: key,
         proxyMode: proxyPool?.mode || null,

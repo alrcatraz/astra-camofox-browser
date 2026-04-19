@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { EventEmitter } from 'node:events';
 import { jest } from '@jest/globals';
+import { createPluginEvents } from '../../lib/plugins.js';
 import { register } from './index.js';
 
 describe('persistence plugin', () => {
@@ -10,8 +10,7 @@ describe('persistence plugin', () => {
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'camofox-persist-plugin-'));
-    events = new EventEmitter();
-    events.setMaxListeners(50);
+    events = createPluginEvents();
     mockApp = {};
     ctx = {
       events,
@@ -42,10 +41,7 @@ describe('persistence plugin', () => {
     }));
 
     const contextOptions = { viewport: { width: 1280, height: 720 } };
-    // session:creating is a sync emit in server.js but our handler is async — 
-    // we need to wait for it
-    const handlers = events.listeners('session:creating');
-    for (const h of handlers) await h({ userId: 'user-1', contextOptions });
+    await events.emitAsync('session:creating', { userId: 'user-1', contextOptions });
 
     expect(contextOptions.storageState).toBe(storageStatePath);
   });
@@ -60,12 +56,8 @@ describe('persistence plugin', () => {
     };
 
     // Simulate session created then cookie import
-    for (const h of events.listeners('session:created')) {
-      await h({ userId: 'user-2', context: mockContext });
-    }
-    for (const h of events.listeners('session:cookies:import')) {
-      await h({ userId: 'user-2' });
-    }
+    await events.emitAsync('session:created', { userId: 'user-2', context: mockContext });
+    await events.emitAsync('session:cookies:import', { userId: 'user-2' });
 
     expect(mockContext.storageState).toHaveBeenCalled();
 
@@ -85,12 +77,8 @@ describe('persistence plugin', () => {
       }),
     };
 
-    for (const h of events.listeners('session:created')) {
-      await h({ userId: 'user-3', context: mockContext });
-    }
-    for (const h of events.listeners('session:destroyed')) {
-      await h({ userId: 'user-3', reason: 'test' });
-    }
+    await events.emitAsync('session:created', { userId: 'user-3', context: mockContext });
+    await events.emitAsync('session:destroyed', { userId: 'user-3', reason: 'test' });
 
     expect(mockContext.storageState).toHaveBeenCalled();
   });
