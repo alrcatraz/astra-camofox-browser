@@ -20,20 +20,20 @@ Or in Docker:
 docker run -e CAMOFOX_PORT=3000 -p 3000:3000 camofox-browser
 ```
 
-#### 2. `/youtube/transcript` now requires authentication
+#### 2. `/youtube/transcript` authentication is now configurable
 
-The YouTube transcript endpoint is now protected by the same auth middleware as other endpoints:
+The YouTube transcript endpoint remains **unauthenticated by default** (matching 1.x behavior). To enable auth:
 
 - If `CAMOFOX_API_KEY` is set → requires `Authorization: Bearer <key>` header
 - If not set and not production → allows loopback requests (127.0.0.1 / ::1)
 - In production without `CAMOFOX_API_KEY` → rejects with 403
 
-**To restore the old unauthenticated behavior**, set `"auth": false` in the YouTube plugin config in `camofox.config.json`:
+**To enable authentication**, set `"auth": true` in the YouTube plugin config in `camofox.config.json`:
 
 ```json
 {
   "plugins": {
-    "youtube": { "enabled": true, "auth": false }
+    "youtube": { "enabled": true, "auth": true }
   }
 }
 ```
