@@ -43,35 +43,26 @@
  *   vnc:storage:exported   { userId, cookies, origins }
  */
 
-import { spawn } from 'node:child_process';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolveVncConfig, startWatcher } from './vnc-launcher.js';
 import { requireAuth } from '../../lib/auth.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 export async function register(app, ctx, pluginConfig = {}) {
-  const { events, config, log, sessions, VirtualDisplay } = ctx;
+  const { events, config, log, sessions, VirtualDisplay, safeError } = ctx;
 
-  // Check if VNC is enabled — env var or plugin config
-  const enabled = process.env.ENABLE_VNC === '1' || pluginConfig.enabled === true;
-  if (!enabled) {
+  // Resolve all config (env vars + pluginConfig) via the launcher module
+  const vncConfig = resolveVncConfig(pluginConfig);
+
+  if (!vncConfig.enabled) {
     log('info', 'vnc plugin: disabled (set ENABLE_VNC=1 or plugins.vnc.enabled=true)');
     return;
   }
 
   // --- Override Xvfb resolution ---
-  // Subclass the upstream VirtualDisplay to use a resolution humans can see.
-  // Resolve resolution — user specifies WxH, we append x24 (24-bit color depth)
-  const rawResolution = process.env.VNC_RESOLUTION || pluginConfig.resolution || '1920x1080';
-  const resolution = rawResolution.includes('x', rawResolution.indexOf('x') + 1)
-    ? rawResolution          // already has depth (e.g. '1920x1080x24')
-    : `${rawResolution}x24`; // append default 24-bit depth
+  const { resolution } = vncConfig;
 
   class VncVirtualDisplay extends VirtualDisplay {
     get xvfb_args() {
       const args = super.xvfb_args;
-      // Replace the resolution argument that follows '-screen 0'
       const idx = args.indexOf('0');
       if (idx > 0 && args[idx - 1] === '-screen') {
         const patched = [...args];
@@ -82,49 +73,27 @@ export async function register(app, ctx, pluginConfig = {}) {
     }
   }
 
-  // Replace the factory so server.js uses our display on next browser launch
   ctx.createVirtualDisplay = () => new VncVirtualDisplay();
   log('info', 'vnc plugin: overriding Xvfb resolution', { resolution });
 
   // --- VNC watcher process ---
-  const vncPassword = process.env.VNC_PASSWORD || pluginConfig.password || '';
-  const viewOnly = process.env.VIEW_ONLY === '1' || pluginConfig.viewOnly === true;
-  const vncPort = process.env.VNC_PORT || pluginConfig.vncPort || '5900';
-  const novncPort = process.env.NOVNC_PORT || pluginConfig.novncPort || '6080';
-
   log('info', 'vnc plugin enabled', {
     resolution,
-    novncPort,
-    vncPort,
-    viewOnly,
-    passwordProtected: !!vncPassword,
+    novncPort: vncConfig.novncPort,
+    vncPort: vncConfig.vncPort,
+    viewOnly: vncConfig.viewOnly,
+    passwordProtected: !!vncConfig.vncPassword,
   });
 
-  const watcherPath = path.join(__dirname, 'vnc-watcher.sh');
-  const watcher = spawn('sh', [watcherPath], {
-    env: {
-      ...process.env,
-      VNC_PASSWORD: vncPassword,
-      VNC_RESOLUTION: resolution,
-      VIEW_ONLY: viewOnly ? '1' : '0',
-      VNC_PORT: String(vncPort),
-      NOVNC_PORT: String(novncPort),
-    },
-    stdio: ['ignore', 'inherit', 'inherit'],
-    detached: false,
+  const watcher = startWatcher({
+    resolution: vncConfig.resolution,
+    vncPassword: vncConfig.vncPassword,
+    viewOnly: vncConfig.viewOnly,
+    vncPort: vncConfig.vncPort,
+    novncPort: vncConfig.novncPort,
+    log,
+    events,
   });
-
-  watcher.on('error', (err) => {
-    log('error', 'vnc watcher failed to start', { error: err.message });
-  });
-
-  watcher.on('exit', (code, signal) => {
-    log('warn', 'vnc watcher exited', { code, signal });
-    events.emit('vnc:watcher:stopped', { code, signal });
-  });
-
-  log('info', 'vnc watcher started', { pid: watcher.pid });
-  events.emit('vnc:watcher:started', { pid: watcher.pid });
 
   // Clean up watcher on server shutdown
   events.on('server:shutdown', () => {
@@ -160,13 +129,12 @@ export async function register(app, ctx, pluginConfig = {}) {
         origins: state.origins?.length || 0,
       });
 
-      // Notify persistence plugin if active
       events.emit('session:storage:export', { userId: String(userId) });
 
       res.json(state);
     } catch (err) {
       log('error', 'storage_state export failed', { reqId: req.reqId, error: err.message });
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: safeError(err) });
     }
   });
 
