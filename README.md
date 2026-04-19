@@ -179,6 +179,20 @@ Camoufox browser session                 (authenticated browsing)
 - Max 500 cookies per request, 5MB file size limit
 - Cookie objects are sanitized to an allowlist of Playwright fields
 
+### Session Persistence
+
+By default, camofox persists each user's cookies and localStorage to `~/.camofox/profiles/`. Sessions survive browser restarts — log in once (via cookies or VNC), and subsequent sessions restore the authenticated state automatically.
+
+```
+~/.camofox/
+├── cookies/          # Bootstrap cookie files (Netscape format)
+└── profiles/         # Persisted session state (auto-managed)
+    └── <hashed-userId>/
+        └── storage_state.json
+```
+
+Override the directory with `CAMOFOX_PROFILE_DIR` or set `"profileDir"` in the persistence plugin config. To disable persistence, set `"persistence": { "enabled": false }` in `camofox.config.json`.
+
 #### Standalone server usage
 
 ```bash
@@ -366,6 +380,7 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
+| `CAMOFOX_PROFILE_DIR` | Directory for persisted session profiles | `~/.camofox/profiles` |
 | `MAX_SESSIONS` | Max concurrent browser sessions | `50` |
 | `MAX_TABS_PER_SESSION` | Max tabs per session | `10` |
 | `SESSION_TIMEOUT_MS` | Session inactivity timeout | `1800000` (30min) |
