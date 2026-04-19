@@ -575,7 +575,7 @@ async function launchBrowserInstance() {
 
     try {
       if (os.platform() === 'linux') {
-        localVirtualDisplay = new VirtualDisplay();
+        localVirtualDisplay = pluginCtx.createVirtualDisplay();
         vdDisplay = localVirtualDisplay.get();
         log('info', 'xvfb virtual display started', { display: vdDisplay, attempt });
       }
@@ -3184,6 +3184,10 @@ const pluginCtx = {
   failuresTotal,
   metricsRegistry: getRegister,
   createMetric,
+  /** Factory for Xvfb virtual display. Plugins can replace this to customise resolution/args. */
+  createVirtualDisplay: () => new VirtualDisplay(),
+  /** The upstream VirtualDisplay class — plugins can subclass it. */
+  VirtualDisplay,
 };
 const loadedPlugins = await loadPlugins(app, pluginCtx);
 

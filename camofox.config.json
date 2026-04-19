@@ -4,6 +4,7 @@
   "version": "1.5.2",
   "plugins": {
     "youtube": { "enabled": true },
-    "persistence": { "enabled": false, "profileDir": "" }
+    "persistence": { "enabled": false, "profileDir": "" },
+    "vnc": { "resolution": "1920x1080" }
   }
 }
