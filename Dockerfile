@@ -1,10 +1,10 @@
-FROM node:20-slim
+FROM node:20-slim AS camofox-browser
 
 # Pinned Camoufox version for reproducible builds
 # Update these when upgrading Camoufox
 ARG CAMOUFOX_VERSION=135.0.1
 ARG CAMOUFOX_RELEASE=beta.24
-ARG CAMOUFOX_URL=https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.x86_64.zip
+ARG ARCH=x86_64
 
 # Install dependencies for Camoufox (Firefox-based)
 RUN apt-get update && apt-get install -y \
@@ -42,20 +42,18 @@ RUN apt-get update && apt-get install -y \
     python3-minimal \
     && rm -rf /var/lib/apt/lists/*
 
-# Install vendored yt-dlp for YouTube transcript extraction
-COPY vendor/yt-dlp /usr/local/bin/yt-dlp
-RUN chmod +x /usr/local/bin/yt-dlp && /usr/local/bin/yt-dlp --version
-
-# Pre-bake Camoufox browser binary into image
-# This avoids downloading at runtime and pins the version
+# Pre-bake Camoufox browser binary into image via bind mount (downloaded by Makefile)
 # Note: unzip returns exit code 1 for warnings (Unicode filenames), so we use || true and verify
-RUN mkdir -p /root/.cache/camoufox \
-    && curl -L -o /tmp/camoufox.zip "${CAMOUFOX_URL}" \
-    && (unzip -q /tmp/camoufox.zip -d /root/.cache/camoufox || true) \
-    && rm /tmp/camoufox.zip \
+RUN --mount=type=bind,source=dist,target=/dist \
+    mkdir -p /root/.cache/camoufox \
+    && (unzip -q /dist/camoufox-${ARCH}.zip -d /root/.cache/camoufox || true) \
     && chmod -R 755 /root/.cache/camoufox \
     && echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > /root/.cache/camoufox/version.json \
     && test -f /root/.cache/camoufox/camoufox-bin && echo "Camoufox installed successfully"
+
+# Install yt-dlp for YouTube transcript extraction (no browser needed)
+RUN --mount=type=bind,source=dist,target=/dist \
+    install -m 755 /dist/yt-dlp-${ARCH} /usr/local/bin/yt-dlp
 
 WORKDIR /app
 
@@ -63,11 +61,25 @@ COPY package.json ./
 RUN npm install --production
 
 COPY server.js ./
+COPY camofox.config.json ./
 COPY lib/ ./lib/
+COPY plugins/ ./plugins/
+COPY scripts/ ./scripts/
+
+# Install default plugin dependencies (apt packages + post-install hooks)
+RUN scripts/install-plugin-deps.sh
 
 ENV NODE_ENV=production
 ENV CAMOFOX_PORT=9377
-# Note: override with CAMOFOX_PORT env var. Default upstream is 3000.
+
 EXPOSE 9377
 
 CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
+
+# Optional: rebuild plugin deps after adding third-party plugins
+# Usage: docker build --target with-plugins -t camofox-browser .
+FROM camofox-browser AS with-plugins
+COPY plugins/ ./plugins/
+COPY camofox.config.json ./
+COPY scripts/install-plugin-deps.sh /tmp/install-plugin-deps.sh
+RUN /tmp/install-plugin-deps.sh && rm /tmp/install-plugin-deps.sh
