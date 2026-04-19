@@ -158,6 +158,12 @@ docker run -p 9377:9377 camofox-browser
 - `plugins/` - Plugin directory (loaded per camofox.config.json)
 - `plugins/youtube/` - Default plugin: YouTube transcript extraction
 - `scripts/install-plugin-deps.sh` - Installs plugin deps (apt.txt + post-install.sh)
+- `plugins/vnc/index.js` - VNC plugin routes (no `child_process` — spawning isolated in `vnc-launcher.js`)
+- `plugins/vnc/vnc-launcher.js` - VNC process management (`child_process` isolated here)
+- `plugins/persistence/index.js` - Session persistence lifecycle hooks
+- `lib/persistence.js` - Atomic storage state read/write
+- `lib/inflight.js` - Inflight request coalescing
+- `lib/tmp-cleanup.js` - Orphaned temp file cleanup
 - `Dockerfile` - Production container with default plugin deps pre-installed
 
 ## OpenClaw Scanner Isolation (CRITICAL)
@@ -166,7 +172,7 @@ OpenClaw's skill-scanner flags plugins that have `process.env` + network calls (
 
 **Rule: No single `.js` file may contain both halves of a scanner rule pair:**
 - `process.env` lives ONLY in `lib/config.js`
-- `child_process` / `execFile` / `spawn` live ONLY in `plugins/youtube/youtube.js` and `lib/launcher.js`
+- `child_process` / `execFile` / `spawn` live ONLY in `plugins/youtube/youtube.js`, `plugins/vnc/vnc-launcher.js`, and `lib/launcher.js`
 - `server.js` has the Express routes (`app.post`, `app.get`) but ZERO `process.env` reads and ZERO `child_process` imports
 - `lib/metrics.js` has NO `process.env` and NO HTTP method strings (`POST`, `fetch`). Prometheus is lazy-loaded only when `PROMETHEUS_ENABLED=1`.
 - `lib/request-utils.js` has HTTP method strings (`POST`) but NO `process.env` — safe.
@@ -313,7 +319,11 @@ export function register(app, ctx) {
 
 ### Mutating Hooks
 
-`browser:launching` and `session:creating` pass objects by reference — modify in-place:
+`browser:launching`, `session:creating`, `session:created`, and `session:destroyed` are emitted via `events.emitAsync()` — the server awaits all listeners (including async ones) before proceeding. This ensures async work like loading storage state from disk completes before the context is created.
+
+Other events use regular `events.emit()` (fire-and-forget).
+
+Modify payload objects in-place:
 
 ```js
 // Change Xvfb resolution (e.g., for VNC plugin)
@@ -395,6 +405,12 @@ Plugin sources can be:
 - **Local directories** with `index.js` and `register()`
 
 ### Default Plugins
+
+Three plugins ship by default:
+
+- **youtube** — YouTube transcript extraction (enabled by default)
+- **persistence** — Per-user session state persistence to `~/.camofox/profiles/` (enabled by default)
+- **vnc** — Interactive browser login via noVNC (disabled by default, requires `ENABLE_VNC=1`)
 
 The `youtube` plugin ships as a default plugin — it's listed in `camofox.config.json` and included in the base Docker image with its deps pre-installed. The base image runs `scripts/install-plugin-deps.sh` which reads the config and installs `apt.txt` packages + `post-install.sh` hooks for listed plugins.
 
