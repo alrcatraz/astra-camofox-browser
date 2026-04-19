@@ -20,7 +20,8 @@ export async function register(app, ctx, pluginConfig = {}) {
   await detectYtDlp(log);
 
   // Auth is on by default; set { "auth": false } in camofox.config.json to disable
-  const middleware = pluginConfig.auth !== false ? ctx.auth() : (_req, _res, next) => next();
+  // Auth off by default — matches pre-plugin behavior. Set { "auth": true } to require auth.
+  const middleware = pluginConfig.auth === true ? ctx.auth() : (_req, _res, next) => next();
 
   app.post('/youtube/transcript', middleware, async (req, res) => {
     const reqId = req.reqId;
