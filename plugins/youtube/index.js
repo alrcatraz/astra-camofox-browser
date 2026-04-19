@@ -8,7 +8,7 @@
 import { detectYtDlp, hasYtDlp, ensureYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } from './youtube.js';
 import { classifyError } from '../../lib/request-utils.js';
 
-export async function register(app, ctx) {
+export async function register(app, ctx, pluginConfig = {}) {
   const { log, config, sessions, ensureBrowser, getSession,
           withUserLimit, safePageClose, normalizeUserId,
           validateUrl, safeError, buildProxyUrl, proxyPool,
@@ -19,7 +19,10 @@ export async function register(app, ctx) {
   // Detect yt-dlp binary at load time
   await detectYtDlp(log);
 
-  app.post('/youtube/transcript', ctx.auth(), async (req, res) => {
+  // Auth is on by default; set { "auth": false } in camofox.config.json to disable
+  const middleware = pluginConfig.auth !== false ? ctx.auth() : (_req, _res, next) => next();
+
+  app.post('/youtube/transcript', middleware, async (req, res) => {
     const reqId = req.reqId;
     try {
       const { url, languages = ['en'] } = req.body;
