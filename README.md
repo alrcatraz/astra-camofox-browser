@@ -103,11 +103,11 @@ make up ARCH=x86_64
 make up VERSION=135.0.1 RELEASE=beta.24
 ```
 
-Note: `make fetch` (or `make build`) must be run first — the Dockerfile expects pre-downloaded binaries in `dist/`.
+> **⚠️ Do not run `docker build` directly.** The Dockerfile uses bind mounts to pull pre-downloaded binaries from `dist/`. Always use `make up` (or `make fetch` then `make build`) — it downloads the binaries first.
 
 ### Fly.io / Railway
 
-`fly.toml` and `railway.toml` are included. Deploy with `fly deploy` or connect the repo to Railway.
+`railway.toml` is included. For Fly.io or other remote CI, you'll need a Dockerfile that downloads binaries at build time instead of using bind mounts — see [jo-browser](https://github.com/jo-inc/jo-browser) for an example.
 
 ## Usage
 
