@@ -882,7 +882,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
         found.tabState.consecutiveTimeouts++;
         if (found.tabState.consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
           log('warn', 'auto-destroying tab after consecutive timeouts', { tabId, count: found.tabState.consecutiveTimeouts });
-          destroyTab(session, tabId, 'consecutive_timeouts');
+          destroyTab(session, tabId, 'consecutive_timeouts', userId);
         }
       }
     }
@@ -892,7 +892,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
     const tabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
     const session = sessions.get(normalizeUserId(userId));
     if (session && tabId) {
-      destroyTab(session, tabId, 'lock_queue');
+      destroyTab(session, tabId, 'lock_queue', userId);
     }
     return res.status(503).json({ error: 'Tab unresponsive and has been destroyed. Open a new tab.', ...extraFields });
   }
@@ -903,7 +903,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
   sendError(res, err, extraFields);
 }
 
-function destroyTab(session, tabId, reason) {
+function destroyTab(session, tabId, reason, userId) {
   const lock = tabLocks.get(tabId);
   if (lock) {
     lock.drain();
@@ -919,7 +919,7 @@ function destroyTab(session, tabId, reason) {
       if (group.size === 0) session.tabGroups.delete(listItemId);
       refreshActiveTabsGauge();
       if (reason) tabsDestroyedTotal.labels(reason).inc();
-      pluginEvents.emit('tab:destroyed', { userId: null, tabId, reason: reason || 'unknown' });
+      pluginEvents.emit('tab:destroyed', { userId: userId || null, tabId, reason: reason || 'unknown' });
       return true;
     }
   }
@@ -931,7 +931,7 @@ function destroyTab(session, tabId, reason) {
  * Closes the old tab's page and removes it from its group.
  * Returns { recycledTabId, recycledFromGroup } or null if no tab to recycle.
  */
-async function recycleOldestTab(session, reqId) {
+async function recycleOldestTab(session, reqId, userId) {
   let oldestTab = null;
   let oldestGroup = null;
   let oldestGroupKey = null;
@@ -955,7 +955,7 @@ async function recycleOldestTab(session, reqId) {
   if (lock) { lock.drain(); tabLocks.delete(oldestTabId); }
   refreshTabLockQueueDepth();
   tabsRecycledTotal.inc();
-  pluginEvents.emit('tab:recycled', { userId: null, tabId: oldestTabId });
+  pluginEvents.emit('tab:recycled', { userId: userId || null, tabId: oldestTabId });
   log('info', 'tab recycled (limit reached)', { reqId, recycledTabId: oldestTabId, recycledFromGroup: oldestGroupKey });
   return { recycledTabId: oldestTabId, recycledFromGroup: oldestGroupKey };
 }
@@ -1019,7 +1019,7 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
   const tabState = createTabState(page);
   tabState.googleRetryCount = (previousTabState.googleRetryCount || 0) + 1;
   tabState.lastRequestedUrl = previousTabState.lastRequestedUrl;
-  attachDownloadListener(tabState, tabId, log, pluginEvents);
+  attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
   group.set(tabId, tabState);
   refreshActiveTabsGauge();
 
@@ -1565,7 +1565,7 @@ app.post('/tabs', async (req, res) => {
       
       // Recycle oldest tab when limits are reached instead of rejecting
       if (totalTabs >= MAX_TABS_PER_SESSION || getTotalTabCount() >= MAX_TABS_GLOBAL) {
-        const recycled = await recycleOldestTab(session, req.reqId);
+        const recycled = await recycleOldestTab(session, req.reqId, userId);
         if (!recycled) {
           throw Object.assign(new Error('Maximum tabs per session reached'), { statusCode: 429 });
         }
@@ -1576,7 +1576,7 @@ app.post('/tabs', async (req, res) => {
       const page = await session.context.newPage();
       const tabId = fly.makeTabId();
       const tabState = createTabState(page);
-      attachDownloadListener(tabState, tabId, log, pluginEvents);
+      attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
       group.set(tabId, tabState);
       refreshActiveTabsGauge();
       
@@ -1621,7 +1621,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         for (const g of session.tabGroups.values()) sessionTabs += g.size;
         if (getTotalTabCount() >= MAX_TABS_GLOBAL || sessionTabs >= MAX_TABS_PER_SESSION) {
           // Recycle oldest tab to free a slot, then create new page
-          const recycled = await recycleOldestTab(session, req.reqId);
+          const recycled = await recycleOldestTab(session, req.reqId, userId);
           if (!recycled) {
             throw new Error('Maximum tabs per session reached');
           }
@@ -1629,7 +1629,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         {
           const page = await session.context.newPage();
           tabState = createTabState(page);
-          attachDownloadListener(tabState, tabId, log, pluginEvents);
+          attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
           const group = getTabGroup(session, resolvedSessionKey);
           group.set(tabId, tabState);
           refreshActiveTabsGauge();
@@ -1695,7 +1695,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           const page = await session.context.newPage();
           tabState = createTabState(page);
           tabState.googleRetryCount = previousRetryCount + 1;
-          attachDownloadListener(tabState, tabId, log, pluginEvents);
+          attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
           group.set(tabId, tabState);
           refreshActiveTabsGauge();
         };
@@ -2667,7 +2667,7 @@ app.post('/tabs/open', async (req, res) => {
     let totalTabs = 0;
     for (const g of session.tabGroups.values()) totalTabs += g.size;
     if (totalTabs >= MAX_TABS_PER_SESSION || getTotalTabCount() >= MAX_TABS_GLOBAL) {
-      const recycled = await recycleOldestTab(session, req.reqId);
+      const recycled = await recycleOldestTab(session, req.reqId, userId);
       if (!recycled) {
         return res.status(429).json({ error: 'Maximum tabs per session reached' });
       }
@@ -2678,7 +2678,7 @@ app.post('/tabs/open', async (req, res) => {
     const page = await session.context.newPage();
     const tabId = fly.makeTabId();
     const tabState = createTabState(page);
-    attachDownloadListener(tabState, tabId, log, pluginEvents);
+    attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
     group.set(tabId, tabState);
     refreshActiveTabsGauge();
     
