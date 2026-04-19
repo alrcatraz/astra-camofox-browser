@@ -419,6 +419,14 @@ npm run test:debug    # with server output
 npm install @askjo/camofox-browser
 ```
 
+## Upgrading from 1.x
+
+See [MIGRATION.md](MIGRATION.md) for the full migration guide. Key breaking changes:
+
+- **Default port** changed from `3000` to `9377`. Set `CAMOFOX_PORT=3000` to keep the old port.
+- **YouTube auth** — `/youtube/transcript` now requires authentication (Bearer token or loopback). Set `"auth": false` in the youtube plugin config to restore unauthenticated access.
+- **YouTube is a plugin** — the endpoint path is unchanged but requires the `youtube` plugin enabled in `camofox.config.json` (enabled by default).
+
 ## Credits
 
 - [Camoufox](https://camoufox.com) - Firefox-based browser with C++ anti-detection
