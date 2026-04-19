@@ -50,6 +50,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **Download Capture** - capture browser downloads and fetch them via API (optional inline base64)
 - **DOM Image Extraction** - list `<img>` src/alt and optionally return inline data URLs
 - **Deploy Anywhere** - Docker, Fly.io, Railway
+- **VNC Interactive Login** - log into sites visually via noVNC, export storage state for agent reuse
 
 ## Optional Dependencies
 
@@ -177,6 +178,20 @@ Camoufox browser session                 (authenticated browsing)
 - `cookiesPath` is resolved relative to the cookies directory — path traversal outside it is blocked
 - Max 500 cookies per request, 5MB file size limit
 - Cookie objects are sanitized to an allowlist of Playwright fields
+
+### Session Persistence
+
+By default, camofox persists each user's cookies and localStorage to `~/.camofox/profiles/`. Sessions survive browser restarts — log in once (via cookies or VNC), and subsequent sessions restore the authenticated state automatically.
+
+```
+~/.camofox/
+├── cookies/          # Bootstrap cookie files (Netscape format)
+└── profiles/         # Persisted session state (auto-managed)
+    └── <hashed-userId>/
+        └── storage_state.json
+```
+
+Override the directory with `CAMOFOX_PROFILE_DIR` or set `"profileDir"` in the persistence plugin config. To disable persistence, set `"persistence": { "enabled": false }` in `camofox.config.json`.
 
 #### Standalone server usage
 
@@ -346,6 +361,7 @@ Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) when available (fast, no browser
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/sessions/:userId/cookies` | Add cookies to a user session (Playwright cookie objects) |
+| `GET` | `/sessions/:userId/storage_state` | Export cookies + localStorage ([VNC plugin](plugins/vnc/)) |
 
 ## Search Macros
 
@@ -364,6 +380,7 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
+| `CAMOFOX_PROFILE_DIR` | Directory for persisted session profiles | `~/.camofox/profiles` |
 | `MAX_SESSIONS` | Max concurrent browser sessions | `50` |
 | `MAX_TABS_PER_SESSION` | Max tabs per session | `10` |
 | `SESSION_TIMEOUT_MS` | Session inactivity timeout | `1800000` (30min) |
@@ -382,6 +399,9 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `PROXY_COUNTRY` | Target country for proxy geo-targeting | - |
 | `PROXY_STATE` | Target state/region for proxy geo-targeting | - |
 | `TAB_INACTIVITY_MS` | Close tabs idle longer than this | `300000` (5min) |
+| `ENABLE_VNC` | Enable VNC plugin for interactive browser access (`1`) | - |
+| `VNC_PASSWORD` | Password for VNC access (recommended in production) | - |
+| `NOVNC_PORT` | noVNC web UI port | `6080` |
 
 ## Architecture
 
