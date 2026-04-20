@@ -872,8 +872,21 @@ function handleRouteError(err, req, res, extraFields = {}) {
     browserRestartsTotal.labels('proxy_error').inc();
     destroySession(userId);
   }
+  // Navigation-related timeouts can poison the proxy session (e.g., Cloudflare holding
+  // the connection open for 30s). The browser context shares a single proxy session, so
+  // one poisoned page kills all subsequent navigations in that context. Destroy the
+  // entire session so the next request gets a fresh BrowserContext + proxy.
+  const NAVIGATION_TIMEOUT_ACTIONS = new Set(['click', 'navigate', 'open_url']);
+  if (isTimeoutError(err) && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action)) {
+    log('warn', 'navigation timeout — destroying session for fresh proxy', {
+      action, userId, error: err.message,
+    });
+    browserRestartsTotal.labels('navigation_timeout').inc();
+    destroySession(userId);
+  }
   // Track consecutive timeouts per tab and auto-destroy stuck tabs
-  if (userId && isTimeoutError(err)) {
+  // (for non-navigation timeouts like type, scroll that don't poison the proxy)
+  if (userId && isTimeoutError(err) && !NAVIGATION_TIMEOUT_ACTIONS.has(action)) {
     const tabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
     const session = sessions.get(normalizeUserId(userId));
     if (session && tabId) {
