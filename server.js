@@ -3,6 +3,7 @@ import { VirtualDisplay } from 'camoufox-js/dist/virtdisplay.js';
 import { firefox } from 'playwright-core';
 import express from 'express';
 import crypto from 'crypto';
+import fs from 'fs';
 import os from 'os';
 import { expandMacro } from './lib/macros.js';
 import { loadConfig } from './lib/config.js';
@@ -20,6 +21,10 @@ import {
 } from './lib/downloads.js';
 import { extractPageImages } from './lib/images.js';
 import { extractDeterministic, validateSchema as validateExtractSchema } from './lib/extract.js';
+import {
+  ensureTracesDir, resolveTracePath, tracePathFor, makeTraceFilename,
+  listUserTraces, statTrace, deleteTrace, sweepOldTraces,
+} from './lib/tracing.js';
 
 import {
   initMetrics, getRegister, isMetricsEnabled, createMetric,
@@ -807,6 +812,15 @@ async function closeSession(userId, session, {
   }
 
   await pluginEvents.emitAsync('session:destroying', { userId: key, reason });
+  if (session.tracePath) {
+    try {
+      await session.context.tracing.stop({ path: session.tracePath });
+      log('info', 'tracing saved', { userId: key, path: session.tracePath });
+    } catch (err) {
+      log('warn', 'tracing.stop failed', { userId: key, error: err.message });
+    }
+  }
+
   await session.context.close().catch(() => {});
   sessions.delete(key);
   await pluginEvents.emitAsync('session:destroyed', { userId: key, reason });
@@ -825,7 +839,7 @@ async function closeAllSessions(reason, { clearDownloads = true, clearLocks = tr
   }
 }
 
-async function getSession(userId) {
+async function getSession(userId, { trace = false } = {}) {
   const key = normalizeUserId(userId);
   let session = sessions.get(key);
   
@@ -875,8 +889,21 @@ async function getSession(userId) {
       }
       await pluginEvents.emitAsync('session:creating', { userId: key, contextOptions });
       const context = await b.newContext(contextOptions);
-      
-      const created = { context, tabGroups: new Map(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null };
+
+      let tracePath = null;
+      if (trace) {
+        const traceDir = ensureTracesDir(CONFIG.tracesDir, key);
+        tracePath = tracePathFor(CONFIG.tracesDir, key, makeTraceFilename());
+        try {
+          await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
+          log('info', 'tracing enabled for session', { userId: key, traceDir, tracePath });
+        } catch (err) {
+          log('warn', 'tracing.start failed; session will not be traced', { userId: key, error: err.message });
+          tracePath = null;
+        }
+      }
+
+      const created = { context, tabGroups: new Map(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null, tracePath };
       sessions.set(key, created);
       await pluginEvents.emitAsync('session:created', { userId: key, context });
       log('info', 'session created', {
@@ -1749,6 +1776,9 @@ app.get('/metrics', async (_req, res) => {
  *               url:
  *                 type: string
  *                 description: Optional initial URL.
+ *               trace:
+ *                 type: boolean
+ *                 description: Enable Playwright tracing for this session (screenshots, DOM snapshots, network). Must be set on first tab creation; cannot be added to an existing session.
  *     responses:
  *       200:
  *         description: Tab created.
@@ -1773,18 +1803,31 @@ app.get('/metrics', async (_req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: Cannot enable tracing on an existing session.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs', async (req, res) => {
   try {
-    const { userId, sessionKey, listItemId, url } = req.body;
+    const { userId, sessionKey, listItemId, url, trace } = req.body;
     // Accept both sessionKey (preferred) and listItemId (legacy) for backward compatibility
     const resolvedSessionKey = sessionKey || listItemId;
     if (!userId || !resolvedSessionKey) {
       return res.status(400).json({ error: 'userId and sessionKey required' });
     }
-    
+
     const result = await withTimeout((async () => {
-      const session = await getSession(userId);
+      const existing = sessions.get(normalizeUserId(userId));
+      if (trace && existing && !existing.tracePath) {
+        throw Object.assign(
+          new Error('trace must be set on session creation. DELETE /sessions/:userId first to restart with tracing.'),
+          { statusCode: 409 },
+        );
+      }
+      const session = await getSession(userId, { trace: !!trace });
       
       let totalTabs = 0;
       for (const group of session.tabGroups.values()) totalTabs += group.size;
@@ -3720,6 +3763,221 @@ app.delete('/tabs/group/:listItemId', async (req, res) => {
   }
 });
 
+// List trace files for a session
+/**
+ * @openapi
+ * /sessions/{userId}/traces:
+ *   get:
+ *     tags: [Sessions]
+ *     summary: List trace files
+ *     description: Returns all Playwright trace zip files for the given user session, sorted newest first.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Session owner identifier.
+ *     responses:
+ *       200:
+ *         description: Trace list.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 traces:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       filename:
+ *                         type: string
+ *                       sizeBytes:
+ *                         type: integer
+ *                       createdAt:
+ *                         type: number
+ *                       modifiedAt:
+ *                         type: number
+ *       403:
+ *         description: Forbidden.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.get('/sessions/:userId/traces', authMiddleware(), async (req, res) => {
+  try {
+    const userId = normalizeUserId(req.params.userId);
+    const traces = await listUserTraces(CONFIG.tracesDir, userId);
+    res.json({ traces });
+  } catch (err) {
+    log('error', 'list traces failed', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Stream one trace file
+/**
+ * @openapi
+ * /sessions/{userId}/traces/{filename}:
+ *   get:
+ *     tags: [Sessions]
+ *     summary: Download a trace file
+ *     description: Streams a Playwright trace zip for viewing in trace.playwright.dev.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Session owner identifier.
+ *       - name: filename
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Trace zip filename.
+ *     responses:
+ *       200:
+ *         description: Trace zip stream.
+ *         content:
+ *           application/zip:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *       400:
+ *         description: Invalid filename.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Trace not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Forbidden.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.get('/sessions/:userId/traces/:filename', authMiddleware(), async (req, res) => {
+  try {
+    const userId = normalizeUserId(req.params.userId);
+    const full = resolveTracePath(CONFIG.tracesDir, userId, req.params.filename);
+    if (!full) return res.status(400).json({ error: 'invalid filename' });
+    const st = await statTrace(full);
+    if (!st) return res.status(404).json({ error: 'not found' });
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Length', String(st.size));
+    const stream = fs.createReadStream(full);
+    stream.on('error', (err) => {
+      if (!res.headersSent) res.status(404).json({ error: 'not found' });
+      else res.destroy();
+    });
+    stream.pipe(res);
+  } catch (err) {
+    log('error', 'stream trace failed', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete one trace file
+/**
+ * @openapi
+ * /sessions/{userId}/traces/{filename}:
+ *   delete:
+ *     tags: [Sessions]
+ *     summary: Delete a trace file
+ *     description: Removes a specific Playwright trace zip from the server.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Session owner identifier.
+ *       - name: filename
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Trace zip filename.
+ *     responses:
+ *       200:
+ *         description: Trace deleted.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *       400:
+ *         description: Invalid filename.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Trace not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Forbidden.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.delete('/sessions/:userId/traces/:filename', authMiddleware(), async (req, res) => {
+  try {
+    const userId = normalizeUserId(req.params.userId);
+    const full = resolveTracePath(CONFIG.tracesDir, userId, req.params.filename);
+    if (!full) return res.status(400).json({ error: 'invalid filename' });
+    try {
+      await deleteTrace(full);
+    } catch (err) {
+      if (err.code === 'ENOENT') return res.status(404).json({ error: 'not found' });
+      throw err;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    log('error', 'delete trace failed', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Close session
 /**
  * @openapi
@@ -4747,6 +5005,14 @@ const server = app.listen(PORT, async () => {
   const tmpCleanup = cleanupOrphanedTempFiles({ tmpDir: os.tmpdir() });
   if (tmpCleanup.removed > 0) {
     log('info', 'cleaned up orphaned camoufox temp files', tmpCleanup);
+  }
+  const traceSweep = sweepOldTraces({
+    baseDir: CONFIG.tracesDir,
+    ttlMs: CONFIG.tracesTtlHours * 3600 * 1000,
+    maxBytesPerFile: CONFIG.tracesMaxBytes,
+  });
+  if (traceSweep.removedTtl > 0 || traceSweep.removedOversized > 0) {
+    log('info', 'swept old traces', traceSweep);
   }
   // Pre-warm browser so first request doesn't eat a 6-7s cold start
   try {
