@@ -26,8 +26,8 @@ module.exports = {
   // Verbose output
   verbose: true,
   
-  // Fail fast on first error (useful for CI)
-  bail: process.env.CI ? 1 : 0,
+  // Don't bail — run full suite even if a test fails
+  bail: 0,
   
   // Coverage settings (optional)
   collectCoverage: false,
