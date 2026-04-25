@@ -54,7 +54,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **OpenAPI Docs** - auto-generated spec at [`/openapi.json`](http://localhost:9377/openapi.json) and interactive docs at [`/docs`](http://localhost:9377/docs)
 - **Structured Extract** - `POST /tabs/:tabId/extract` with a JSON Schema that maps properties to snapshot refs via `x-ref`
 - **Session Tracing** - opt-in per-session Playwright trace capture (screenshots + DOM snapshots + network) with API endpoints to list, fetch, and delete trace zips
-- **Crash Reporter** - opt-in anonymized crash/hang reporting via GitHub Issues. Per-tab health tracking detects frustration patterns (3+ consecutive failures). All data is paranoid-anonymized: URLs are salted-HMAC hashed, file paths stripped, tokens/secrets/IPs redacted. Disabled by default.
+- **Crash Reporter** - automatic [anonymized crash/hang reporting](lib/reporter.js#L28-L290) via GitHub Issues. Identifies which sites cause failures and common failure patterns. Private domains are HMAC-hashed, paths/params stripped, tokens/IPs redacted. Opt-out with `CAMOFOX_CRASH_REPORT_ENABLED=false`.
 
 ## Optional Dependencies
 
@@ -310,22 +310,30 @@ When a proxy is configured:
 
 ### Crash Reporter
 
-Opt-in anonymized crash and hang reporting. When enabled, files GitHub Issues automatically when:
+Browser automation fails in ways that are hard to predict — Cloudflare challenges, site redesigns breaking selectors, redirect loops, dialog storms, renderer crashes. The scope is wide and the failure modes are diverse. Without telemetry, the only signal is "it didn't work."
+
+The crash reporter gives us structured data on *which sites fail*, *how they fail*, and *how often*, so we can prioritize fixes for the patterns that actually affect users. It files GitHub Issues automatically when:
 
 - **Uncaught exceptions** crash the process
 - **Event loop stalls** exceed 5 seconds (watchdog detection)
 - **Frustration patterns** — 3+ consecutive failures (timeout, dead context, navigation abort) on the same tab
 
-All reported data is paranoid-anonymized:
-- URLs → salted HMAC hashes (per-report salt, no cross-report correlation). Public infra domains (Cloudflare, Google, GitHub, etc.) shown verbatim.
-- File paths → stripped to filename only
-- Tokens, secrets, API keys → `<token>`
-- IPs, emails, env vars → redacted
-- Docker/Fly machine IDs → `<id>`
+Each report includes the failure type, stack trace, tab health counters (HTTP status histogram, console errors, request failures, redirect depth), and the target URL — all anonymized.
+
+#### Privacy
+
+All reported data goes through paranoid anonymization ([`lib/reporter.js` L28–290](lib/reporter.js#L28-L290)) before leaving the process:
+
+- **URLs** — well-known public domains (Google, Amazon, Reddit, Cloudflare, etc.) are shown verbatim so we can identify which sites cause problems. Private/unknown domains are replaced with a stable HMAC hash (`site-a1b2c3d4`) — same hash across reports for correlation, but not reversible to the original domain. Path segments become `•/•/•` (depth only). Query params become `?[3]` (count only). No keys, values, or path content is ever included.
+- **File paths** → stripped to filename only (`<path>/server.js`)
+- **Tokens, secrets, API keys** → `<token>`
+- **IPs, emails, env vars** → redacted
+- **Docker/Fly machine IDs** → `<id>`
+- **Tab health** — pure counters (crash count, error count, status code histogram). No page content, no URLs, no user data.
 
 Duplicate issues are detected by stack signature and get a `+1` comment instead of a new issue.
 
-Uses a dedicated GitHub App (`Camofox Crash/Stuck Reporter`) with issues-only permissions — no PAT required. Reports are filed to `jo-inc/camofox-browser` by default.
+Uses a dedicated GitHub App ([Camofox Crash/Stuck Reporter](https://github.com/apps/camofox-crash-stuck-reporter)) with issues-only permissions — no PAT or configuration required.
 
 ```bash
 # Disable crash reporting
@@ -337,8 +345,6 @@ export CAMOFOX_CRASH_REPORT_REPO=your-org/your-repo
 # Adjust rate limit (default: 10 per hour)
 export CAMOFOX_CRASH_REPORT_RATE_LIMIT=5
 ```
-
-Per-tab health tracking (page crashes, console errors, request failures, HTTP status codes, dialog storms, redirect depth) is always active for frustration detection but only included in reports when they fire.
 
 ### Structured Logging
 
