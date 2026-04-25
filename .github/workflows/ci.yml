@@ -28,10 +28,13 @@ jobs:
           npm install --no-save jest-junit
           npx playwright install --with-deps firefox
 
-      - name: Run tests
+      - name: Run tests (node:test)
+        run: node --test tests/unit/reporter.test.js
+
+      - name: Run tests (Jest + browser)
         run: |
           xvfb-run --auto-servernum \
             node --experimental-vm-modules node_modules/.bin/jest --runInBand --forceExit \
-              --testPathIgnorePatterns="live"
+              --testPathIgnorePatterns="live|reporter\.test"
         env:
           CI: true

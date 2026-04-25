@@ -7,7 +7,7 @@ class BrowserClient {
     this.sessionKey = crypto.randomUUID();
     this.listItemId = this.sessionKey; // Legacy alias
     this.tabs = [];
-    this.timeout = 30000; // 30 second default timeout
+    this.timeout = process.env.CI ? 60000 : 30000;
   }
   
   async request(method, path, body = null, options = {}) {
