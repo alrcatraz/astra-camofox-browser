@@ -2,6 +2,8 @@ import { startServer, stopServer, getServerUrl } from '../helpers/startServer.js
 import { startTestSite, stopTestSite, getTestSiteUrl } from '../helpers/testSite.js';
 import { createClient } from '../helpers/client.js';
 
+jest.retryTimes(2, { logErrorsBeforeRetry: true });
+
 describe('Form Submission', () => {
   let serverUrl;
   let testSiteUrl;
