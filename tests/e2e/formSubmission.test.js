@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import { startServer, stopServer, getServerUrl } from '../helpers/startServer.js';
 import { startTestSite, stopTestSite, getTestSiteUrl } from '../helpers/testSite.js';
 import { createClient } from '../helpers/client.js';
