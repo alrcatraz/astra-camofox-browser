@@ -3,17 +3,21 @@
   <h1>camofox-browser</h1>
   <p><strong>Anti-detection browser server for AI agents, powered by Camoufox</strong></p>
   <p>
-    <a href="https://github.com/jo-inc/camofox-browser/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen" alt="Build" /></a>
-    <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License" /></a>
-    <a href="https://camoufox.com"><img src="https://img.shields.io/badge/engine-Camoufox-red" alt="Camoufox" /></a>
-    <a href="https://hub.docker.com"><img src="https://img.shields.io/badge/docker-ready-blue" alt="Docker" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
+    <a href="https://github.com/jo-inc/camofox-browser/stargazers"><img src="https://img.shields.io/github/stars/jo-inc/camofox-browser" alt="GitHub stars" /></a>
+    <a href="https://www.npmjs.com/package/camofox-browser"><img src="https://img.shields.io/npm/v/camofox-browser" alt="npm version" /></a>
+    <a href="https://github.com/jo-inc/camofox-browser/commits"><img src="https://img.shields.io/github/last-commit/jo-inc/camofox-browser" alt="GitHub last commit" /></a>
   </p>
   <p>
     Standing on the mighty shoulders of <a href="https://camoufox.com">Camoufox</a> - a Firefox fork with fingerprint spoofing at the C++ level.
-    <br/><br/>
-    The same engine behind <a href="https://askjo.ai?ref=camofox">Jo</a> — an AI assistant that doesn't need you to babysit it. Runs half on your Mac, half on a dedicated cloud machine that only you use. Available on macOS, Telegram, and WhatsApp. <a href="https://askjo.ai?ref=camofox">Try the beta free →</a>
   </p>
 </div>
+
+<br/>
+
+> <a href="https://askjo.ai?ref=camofox"><img src="jo-logo.png" alt="Jo" width="80" height="80" align="left" /></a>
+>
+> Built by the team behind <a href="https://askjo.ai?ref=camofox"><strong>jo — a personal AI agent</strong></a> that runs half on your Mac, half on a dedicated cloud machine just for you — with zero maintenance needed. Available on macOS, Telegram, WhatsApp, and email. <a href="https://askjo.ai?ref=camofox">Try the beta free →</a>
 
 <br/>
 
@@ -51,6 +55,10 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **DOM Image Extraction** - list `<img>` src/alt and optionally return inline data URLs
 - **Deploy Anywhere** - Docker, Fly.io, Railway
 - **VNC Interactive Login** - log into sites visually via noVNC, export storage state for agent reuse
+- **OpenAPI Docs** - auto-generated spec at [`/openapi.json`](http://localhost:9377/openapi.json) and interactive docs at [`/docs`](http://localhost:9377/docs)
+- **Structured Extract** - `POST /tabs/:tabId/extract` with a JSON Schema that maps properties to snapshot refs via `x-ref`
+- **Session Tracing** - opt-in per-session Playwright trace capture (screenshots + DOM snapshots + network) with API endpoints to list, fetch, and delete trace zips
+- **Crash Reporter** - automatic [anonymized crash/hang reporting](lib/reporter.js#L28-L290) via GitHub Issues. Identifies which sites cause failures and common failure patterns. Private domains are HMAC-hashed, paths/params stripped, tokens/IPs redacted. Opt-out with `CAMOFOX_CRASH_REPORT_ENABLED=false`.
 
 ## Optional Dependencies
 
@@ -103,11 +111,11 @@ make up ARCH=x86_64
 make up VERSION=135.0.1 RELEASE=beta.24
 ```
 
-Note: `make fetch` (or `make build`) must be run first — the Dockerfile expects pre-downloaded binaries in `dist/`.
+> **⚠️ Do not run `docker build` directly.** The Dockerfile uses bind mounts to pull pre-downloaded binaries from `dist/`. Always use `make up` (or `make fetch` then `make build`) — it downloads the binaries first.
 
 ### Fly.io / Railway
 
-`fly.toml` and `railway.toml` are included. Deploy with `fly deploy` or connect the repo to Railway.
+`railway.toml` is included. For Fly.io or other remote CI, you'll need a Dockerfile that downloads binaries at build time instead of using bind mounts — see [jo-browser](https://github.com/jo-inc/jo-browser) for an example.
 
 ## Usage
 
@@ -193,6 +201,48 @@ By default, camofox persists each user's cookies and localStorage to `~/.camofox
 
 Override the directory with `CAMOFOX_PROFILE_DIR` or set `"profileDir"` in the persistence plugin config. To disable persistence, set `"persistence": { "enabled": false }` in `camofox.config.json`.
 
+### Session Tracing
+
+Capture a Playwright trace of every action in a session: page screenshots, DOM snapshots, network requests, and console output. Output is a single `.zip` file you can open in Playwright's built-in Trace Viewer.
+
+Opt-in per session by passing `trace: true` when opening the first tab:
+
+```bash
+curl -X POST http://localhost:9377/tabs \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"agent1","sessionKey":"task1","url":"https://example.com","trace":true}'
+```
+
+The trace is written when the session closes. Close the session to flush it, then list, fetch, and view:
+
+```bash
+# Close the session to flush the trace
+curl -X DELETE http://localhost:9377/sessions/agent1
+
+# List trace files
+curl http://localhost:9377/sessions/agent1/traces
+# {"traces":[{"filename":"trace-2026-04-18T04-05-00-...zip","sizeBytes":42810,"createdAt":...}]}
+
+# Download (Content-Type: application/zip)
+curl http://localhost:9377/sessions/agent1/traces/trace-2026-04-18T04-05-00-abc.zip > session.zip
+
+# View it in Playwright's Trace Viewer
+npx playwright show-trace session.zip
+
+# Delete
+curl -X DELETE http://localhost:9377/sessions/agent1/traces/trace-2026-04-18T04-05-00-abc.zip
+```
+
+Why traces instead of video: Camoufox is Firefox-based, and Playwright's `recordVideo` is Chromium-only. Traces work on Firefox and give you more than video (network + DOM + console + screenshots).
+
+Tracing cannot be toggled on an existing session. `DELETE /sessions/:userId` first if you need to change the flag.
+
+Storage defaults to `~/.camofox/traces/<hashed-userId>/` and is swept on server startup:
+
+- `CAMOFOX_TRACES_DIR` - base directory (default: `~/.camofox/traces`)
+- `CAMOFOX_TRACES_MAX_BYTES` - max size per trace, removed at next startup if exceeded (default: 50MB)
+- `CAMOFOX_TRACES_TTL_HOURS` - traces older than this are removed at next startup (default: 24)
+
 #### Standalone server usage
 
 ```bash
@@ -261,6 +311,60 @@ When a proxy is configured:
 - Camoufox's GeoIP automatically sets `locale`, `timezone`, and `geolocation` to match the proxy's exit IP
 - Browser fingerprint (language, timezone, coordinates) is consistent with the proxy location
 - Without a proxy, defaults to `en-US`, `America/Los_Angeles`, San Francisco coordinates
+
+### Crash Reporter
+
+Browser automation fails in ways that are hard to predict — Cloudflare challenges, site redesigns breaking selectors, redirect loops, dialog storms, renderer crashes. The scope is wide and the failure modes are diverse. Without telemetry, the only signal is "it didn't work."
+
+The crash reporter gives us structured data on *which sites fail*, *how they fail*, and *how often*, so we can prioritize fixes for the patterns that actually affect users. It files GitHub Issues automatically when:
+
+- **Uncaught exceptions** crash the process
+- **Event loop stalls** exceed 5 seconds (watchdog detection)
+- **Frustration patterns** — 3+ consecutive failures (timeout, dead context, navigation abort) on the same tab
+
+Each report includes the failure type, stack trace, tab health counters (HTTP status histogram, console errors, request failures, redirect depth), and the target URL — all anonymized.
+
+#### Privacy
+
+All reported data goes through paranoid anonymization ([`lib/reporter.js` L28–290](lib/reporter.js#L28-L290)) before leaving the process:
+
+- **URLs** — well-known public domains (Google, Amazon, Reddit, Cloudflare, etc.) are shown verbatim so we can identify which sites cause problems. Private/unknown domains are replaced with a stable HMAC hash (`site-a1b2c3d4`) — same hash across reports for correlation, but not reversible to the original domain. Path segments become `•/•/•` (depth only). Query params become `?[3]` (count only). No keys, values, or path content is ever included.
+- **File paths** → stripped to filename only (`<path>/server.js`)
+- **Tokens, secrets, API keys** → `<token>`
+- **IPs, emails, env vars** → redacted
+- **Docker/Fly machine IDs** → `<id>`
+- **Tab health** — pure counters (crash count, error count, status code histogram). No page content, no URLs, no user data.
+
+Duplicate issues are detected by stack signature and get a `+1` comment instead of a new issue.
+
+Uses a dedicated GitHub App ([Camofox Crash/Stuck Reporter](https://github.com/apps/camofox-crash-stuck-reporter)) with issues-only permissions — no PAT or configuration required.
+
+```bash
+# Disable crash reporting
+export CAMOFOX_CRASH_REPORT_ENABLED=false
+
+# Report to a different repo (default: jo-inc/camofox-browser)
+export CAMOFOX_CRASH_REPORT_REPO=your-org/your-repo
+
+# Adjust rate limit (default: 10 per hour)
+export CAMOFOX_CRASH_REPORT_RATE_LIMIT=5
+```
+
+#### Reporting to your own repo
+
+By default, reports go to `jo-inc/camofox-browser`. To file issues in your own repo instead, create a GitHub App:
+
+1. Go to **Settings → Developer settings → GitHub Apps → New GitHub App**
+2. Set permissions: **Repository → Issues → Read & Write**. Uncheck **Webhook → Active**.
+3. Click **Generate a private key** — downloads a `.pem` file
+4. Install the app on your target repo (Install App → select repo)
+5. Note your **App ID** (number on the app's settings page) and **Installation ID** (from the URL after installing: `github.com/settings/installations/{id}`)
+6. Base64-encode the private key and split it into two halves:
+   ```bash
+   base64 < your-app.pem | tr -d '\n' | fold -w $(($(base64 < your-app.pem | tr -d '\n' | wc -c) / 2)) | head -2
+   ```
+7. Replace `_GH_APP_ID`, `_GH_INSTALL_ID`, `_K_A`, and `_K_B` in `lib/reporter.js` with your values
+8. Set `CAMOFOX_CRASH_REPORT_REPO=your-org/your-repo`
 
 ### Structured Logging
 
@@ -381,6 +485,9 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
 | `CAMOFOX_PROFILE_DIR` | Directory for persisted session profiles | `~/.camofox/profiles` |
+| `CAMOFOX_TRACES_DIR` | Directory for session trace zips | `~/.camofox/traces` |
+| `CAMOFOX_TRACES_MAX_BYTES` | Max size per trace, removed on next startup if exceeded | `52428800` (50MB) |
+| `CAMOFOX_TRACES_TTL_HOURS` | Traces older than this are swept on startup | `24` |
 | `MAX_SESSIONS` | Max concurrent browser sessions | `50` |
 | `MAX_TABS_PER_SESSION` | Max tabs per session | `10` |
 | `SESSION_TIMEOUT_MS` | Session inactivity timeout | `1800000` (30min) |
@@ -399,6 +506,9 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `PROXY_COUNTRY` | Target country for proxy geo-targeting | - |
 | `PROXY_STATE` | Target state/region for proxy geo-targeting | - |
 | `TAB_INACTIVITY_MS` | Close tabs idle longer than this | `300000` (5min) |
+| `CAMOFOX_CRASH_REPORT_ENABLED` | Enable anonymized crash/hang reporter (`false` to disable) | `true` |
+| `CAMOFOX_CRASH_REPORT_REPO` | GitHub repo for issue reports | `jo-inc/camofox-browser` |
+| `CAMOFOX_CRASH_REPORT_RATE_LIMIT` | Max reports per hour | `10` |
 | `ENABLE_VNC` | Enable VNC plugin for interactive browser access (`1`) | - |
 | `VNC_PASSWORD` | Password for VNC access (recommended in production) | - |
 | `NOVNC_PORT` | noVNC web UI port | `6080` |
