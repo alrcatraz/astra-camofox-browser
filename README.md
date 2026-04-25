@@ -325,17 +325,20 @@ All reported data is paranoid-anonymized:
 
 Duplicate issues are detected by stack signature and get a `+1` comment instead of a new issue.
 
-```bash
-# Enable: set a GitHub PAT with issues:write scope
-export CAMOFOX_CRASH_REPORT_PAT=ghp_your_token_here
+Uses a dedicated GitHub App (`Camofox Crash/Stuck Reporter`) with issues-only permissions — no PAT required. Reports are filed to `jo-inc/camofox-browser` by default.
 
-# Optional overrides
-export CAMOFOX_CRASH_REPORT_REPO=your-org/your-repo  # default: jo-inc/camofox-browser
-export CAMOFOX_CRASH_REPORT_RATE_LIMIT=5              # default: 10 per hour
-export CAMOFOX_CRASH_REPORT_ENABLED=false              # disable entirely
+```bash
+# Disable crash reporting
+export CAMOFOX_CRASH_REPORT_ENABLED=false
+
+# Report to a different repo (default: jo-inc/camofox-browser)
+export CAMOFOX_CRASH_REPORT_REPO=your-org/your-repo
+
+# Adjust rate limit (default: 10 per hour)
+export CAMOFOX_CRASH_REPORT_RATE_LIMIT=5
 ```
 
-The reporter is a no-op without a PAT — no network calls, no data collection. Per-tab health tracking (page crashes, console errors, request failures, HTTP status codes, dialog storms, redirect depth) is always active for frustration detection but only included in reports when they fire.
+Per-tab health tracking (page crashes, console errors, request failures, HTTP status codes, dialog storms, redirect depth) is always active for frustration detection but only included in reports when they fire.
 
 ### Structured Logging
 
@@ -477,8 +480,7 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `PROXY_COUNTRY` | Target country for proxy geo-targeting | - |
 | `PROXY_STATE` | Target state/region for proxy geo-targeting | - |
 | `TAB_INACTIVITY_MS` | Close tabs idle longer than this | `300000` (5min) |
-| `CAMOFOX_CRASH_REPORT_ENABLED` | Enable anonymized crash/hang reporter (`false` to disable) | `true` (but no-ops without PAT) |
-| `CAMOFOX_CRASH_REPORT_PAT` | GitHub PAT with `issues:write` scope (required to file reports) | - |
+| `CAMOFOX_CRASH_REPORT_ENABLED` | Enable anonymized crash/hang reporter (`false` to disable) | `true` |
 | `CAMOFOX_CRASH_REPORT_REPO` | GitHub repo for issue reports | `jo-inc/camofox-browser` |
 | `CAMOFOX_CRASH_REPORT_RATE_LIMIT` | Max reports per hour | `10` |
 | `ENABLE_VNC` | Enable VNC plugin for interactive browser access (`1`) | - |

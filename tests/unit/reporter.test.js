@@ -347,7 +347,6 @@ describe('rate limiting', () => {
   it('allows up to maxPerHour reports', () => {
     const reporter = createReporter({
       crashReportEnabled: true,
-      crashReportPat: 'ghp_test',
       crashReportRepo: 'test/repo',
       crashReportRateLimit: 3,
     });
@@ -362,7 +361,6 @@ describe('rate limiting', () => {
   it('expires old entries after 1 hour', () => {
     const reporter = createReporter({
       crashReportEnabled: true,
-      crashReportPat: 'ghp_test',
       crashReportRepo: 'test/repo',
       crashReportRateLimit: 2,
     });
@@ -384,23 +382,12 @@ describe('createReporter', () => {
   it('returns no-op functions when disabled', async () => {
     const reporter = createReporter({
       crashReportEnabled: false,
-      crashReportPat: '',
       crashReportRepo: '',
     });
     await reporter.reportCrash(new Error('test'));
     await reporter.reportHang('navigate', 30000);
     await reporter.reportStuckLoop(60000);
     reporter.startWatchdog();
-    reporter.stop();
-  });
-
-  it('returns no-op when PAT is missing even if enabled', () => {
-    const reporter = createReporter({
-      crashReportEnabled: true,
-      crashReportPat: '',
-      crashReportRepo: 'test/repo',
-    });
-    assert.equal(reporter._rateLimiter, undefined);
     reporter.stop();
   });
 
@@ -414,7 +401,6 @@ describe('createReporter', () => {
   it('stop() resolves even with no in-flight reports', async () => {
     const reporter = createReporter({
       crashReportEnabled: true,
-      crashReportPat: 'ghp_test',
       crashReportRepo: 'test/repo',
     });
     reporter.startWatchdog();
