@@ -436,6 +436,49 @@ describe('createUrlAnonymizer', () => {
     assert.ok(!result.includes('main.js'), `leaked filename: ${result}`);
   });
 
+  it('preserves major public sites verbatim (actionable reports)', () => {
+    const { anonymizeUrl } = createUrlAnonymizer();
+    const sites = [
+      ['https://www.amazon.com/dp/B09876', 'amazon.com'],
+      ['https://old.reddit.com/r/programming', 'old.reddit.com'],
+      ['https://www.linkedin.com/in/someone', 'linkedin.com'],
+      ['https://twitter.com/user/status/123', 'twitter.com'],
+      ['https://www.facebook.com/profile', 'facebook.com'],
+      ['https://www.instagram.com/p/abc', 'instagram.com'],
+      ['https://open.spotify.com/track/123', 'open.spotify.com'],
+      ['https://discord.com/channels/123', 'discord.com'],
+      ['https://www.nytimes.com/2026/article', 'nytimes.com'],
+      ['https://stackoverflow.com/questions/123', 'stackoverflow.com'],
+    ];
+    for (const [url, expectedHost] of sites) {
+      const result = anonymizeUrl(url);
+      assert.ok(result.includes(expectedHost), `hashed public site ${expectedHost}: ${result}`);
+      // paths should still be stripped
+      assert.ok(!result.includes('someone') && !result.includes('programming'),
+        `leaked path for ${expectedHost}: ${result}`);
+    }
+  });
+
+  it('preserves scraping targets and prediction markets verbatim', () => {
+    const { anonymizeUrl } = createUrlAnonymizer();
+    const sites = [
+      ['https://polymarket.com/event/some-market-slug', 'polymarket.com'],
+      ['https://kalshi.com/markets/some-event', 'kalshi.com'],
+      ['https://www.zillow.com/homedetails/123', 'zillow.com'],
+      ['https://www.indeed.com/viewjob?jk=abc123', 'indeed.com'],
+      ['https://www.airbnb.com/rooms/12345', 'airbnb.com'],
+      ['https://www.tradingview.com/chart/BTCUSD', 'tradingview.com'],
+      ['https://www.coinbase.com/price/bitcoin', 'coinbase.com'],
+      ['https://etherscan.io/tx/0xabc', 'etherscan.io'],
+      ['https://openai.com/api/docs', 'openai.com'],
+      ['https://news.ycombinator.com/item?id=123', 'news.ycombinator.com'],
+    ];
+    for (const [url, expectedHost] of sites) {
+      const result = anonymizeUrl(url);
+      assert.ok(result.includes(expectedHost), `hashed public site ${expectedHost}: ${result}`);
+    }
+  });
+
   it('hashes private domains', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
     const result = anonymizeUrl('https://internal-dashboard.corp.example.com/admin/users');
@@ -485,14 +528,14 @@ describe('createUrlAnonymizer', () => {
     assert.equal(hash1, hash2, 'same domain should produce same hash');
   });
 
-  it('different anonymizers produce different hashes (different salts)', () => {
+  it('different anonymizers produce SAME hashes (stable key, cross-report correlation)', () => {
     const a1 = createUrlAnonymizer();
     const a2 = createUrlAnonymizer();
     const r1 = a1.anonymizeUrl('https://mysite.com/');
     const r2 = a2.anonymizeUrl('https://mysite.com/');
     const hash1 = r1.match(/site-[a-f0-9]+/)?.[0];
     const hash2 = r2.match(/site-[a-f0-9]+/)?.[0];
-    assert.notEqual(hash1, hash2, 'different salts should produce different hashes');
+    assert.equal(hash1, hash2, 'stable key should produce same hash across reports');
   });
 
   it('hashes IP addresses', () => {
