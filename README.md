@@ -54,6 +54,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **OpenAPI Docs** - auto-generated spec at [`/openapi.json`](http://localhost:9377/openapi.json) and interactive docs at [`/docs`](http://localhost:9377/docs)
 - **Structured Extract** - `POST /tabs/:tabId/extract` with a JSON Schema that maps properties to snapshot refs via `x-ref`
 - **Session Tracing** - opt-in per-session Playwright trace capture (screenshots + DOM snapshots + network) with API endpoints to list, fetch, and delete trace zips
+- **Crash Reporter** - opt-in anonymized crash/hang reporting via GitHub Issues. Per-tab health tracking detects frustration patterns (3+ consecutive failures). All data is paranoid-anonymized: URLs are salted-HMAC hashed, file paths stripped, tokens/secrets/IPs redacted. Disabled by default.
 
 ## Optional Dependencies
 
@@ -307,6 +308,35 @@ When a proxy is configured:
 - Browser fingerprint (language, timezone, coordinates) is consistent with the proxy location
 - Without a proxy, defaults to `en-US`, `America/Los_Angeles`, San Francisco coordinates
 
+### Crash Reporter
+
+Opt-in anonymized crash and hang reporting. When enabled, files GitHub Issues automatically when:
+
+- **Uncaught exceptions** crash the process
+- **Event loop stalls** exceed 5 seconds (watchdog detection)
+- **Frustration patterns** — 3+ consecutive failures (timeout, dead context, navigation abort) on the same tab
+
+All reported data is paranoid-anonymized:
+- URLs → salted HMAC hashes (per-report salt, no cross-report correlation). Public infra domains (Cloudflare, Google, GitHub, etc.) shown verbatim.
+- File paths → stripped to filename only
+- Tokens, secrets, API keys → `<token>`
+- IPs, emails, env vars → redacted
+- Docker/Fly machine IDs → `<id>`
+
+Duplicate issues are detected by stack signature and get a `+1` comment instead of a new issue.
+
+```bash
+# Enable: set a GitHub PAT with issues:write scope
+export CAMOFOX_CRASH_REPORT_PAT=ghp_your_token_here
+
+# Optional overrides
+export CAMOFOX_CRASH_REPORT_REPO=your-org/your-repo  # default: jo-inc/camofox-browser
+export CAMOFOX_CRASH_REPORT_RATE_LIMIT=5              # default: 10 per hour
+export CAMOFOX_CRASH_REPORT_ENABLED=false              # disable entirely
+```
+
+The reporter is a no-op without a PAT — no network calls, no data collection. Per-tab health tracking (page crashes, console errors, request failures, HTTP status codes, dialog storms, redirect depth) is always active for frustration detection but only included in reports when they fire.
+
 ### Structured Logging
 
 All log output is JSON (one object per line) for easy parsing by log aggregators:
@@ -447,6 +477,10 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `PROXY_COUNTRY` | Target country for proxy geo-targeting | - |
 | `PROXY_STATE` | Target state/region for proxy geo-targeting | - |
 | `TAB_INACTIVITY_MS` | Close tabs idle longer than this | `300000` (5min) |
+| `CAMOFOX_CRASH_REPORT_ENABLED` | Enable anonymized crash/hang reporter (`false` to disable) | `true` (but no-ops without PAT) |
+| `CAMOFOX_CRASH_REPORT_PAT` | GitHub PAT with `issues:write` scope (required to file reports) | - |
+| `CAMOFOX_CRASH_REPORT_REPO` | GitHub repo for issue reports | `jo-inc/camofox-browser` |
+| `CAMOFOX_CRASH_REPORT_RATE_LIMIT` | Max reports per hour | `10` |
 | `ENABLE_VNC` | Enable VNC plugin for interactive browser access (`1`) | - |
 | `VNC_PASSWORD` | Password for VNC access (recommended in production) | - |
 | `NOVNC_PORT` | noVNC web UI port | `6080` |
