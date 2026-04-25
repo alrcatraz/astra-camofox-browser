@@ -15,15 +15,10 @@
 
 <br/>
 
-<div align="center">
-  <a href="https://askjo.ai?ref=camofox">
-    <img src="jo-logo.png" alt="Jo" width="64" />
-  </a>
-  <br/>
-  <strong>Built by the team behind <a href="https://askjo.ai?ref=camofox">jo</a></strong> — an AI assistant that runs half on your Mac, half on a dedicated cloud machine just for you.
-  <br/>
-  Available on macOS, Telegram, and WhatsApp. <a href="https://askjo.ai?ref=camofox">Try the beta free →</a>
-</div>
+<table align="center"><tr>
+  <td><a href="https://askjo.ai?ref=camofox"><img src="jo-logo.png" alt="Jo" width="48" /></a></td>
+  <td>Built by the team behind <a href="https://askjo.ai?ref=camofox"><strong>jo</strong></a> — an AI assistant that runs half on your Mac, half on a dedicated cloud machine just for you. Available on macOS, Telegram, and WhatsApp. <a href="https://askjo.ai?ref=camofox">Try the beta free →</a></td>
+</tr></table>
 
 <br/>
 
