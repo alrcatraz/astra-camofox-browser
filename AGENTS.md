@@ -165,6 +165,7 @@ docker run -p 9377:9377 camofox-browser
 - `lib/persistence.js` - Atomic storage state read/write
 - `lib/inflight.js` - Inflight request coalescing
 - `lib/tmp-cleanup.js` - Orphaned temp file cleanup
+- `lib/reporter.js` - Crash/hang reporter with anonymization + GitHub App auth (see README "Crash Reporter" for setup)
 - `Dockerfile` - Production container with default plugin deps pre-installed
 
 ## OpenAPI Spec (REQUIRED for route changes)
@@ -229,6 +230,17 @@ app.post('/tabs/:tabId/click', async (req, res) => {
 - **After any route change, run `npm run generate-openapi`** to regenerate the committed `openapi.json`. The test suite will fail if it's stale.
 - Run `npx jest tests/unit/openapi.test.js` to verify coverage — the test fails if any route is missing from the spec, if a stale route exists, or if `openapi.json` is out of date
 - Reusable schemas go in `components.schemas` in `lib/openapi.js` (the `swaggerDefinition`); reference them via `$ref: '#/components/schemas/Name'`
+
+## Crash Reporter
+
+`lib/reporter.js` contains the crash/hang reporter. It uses an embedded GitHub App (`Camofox Crash/Stuck Reporter`) to file anonymized issues to `jo-inc/camofox-browser`. No PAT or external config needed — it works out of the box.
+
+- **App credentials** are embedded in `lib/reporter.js` (private key is base64-split to avoid GitHub push protection)
+- **Anonymization** is in `lib/reporter.js` L28–290 — text scrubbing (`anonymize()`), URL anonymization (`createUrlAnonymizer()`), and tab health tracking (`createTabHealthTracker()`)
+- **Public domain list** (~120 entries) determines which domains are shown verbatim vs HMAC-hashed
+- **Tests** in `tests/unit/reporter.test.js` — uses `node:test` (not Jest), run separately with `node --test`
+- Organizations that want crash reports filed to their own repo can set up their own GitHub App — see README "Reporting to your own repo" for step-by-step instructions
+- Disable with `CAMOFOX_CRASH_REPORT_ENABLED=false`
 
 ## OpenClaw Scanner Isolation (CRITICAL)
 
