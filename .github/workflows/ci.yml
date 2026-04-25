@@ -25,6 +25,7 @@ jobs:
       - name: Install dependencies and browser
         run: |
           npm ci
+          npm install --no-save jest-junit
           npx playwright install --with-deps firefox
 
       - name: Run tests
