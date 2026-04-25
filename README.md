@@ -10,9 +10,19 @@
   </p>
   <p>
     Standing on the mighty shoulders of <a href="https://camoufox.com">Camoufox</a> - a Firefox fork with fingerprint spoofing at the C++ level.
-    <br/><br/>
-    The same engine behind <a href="https://askjo.ai?ref=camofox">Jo</a> — an AI assistant that doesn't need you to babysit it. Runs half on your Mac, half on a dedicated cloud machine that only you use. Available on macOS, Telegram, and WhatsApp. <a href="https://askjo.ai?ref=camofox">Try the beta free →</a>
   </p>
+</div>
+
+<br/>
+
+<div align="center">
+  <a href="https://askjo.ai?ref=camofox">
+    <img src="jo-logo.png" alt="Jo" width="64" />
+  </a>
+  <br/>
+  <strong>Built by the team behind <a href="https://askjo.ai?ref=camofox">jo</a></strong> — an AI assistant that runs half on your Mac, half on a dedicated cloud machine just for you.
+  <br/>
+  Available on macOS, Telegram, and WhatsApp. <a href="https://askjo.ai?ref=camofox">Try the beta free →</a>
 </div>
 
 <br/>
