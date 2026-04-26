@@ -361,7 +361,7 @@ describe('rate limiting', () => {
       crashReportRepo: 'test/repo',
       crashReportRateLimit: 3,
     });
-    const rl = reporter._rateLimiter;
+    const rl = reporter._rateLimiter._default;
     assert.ok(rl.tryAcquire());
     assert.ok(rl.tryAcquire());
     assert.ok(rl.tryAcquire());
@@ -376,7 +376,7 @@ describe('rate limiting', () => {
       crashReportRepo: 'test/repo',
       crashReportRateLimit: 2,
     });
-    const rl = reporter._rateLimiter;
+    const rl = reporter._rateLimiter._default;
     rl.timestamps = [Date.now() - 3700_000, Date.now() - 3600_001];
     assert.ok(rl.tryAcquire(), 'old entries should be expired');
     assert.ok(rl.tryAcquire(), 'second should work too');

@@ -55,7 +55,7 @@ function _browserPid() {
 function _resourceOpts() {
   return { sessionCount: sessions.size, tabCount: _countTabs(), browserPid: _browserPid() };
 }
-reporter.startWatchdog(5000, () => {
+reporter.startWatchdog(30_000, () => {
   const summary = [];
   for (const [sid, session] of sessions) {
     const tabUrls = [];
