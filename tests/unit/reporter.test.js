@@ -342,10 +342,16 @@ describe('stackSignature', () => {
 // Rate limiter tests
 // ============================================================================
 
+// Dummy creds so createReporter enters the enabled path (requires appId)
+const TEST_CRASH_CONFIG = {
+  crashReporterConfig: { appId: 'test-app', installationId: 'test-install', repo: 'test/repo', keyA: 'a', keyB: 'b' },
+};
+
 describe('rate limiting', () => {
 
   it('allows up to maxPerHour reports', () => {
     const reporter = createReporter({
+      ...TEST_CRASH_CONFIG,
       crashReportEnabled: true,
       crashReportRepo: 'test/repo',
       crashReportRateLimit: 3,
@@ -360,6 +366,7 @@ describe('rate limiting', () => {
 
   it('expires old entries after 1 hour', () => {
     const reporter = createReporter({
+      ...TEST_CRASH_CONFIG,
       crashReportEnabled: true,
       crashReportRepo: 'test/repo',
       crashReportRateLimit: 2,
@@ -400,6 +407,7 @@ describe('createReporter', () => {
 
   it('stop() resolves even with no in-flight reports', async () => {
     const reporter = createReporter({
+      ...TEST_CRASH_CONFIG,
       crashReportEnabled: true,
       crashReportRepo: 'test/repo',
     });
