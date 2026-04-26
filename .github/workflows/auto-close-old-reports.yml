@@ -1,0 +1,52 @@
+name: Auto-close old version reports
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  check-version:
+    if: contains(join(github.event.issue.labels.*.name, ','), 'auto-report')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Check reporter version
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const MIN_VERSION = [1, 7, 2];
+            const body = context.payload.issue.body || '';
+
+            // Parse "- **version:** X.Y.Z" from issue body
+            const match = body.match(/\*\*[Vv]ersion:\*\*\s*v?(\d+\.\d+\.\d+)/);
+            if (!match) {
+              console.log('No version found in issue body, closing.');
+            } else {
+              const parts = match[1].split('.').map(Number);
+              let dominated = false;
+              for (let i = 0; i < MIN_VERSION.length; i++) {
+                if ((parts[i] || 0) > MIN_VERSION[i]) { dominated = false; break; }
+                if ((parts[i] || 0) < MIN_VERSION[i]) { dominated = true; break; }
+              }
+              if (!dominated) {
+                console.log(`Version ${match[1]} meets minimum ${MIN_VERSION.join('.')}, keeping open.`);
+                return;
+              }
+              console.log(`Version ${match[1]} below minimum ${MIN_VERSION.join('.')}, closing.`);
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `Closing — reported from v${match ? match[1] : 'unknown'}, minimum supported is v${MIN_VERSION.join('.')}. Please upgrade to get improved crash diagnostics.`,
+            });
+
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              state: 'closed',
+              state_reason: 'not_planned',
+            });
