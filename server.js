@@ -56,7 +56,18 @@ function _resourceOpts() {
   return { sessionCount: sessions.size, tabCount: _countTabs(), browserPid: _browserPid() };
 }
 reporter.startWatchdog(5000, () => {
-  return { resourceOpts: _resourceOpts() };
+  const summary = [];
+  for (const [sid, session] of sessions) {
+    const tabUrls = [];
+    for (const [tid, tab] of session.tabs) {
+      try {
+        const url = tab.page?.url?.() || 'unknown';
+        tabUrls.push(url);
+      } catch { tabUrls.push('error'); }
+    }
+    if (tabUrls.length > 0) summary.push({ session: sid, tabs: tabUrls.length, urls: tabUrls });
+  }
+  return { resourceOpts: _resourceOpts(), sessions: summary.length, summary };
 });
 
 // --- Plugin event bus ---
