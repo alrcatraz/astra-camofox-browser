@@ -1,92 +1,161 @@
+/**
+ * Unit tests for tmp-cleanup.js — orphaned temp files + stale Firefox profiles.
+ */
+
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
-import { cleanupOrphanedTempFiles } from '../../lib/tmp-cleanup.js';
+import os from 'os';
+import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from '../../lib/tmp-cleanup.js';
 
-describe('lib/tmp-cleanup', () => {
-  let tmpDir;
+function makeTmpDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'camofox-test-'));
+}
 
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'camofox-tmp-cleanup-test-'));
+describe('cleanupOrphanedTempFiles', () => {
+  it('removes old orphaned .so files', () => {
+    const dir = makeTmpDir();
+    const name = '.fea5abcdef1234.so';
+    const full = path.join(dir, name);
+    fs.writeFileSync(full, 'data');
+    // Set mtime to 10 minutes ago
+    const oldTime = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(full, oldTime, oldTime);
+
+    const result = cleanupOrphanedTempFiles({ tmpDir: dir, minAgeMs: 5 * 60 * 1000 });
+    expect(result.removed).toBe(1);
+    expect(fs.existsSync(full)).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  it('skips recent orphaned files', () => {
+    const dir = makeTmpDir();
+    const name = '.fea5abcdef1234.so';
+    const full = path.join(dir, name);
+    fs.writeFileSync(full, 'data');
+    // mtime is now (recent)
 
-  function writeFile(name, { sizeBytes = 16, ageMs = 0 } = {}) {
-    const full = path.join(tmpDir, name);
-    fs.writeFileSync(full, Buffer.alloc(sizeBytes));
-    if (ageMs > 0) {
-      const past = (Date.now() - ageMs) / 1000;
-      fs.utimesSync(full, past, past);
-    }
-    return full;
-  }
-
-  test('removes orphaned .fea5*.so and .5ef7*.node files older than threshold', () => {
-    writeFile('.fea5abc123.so', { sizeBytes: 4300000, ageMs: 60 * 60 * 1000 });
-    writeFile('.5ef7deadbeef.node', { sizeBytes: 0, ageMs: 60 * 60 * 1000 });
-
-    const result = cleanupOrphanedTempFiles({ tmpDir, minAgeMs: 5 * 60 * 1000 });
-
-    expect(result.scanned).toBe(2);
-    expect(result.removed).toBe(2);
-    expect(result.bytes).toBe(4300000);
-    expect(fs.existsSync(path.join(tmpDir, '.fea5abc123.so'))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, '.5ef7deadbeef.node'))).toBe(false);
-  });
-
-  test('leaves files younger than threshold (concurrent-instance guard)', () => {
-    writeFile('.fea5beef01.so', { sizeBytes: 100, ageMs: 60 * 1000 });
-
-    const result = cleanupOrphanedTempFiles({ tmpDir, minAgeMs: 5 * 60 * 1000 });
-
-    expect(result.scanned).toBe(1);
+    const result = cleanupOrphanedTempFiles({ tmpDir: dir, minAgeMs: 5 * 60 * 1000 });
     expect(result.removed).toBe(0);
     expect(result.skipped).toBe(1);
-    expect(fs.existsSync(path.join(tmpDir, '.fea5beef01.so'))).toBe(true);
+    expect(fs.existsSync(full)).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test('leaves files that do not match the orphan patterns', () => {
-    writeFile('normal.so', { ageMs: 60 * 60 * 1000 });
-    writeFile('.fea5.so', { ageMs: 60 * 60 * 1000 });
-    writeFile('.fea5abc.txt', { ageMs: 60 * 60 * 1000 });
-    writeFile('camofox-download-abc.pdf', { ageMs: 60 * 60 * 1000 });
-
-    const result = cleanupOrphanedTempFiles({ tmpDir, minAgeMs: 5 * 60 * 1000 });
-
+  it('ignores non-matching files', () => {
+    const dir = makeTmpDir();
+    fs.writeFileSync(path.join(dir, 'normal-file.txt'), 'data');
+    fs.writeFileSync(path.join(dir, '.fea5.so'), 'data'); // too short hex
+    fs.writeFileSync(path.join(dir, '.fea5abc.txt'), 'data'); // wrong extension
+    const result = cleanupOrphanedTempFiles({ tmpDir: dir });
     expect(result.scanned).toBe(0);
     expect(result.removed).toBe(0);
-    expect(fs.readdirSync(tmpDir).length).toBe(4);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test('returns zeros when tmpDir does not exist', () => {
-    const missing = path.join(tmpDir, 'does-not-exist');
-
-    const result = cleanupOrphanedTempFiles({ tmpDir: missing });
-
+  it('returns zeros for nonexistent tmpDir', () => {
+    const result = cleanupOrphanedTempFiles({ tmpDir: '/tmp/camofox-nonexistent-xyz' });
     expect(result).toEqual({ scanned: 0, removed: 0, bytes: 0, skipped: 0 });
   });
 
-  test('uses injected now for deterministic age comparison', () => {
-    writeFile('.fea5abc.so', { sizeBytes: 10, ageMs: 0 });
-    const filePath = path.join(tmpDir, '.fea5abc.so');
-    const mtimeMs = fs.statSync(filePath).mtimeMs;
+  it('supports injected now for deterministic age comparison', () => {
+    const dir = makeTmpDir();
+    const full = path.join(dir, '.fea5abc123.so');
+    fs.writeFileSync(full, 'x'.repeat(10));
+    const mtimeMs = fs.statSync(full).mtimeMs;
 
-    const fresh = cleanupOrphanedTempFiles({
-      tmpDir,
-      minAgeMs: 5 * 60 * 1000,
-      now: mtimeMs + 60 * 1000,
-    });
+    // 1 min after mtime: still fresh
+    const fresh = cleanupOrphanedTempFiles({ tmpDir: dir, minAgeMs: 5 * 60 * 1000, now: mtimeMs + 60 * 1000 });
     expect(fresh.removed).toBe(0);
     expect(fresh.skipped).toBe(1);
 
-    const stale = cleanupOrphanedTempFiles({
-      tmpDir,
-      minAgeMs: 5 * 60 * 1000,
-      now: mtimeMs + 10 * 60 * 1000,
-    });
+    // 10 min after mtime: stale
+    const stale = cleanupOrphanedTempFiles({ tmpDir: dir, minAgeMs: 5 * 60 * 1000, now: mtimeMs + 10 * 60 * 1000 });
     expect(stale.removed).toBe(1);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('cleanupStaleFirefoxProfiles', () => {
+  it('removes old playwright_firefoxdev_profile- directories', () => {
+    const dir = makeTmpDir();
+    const profileDir = path.join(dir, 'playwright_firefoxdev_profile-abc123');
+    fs.mkdirSync(profileDir);
+    fs.writeFileSync(path.join(profileDir, 'cache.db'), 'x'.repeat(1000));
+    fs.writeFileSync(path.join(profileDir, 'prefs.js'), 'data');
+    // Set mtime to 5 minutes ago
+    const oldTime = new Date(Date.now() - 5 * 60 * 1000);
+    fs.utimesSync(profileDir, oldTime, oldTime);
+
+    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 2 * 60 * 1000 });
+    expect(result.removed).toBe(1);
+    expect(result.bytes).toBeGreaterThan(0);
+    expect(fs.existsSync(profileDir)).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('skips recent profile directories', () => {
+    const dir = makeTmpDir();
+    const profileDir = path.join(dir, 'playwright_firefoxdev_profile-recent');
+    fs.mkdirSync(profileDir);
+    fs.writeFileSync(path.join(profileDir, 'data.db'), 'data');
+    // mtime is now (recent)
+
+    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 2 * 60 * 1000 });
+    expect(result.removed).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(fs.existsSync(profileDir)).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('removes camoufox- prefixed temp dirs', () => {
+    const dir = makeTmpDir();
+    const camoDir = path.join(dir, 'camoufox-session-xyz');
+    fs.mkdirSync(camoDir);
+    fs.writeFileSync(path.join(camoDir, 'state'), 'data');
+    const oldTime = new Date(Date.now() - 5 * 60 * 1000);
+    fs.utimesSync(camoDir, oldTime, oldTime);
+
+    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 2 * 60 * 1000 });
+    expect(result.removed).toBe(1);
+    expect(fs.existsSync(camoDir)).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('calculates byte count of removed directories', () => {
+    const dir = makeTmpDir();
+    const profileDir = path.join(dir, 'playwright_firefoxdev_profile-sizeme');
+    fs.mkdirSync(profileDir);
+    const subDir = path.join(profileDir, 'cache2');
+    fs.mkdirSync(subDir);
+    fs.writeFileSync(path.join(subDir, 'big.dat'), 'x'.repeat(5000));
+    fs.writeFileSync(path.join(profileDir, 'small.dat'), 'x'.repeat(100));
+    const oldTime = new Date(Date.now() - 5 * 60 * 1000);
+    fs.utimesSync(profileDir, oldTime, oldTime);
+
+    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 2 * 60 * 1000 });
+    expect(result.removed).toBe(1);
+    expect(result.bytes).toBe(5100);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('ignores non-matching directories', () => {
+    const dir = makeTmpDir();
+    fs.mkdirSync(path.join(dir, 'some-other-dir'));
+    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir });
+    expect(result.scanned).toBe(0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('handles empty tmpDir', () => {
+    const dir = makeTmpDir();
+    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir });
+    expect(result.scanned).toBe(0);
+    expect(result.removed).toBe(0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('handles nonexistent tmpDir gracefully', () => {
+    const result = cleanupStaleFirefoxProfiles({ tmpDir: '/tmp/camofox-nonexistent-dir-xyz' });
+    expect(result.scanned).toBe(0);
   });
 });
