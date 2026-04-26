@@ -42,7 +42,19 @@ const CONFIG = loadConfig();
 import { readFileSync } from 'fs';
 const _pkgVersion = (() => { try { return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version; } catch { return 'unknown'; } })();
 const reporter = createReporter({ ...CONFIG, version: _pkgVersion });
-reporter.startWatchdog(5000);
+reporter.startWatchdog(5000, () => {
+  const summary = [];
+  for (const [userId, session] of sessions) {
+    const urls = [];
+    for (const group of session.tabGroups.values()) {
+      for (const tab of group.values()) {
+        try { if (tab.page) urls.push(tab.page.url()); } catch {}
+      }
+    }
+    summary.push({ userId, urls });
+  }
+  return { sessions: sessions.size, summary };
+});
 
 // --- Plugin event bus ---
 const pluginEvents = createPluginEvents();
