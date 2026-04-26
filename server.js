@@ -31,7 +31,7 @@ import {
   startMemoryReporter, stopMemoryReporter,
 } from './lib/metrics.js';
 import { actionFromReq, classifyError } from './lib/request-utils.js';
-import { cleanupOrphanedTempFiles } from './lib/tmp-cleanup.js';
+import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
@@ -360,6 +360,8 @@ app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (r
 });
 
 let browser = null;
+let _lastBrowserPid = null; // Track PID independently for force-kill after close
+let _browserClosePromise = null; // Shared promise for concurrent close serialization
 // userId -> { context, tabGroups: Map<sessionKey, Map<tabId, TabState>>, lastAccess }
 // TabState = { page, refs: Map<refId, {role, name, nth}>, visitedUrls: Set, downloads: Array, toolCalls: number }
 // Note: sessionKey was previously called listItemId - both are accepted for backward compatibility
@@ -546,9 +548,7 @@ function scheduleBrowserIdleShutdown() {
     browserIdleTimer = setTimeout(async () => {
       if (sessions.size === 0 && browser) {
         log('info', 'browser idle shutdown (no sessions)');
-        const b = browser;
-        browser = null;
-        await b.close().catch(() => {});
+        await closeBrowserFully('idle_shutdown');
       }
     }, BROWSER_IDLE_TIMEOUT_MS);
   }
@@ -602,10 +602,7 @@ async function restartBrowser(reason) {
   pluginEvents.emit('browser:restart', { reason });
   try {
     await closeAllSessions(`browser_restart:${reason}`, { clearDownloads: true, clearLocks: true });
-    if (browser) {
-      await browser.close().catch(() => {});
-      browser = null;
-    }
+    await closeBrowserFully(`browser_restart:${reason}`);
     pluginEvents.emit('browser:closed', { reason });
     browserLaunchPromise = null;
     await ensureBrowser();
@@ -669,6 +666,167 @@ function attachBrowserCleanup(candidateBrowser, localVirtualDisplay) {
       if (virtualDisplay === localVirtualDisplay) virtualDisplay = null;
     }
   };
+}
+
+/**
+ * Close browser with full process-tree cleanup. Handles the race where
+ * browser.close() fails/hangs but process tree survives.
+ *
+ * Serialized: concurrent callers await the same promise (no double-close).
+ *
+ * Order: capture PID → close browser → force-kill survivors →
+ * clean temp profiles → verify FD/handle drop.
+ */
+async function closeBrowserFully(reason) {
+  if (_browserClosePromise) return _browserClosePromise;
+  _browserClosePromise = _closeBrowserFullyImpl(reason);
+  try {
+    return await _browserClosePromise;
+  } finally {
+    _browserClosePromise = null;
+  }
+}
+
+async function _closeBrowserFullyImpl(reason) {
+  const b = browser;
+  if (!b) return;
+
+  // Capture PID before nulling browser ref — we need it for force-kill
+  const pid = _lastBrowserPid;
+  const preCloseFds = _countOpenFds();
+  const preCloseHandles = _countActiveHandles();
+
+  // Null the ref so new requests don't use a dying browser
+  browser = null;
+  _lastBrowserPid = null;
+
+  // Close through Playwright (sends CDP Browser.close, then SIGKILL process group)
+  let closeTimer;
+  try {
+    await Promise.race([
+      b.close(),
+      new Promise((_, reject) => { closeTimer = setTimeout(() => reject(new Error('browser.close() timeout')), 10000); }),
+    ]);
+  } catch (err) {
+    log('warn', 'browser.close() failed or timed out', { reason, error: err.message, pid });
+  } finally {
+    clearTimeout(closeTimer);
+  }
+
+  // Force-kill the entire process tree if any survivors
+  if (pid) {
+    await _forceKillProcessTree(pid, reason);
+  }
+
+  // Clean up stale Firefox temp profiles (enable_cache: true accumulates data)
+  try {
+    const cleaned = cleanupStaleFirefoxProfiles();
+    if (cleaned.removed > 0) {
+      log('info', 'cleaned stale firefox profiles after browser close', cleaned);
+    }
+  } catch { /* best effort */ }
+
+  // Reset native memory baseline so next browser measures from fresh
+  reporter.resetNativeMemBaseline();
+
+  // Verify cleanup: check FD/handle counts dropped (after force-kill completes)
+  const postCloseFds = _countOpenFds();
+  const postCloseHandles = _countActiveHandles();
+  if (postCloseFds !== null && preCloseFds !== null) {
+    const fdDelta = postCloseFds - preCloseFds;
+    // After close we expect fewer FDs. If more leaked, warn.
+    if (fdDelta > 10) {
+      log('warn', 'FD leak detected after browser close', {
+        reason, preCloseFds, postCloseFds, delta: fdDelta,
+        preCloseHandles, postCloseHandles,
+      });
+    }
+  }
+  log('info', 'browser closed fully', {
+    reason, pid, preCloseFds, postCloseFds, preCloseHandles, postCloseHandles,
+  });
+}
+
+/**
+ * Force-kill a browser process tree by PID. On Linux, kills the process group
+ * (SIGKILL -pid) then scans /proc for any orphaned children.
+ */
+async function _forceKillProcessTree(pid, reason) {
+  if (!pid || pid <= 1) return;
+
+  // Kill the specific browser process first (positive PID = single process)
+  try {
+    process.kill(pid, 'SIGKILL');
+    log('info', 'sent SIGKILL to browser process', { pid, reason });
+  } catch (err) {
+    if (err.code !== 'ESRCH') {
+      log('warn', 'failed to kill browser process', { pid, error: err.message });
+    }
+  }
+
+  // Then try the process group (Playwright launches with detached:true on Linux,
+  // making the browser a process group leader)
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    // ESRCH = group doesn't exist (browser wasn't a group leader), which is fine
+  }
+
+  // Wait for kernel to reparent children to PID 1 before scanning
+  await new Promise(r => setTimeout(r, 200));
+
+  // On Linux: scan /proc for orphaned children that escaped the process group
+  // (reparented to PID 1 by init/systemd, common with Firefox content processes).
+  // Also checks PPid === Node PID for containerized environments without init.
+  if (process.platform === 'linux') {
+    const myPid = process.pid;
+    // Snapshot the current browser PID to avoid killing a newly launched browser
+    const currentBrowserPid = _lastBrowserPid;
+    try {
+      const procDirs = fs.readdirSync('/proc').filter(d => /^\d+$/.test(d));
+      const orphans = [];
+      for (const procPid of procDirs) {
+        const numPid = parseInt(procPid);
+        // Never kill ourselves, the old PID (already killed), or the new browser
+        if (numPid === myPid || numPid === pid || numPid === currentBrowserPid) continue;
+        try {
+          const status = fs.readFileSync(`/proc/${procPid}/status`, 'utf8');
+          const ppidMatch = status.match(/PPid:\s+(\d+)/);
+          const ppid = ppidMatch ? parseInt(ppidMatch[1]) : -1;
+          // Orphaned to init (PID 1) or reparented to us (Node is PID 1 in containers)
+          if (ppid === 1 || ppid === myPid) {
+            const cmdline = fs.readFileSync(`/proc/${procPid}/cmdline`, 'utf8');
+            // Firefox-specific: binary name or Gecko child process marker
+            if (/firefox-esr|firefox|camoufox|libxul\.so|GeckoChildProcess/i.test(cmdline)) {
+              orphans.push(numPid);
+            }
+          }
+        } catch { /* process vanished or permission denied */ }
+      }
+      if (orphans.length > 0) {
+        log('warn', 'killing orphaned browser child processes', { orphans, reason });
+        for (const orphanPid of orphans) {
+          try { process.kill(orphanPid, 'SIGKILL'); } catch { /* already dead */ }
+        }
+      }
+    } catch (err) {
+      log('warn', 'failed to scan for orphaned browser processes', { error: err.message });
+    }
+  }
+
+  // Give the OS a moment to reclaim resources
+  await new Promise(r => setTimeout(r, 300));
+}
+
+function _countOpenFds() {
+  try {
+    if (process.platform === 'linux') return fs.readdirSync('/proc/self/fd').length;
+  } catch { /* unavailable */ }
+  return null;
+}
+
+function _countActiveHandles() {
+  try { return process._getActiveHandles().length; } catch { return null; }
 }
 
 async function launchBrowserInstance() {
@@ -749,7 +907,8 @@ async function launchBrowserInstance() {
 
       virtualDisplay = localVirtualDisplay;
       browserLaunchProxy = launchProxy;
-      browser = candidateBrowser;
+      _lastBrowserPid = candidateBrowser.process?.()?.pid ?? null;
+      browser = candidateBrowser; // publish AFTER PID is captured
       attachBrowserCleanup(browser, localVirtualDisplay);
       pluginEvents.emit('browser:launched', { browser, display: vdDisplay });
 
@@ -786,13 +945,7 @@ async function ensureBrowser() {
       deadSessions: sessions.size,
     });
     await closeAllSessions('browser_disconnected', { clearDownloads: true, clearLocks: true });
-    // Clean up virtual display from dead browser before relaunching
-    if (virtualDisplay) {
-      virtualDisplay.kill();
-      virtualDisplay = null;
-    }
-    browserLaunchProxy = null;
-    browser = null;
+    await closeBrowserFully('browser_disconnected');
   }
   if (browser) return browser;
   if (browserLaunchPromise) return browserLaunchPromise;
@@ -1741,6 +1894,10 @@ app.get('/health', (req, res) => {
       ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
     });
   }
+  const mem = process.memoryUsage();
+  const rssMb = Math.round(mem.rss / 1048576);
+  const heapUsedMb = Math.round(mem.heapUsed / 1048576);
+  const nativeMemMb = rssMb - heapUsedMb;
   res.json({ 
     ok: true, 
     engine: 'camoufox',
@@ -1749,6 +1906,7 @@ app.get('/health', (req, res) => {
     activeTabs: getTotalTabCount(),
     activeSessions: sessions.size,
     consecutiveFailures: healthState.consecutiveNavFailures,
+    memory: { rssMb, heapUsedMb, nativeMemMb },
     ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
   });
 });
@@ -4401,11 +4559,8 @@ app.post('/stop', async (req, res) => {
     if (!adminKey || !timingSafeCompare(adminKey, CONFIG.adminKey)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
-    if (browser) {
-      await browser.close().catch(() => {});
-      browser = null;
-    }
     await closeAllSessions('admin_stop', { clearDownloads: true, clearLocks: true });
+    await closeBrowserFully('admin_stop');
     res.json({ ok: true, stopped: true, profile: 'camoufox' });
   } catch (err) {
     res.status(500).json({ ok: false, error: safeError(err) });
@@ -4982,7 +5137,7 @@ async function gracefulShutdown(signal) {
     clearLocks: false,
   });
 
-  if (browser) await browser.close().catch(() => {});
+  await closeBrowserFully(`shutdown:${signal}`);
   process.exit(0);
 }
 
@@ -5042,6 +5197,20 @@ const server = app.listen(PORT, async () => {
   if (tmpCleanup.removed > 0) {
     log('info', 'cleaned up orphaned camoufox temp files', tmpCleanup);
   }
+  const profileCleanup = cleanupStaleFirefoxProfiles();
+  if (profileCleanup.removed > 0) {
+    log('info', 'cleaned up stale firefox profiles on startup', profileCleanup);
+  }
+
+  // Periodic temp profile cleanup every 10 minutes
+  setInterval(() => {
+    try {
+      const cleaned = cleanupStaleFirefoxProfiles();
+      if (cleaned.removed > 0) {
+        log('info', 'periodic firefox profile cleanup', cleaned);
+      }
+    } catch { /* best effort */ }
+  }, 10 * 60 * 1000).unref();
   const traceSweep = sweepOldTraces({
     baseDir: CONFIG.tracesDir,
     ttlMs: CONFIG.tracesTtlHours * 3600 * 1000,
