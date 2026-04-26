@@ -30,7 +30,29 @@ jobs:
                 if ((parts[i] || 0) < MIN_VERSION[i]) { dominated = true; break; }
               }
               if (!dominated) {
-                console.log(`Version ${match[1]} meets minimum ${MIN_VERSION.join('.')}, keeping open.`);
+                console.log(`Version ${match[1]} meets minimum ${MIN_VERSION.join('.')}.`);
+
+                // Auto-close likely-sleep issues (CPU ratio near zero = OS suspend, not real stall)
+                const labels = context.payload.issue.labels.map(l => l.name);
+                if (labels.includes('likely-sleep')) {
+                  console.log('likely-sleep label detected, closing.');
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: context.issue.number,
+                    body: 'Closing — classified as OS sleep/suspend (CPU/wall ratio near zero).',
+                  });
+                  await github.rest.issues.update({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: context.issue.number,
+                    state: 'closed',
+                    state_reason: 'not_planned',
+                  });
+                  return;
+                }
+
+                console.log('Keeping open.');
                 return;
               }
               console.log(`Version ${match[1]} below minimum ${MIN_VERSION.join('.')}, closing.`);
