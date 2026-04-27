@@ -142,6 +142,23 @@ const FLY_MACHINE_ID = fly.machineId;
 // Route tab requests to the owning machine via fly-replay header.
 app.use('/tabs/:tabId', fly.replayMiddleware(log));
 
+// Access-key middleware: gates every route when CAMOFOX_ACCESS_KEY is set.
+// Exempts /health (Docker healthcheck) and routes that have their own
+// dedicated keys (cookie import → CAMOFOX_API_KEY, /stop → CAMOFOX_ADMIN_KEY)
+// so each key gates a distinct surface. When unset, behavior is unchanged.
+app.use((req, res, next) => {
+  if (!CONFIG.accessKey) return next();
+  if (req.path === '/health') return next();
+  if (req.method === 'POST' && /^\/sessions\/[^/]+\/cookies$/.test(req.path)) return next();
+  if (req.method === 'POST' && req.path === '/stop') return next();
+  const auth = String(req.headers['authorization'] || '');
+  const match = auth.match(/^Bearer\s+(.+)$/i);
+  if (!match || !_timingSafeCompare(match[1], CONFIG.accessKey)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+});
+
 const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
 
 // Interactive roles to include - exclude combobox to avoid opening complex widgets
