@@ -8,8 +8,31 @@ on:
       - main
 
 jobs:
+  test:
+    name: Smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax check all JS
+        run: |
+          find lib server.js -name '*.js' -exec node -c {} +
+
+      - name: Run unit tests
+        run: node --test tests/unit/reporter.test.js
+
   deploy:
     name: Deploy to Fly.io
+    needs: test
     runs-on: ubuntu-latest
     concurrency: deploy-group
     steps:
