@@ -115,7 +115,7 @@ make up VERSION=135.0.1 RELEASE=beta.24
 
 ### Fly.io
 
-For Fly.io or other remote CI, you'll need a Dockerfile that downloads binaries at build time instead of using bind mounts — see [jo-browser](https://github.com/jo-inc/jo-browser) for an example.
+For Fly.io or other remote CI, you'll need a Dockerfile that downloads binaries at build time instead of using bind mounts.
 
 ## Usage
 
