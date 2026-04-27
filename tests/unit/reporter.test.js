@@ -361,7 +361,7 @@ describe('rate limiting', () => {
       crashReportRepo: 'test/repo',
       crashReportRateLimit: 3,
     });
-    const rl = reporter._rateLimiter;
+    const rl = reporter._rateLimiter._default;
     assert.ok(rl.tryAcquire());
     assert.ok(rl.tryAcquire());
     assert.ok(rl.tryAcquire());
@@ -376,7 +376,7 @@ describe('rate limiting', () => {
       crashReportRepo: 'test/repo',
       crashReportRateLimit: 2,
     });
-    const rl = reporter._rateLimiter;
+    const rl = reporter._rateLimiter._default;
     rl.timestamps = [Date.now() - 3700_000, Date.now() - 3600_001];
     assert.ok(rl.tryAcquire(), 'old entries should be expired');
     assert.ok(rl.tryAcquire(), 'second should work too');
@@ -924,5 +924,47 @@ describe('createTabHealthTracker', () => {
     // Our mock evaluate just runs the function, which returns undefined in Node
     // (no real DOM). The important thing is it doesn't throw.
     assert.ok(state !== undefined || state === undefined);
+  });
+});
+
+// ============================================================================
+// collectResourceSnapshot — native memory fields
+// ============================================================================
+
+describe('collectResourceSnapshot native memory', () => {
+  it('includes RSS, heap, and external memory fields', () => {
+    const snap = collectResourceSnapshot();
+    assert.ok(typeof snap.nodeRssMb === 'number', 'nodeRssMb should be a number');
+    assert.ok(typeof snap.nodeHeapUsedMb === 'number', 'nodeHeapUsedMb should be a number');
+    assert.ok(typeof snap.nodeHeapTotalMb === 'number', 'nodeHeapTotalMb should be a number');
+    assert.ok(typeof snap.nodeExternalMb === 'number', 'nodeExternalMb should be a number');
+    assert.ok(snap.nodeRssMb > 0, 'RSS should be > 0');
+    assert.ok(snap.nodeHeapUsedMb > 0, 'heap used should be > 0');
+  });
+
+  it('native memory (RSS - heapUsed) is non-negative', () => {
+    const snap = collectResourceSnapshot();
+    const nativeMb = snap.nodeRssMb - snap.nodeHeapUsedMb;
+    assert.ok(nativeMb >= 0, `native mem should be >= 0, got ${nativeMb}`);
+  });
+
+  it('includes session/tab counts when provided', () => {
+    const snap = collectResourceSnapshot({ sessionCount: 3, tabCount: 7 });
+    assert.equal(snap.browserContexts, 3);
+    assert.equal(snap.activeTabs, 7);
+  });
+
+  it('browserRssMb is null when no browserPid', () => {
+    const snap = collectResourceSnapshot();
+    assert.equal(snap.browserRssMb, null);
+  });
+
+  it('rejects invalid browserPid values', () => {
+    const snap1 = collectResourceSnapshot({ browserPid: -1 });
+    assert.equal(snap1.browserRssMb, null);
+    const snap2 = collectResourceSnapshot({ browserPid: 0 });
+    assert.equal(snap2.browserRssMb, null);
+    const snap3 = collectResourceSnapshot({ browserPid: 'abc' });
+    assert.equal(snap3.browserRssMb, null);
   });
 });
