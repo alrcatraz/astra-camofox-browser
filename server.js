@@ -10,7 +10,7 @@ import { loadConfig } from './lib/config.js';
 import { normalizePlaywrightProxy, createProxyPool, buildProxyUrl } from './lib/proxy.js';
 import { createFlyHelpers } from './lib/fly.js';
 import { createPluginEvents, loadPlugins } from './lib/plugins.js';
-import { requireAuth, timingSafeCompare as _timingSafeCompare, isLoopbackAddress as _isLoopbackAddress } from './lib/auth.js';
+import { requireAuth, accessKeyMiddleware, timingSafeCompare as _timingSafeCompare, isLoopbackAddress as _isLoopbackAddress } from './lib/auth.js';
 import { windowSnapshot } from './lib/snapshot.js';
 import {
   MAX_DOWNLOAD_INLINE_BYTES,
@@ -141,6 +141,12 @@ const FLY_MACHINE_ID = fly.machineId;
 
 // Route tab requests to the owning machine via fly-replay header.
 app.use('/tabs/:tabId', fly.replayMiddleware(log));
+
+// Access-key middleware: gates every route when CAMOFOX_ACCESS_KEY is set.
+// Exempts /health (Docker healthcheck) and routes that have their own
+// dedicated keys (cookie import → CAMOFOX_API_KEY, /stop → CAMOFOX_ADMIN_KEY)
+// so each key gates a distinct surface. When unset, behavior is unchanged.
+app.use(accessKeyMiddleware(CONFIG));
 
 const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
 

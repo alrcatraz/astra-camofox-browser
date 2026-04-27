@@ -59,7 +59,12 @@
       "BearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Bearer token matching CAMOFOX_API_KEY."
+        "description": "Bearer token matching CAMOFOX_API_KEY (per-route auth for sensitive endpoints like cookie import and traces)."
+      },
+      "AccessKeyAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Bearer token matching CAMOFOX_ACCESS_KEY. When set, gates all routes except /health, cookie import, and /stop. Acts as a superkey — also accepted by endpoints that normally require CAMOFOX_API_KEY."
       }
     },
     "schemas": {
