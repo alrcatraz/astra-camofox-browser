@@ -10,7 +10,7 @@ import { loadConfig } from './lib/config.js';
 import { normalizePlaywrightProxy, createProxyPool, buildProxyUrl } from './lib/proxy.js';
 import { createFlyHelpers } from './lib/fly.js';
 import { createPluginEvents, loadPlugins } from './lib/plugins.js';
-import { requireAuth, timingSafeCompare as _timingSafeCompare, isLoopbackAddress as _isLoopbackAddress } from './lib/auth.js';
+import { requireAuth, accessKeyMiddleware, timingSafeCompare as _timingSafeCompare, isLoopbackAddress as _isLoopbackAddress } from './lib/auth.js';
 import { windowSnapshot } from './lib/snapshot.js';
 import {
   MAX_DOWNLOAD_INLINE_BYTES,
@@ -146,18 +146,7 @@ app.use('/tabs/:tabId', fly.replayMiddleware(log));
 // Exempts /health (Docker healthcheck) and routes that have their own
 // dedicated keys (cookie import → CAMOFOX_API_KEY, /stop → CAMOFOX_ADMIN_KEY)
 // so each key gates a distinct surface. When unset, behavior is unchanged.
-app.use((req, res, next) => {
-  if (!CONFIG.accessKey) return next();
-  if (req.path === '/health') return next();
-  if (req.method === 'POST' && /^\/sessions\/[^/]+\/cookies$/.test(req.path)) return next();
-  if (req.method === 'POST' && req.path === '/stop') return next();
-  const auth = String(req.headers['authorization'] || '');
-  const match = auth.match(/^Bearer\s+(.+)$/i);
-  if (!match || !_timingSafeCompare(match[1], CONFIG.accessKey)) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  next();
-});
+app.use(accessKeyMiddleware(CONFIG));
 
 const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
 
