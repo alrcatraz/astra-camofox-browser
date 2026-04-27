@@ -42,7 +42,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **C++ Anti-Detection** - bypasses Google, Cloudflare, and most bot detection
 - **Element Refs** - stable `e1`, `e2`, `e3` identifiers for reliable interaction
 - **Token-Efficient** - accessibility snapshots are ~90% smaller than raw HTML
-- **Runs on Anything** - lazy browser launch + idle shutdown keeps memory at ~40MB when idle. Designed to share a box with the rest of your stack — Raspberry Pi, $5 VPS, shared Railway infra.
+- **Runs on Anything** - lazy browser launch + idle shutdown keeps memory at ~40MB when idle. Designed to share a box with the rest of your stack — Raspberry Pi, $5 VPS, shared infra.
 - **Session Isolation** - separate cookies/storage per user
 - **Cookie Import** - inject Netscape-format cookie files for authenticated browsing
 - **Proxy + GeoIP** - route traffic through residential proxies with automatic locale/timezone
@@ -53,7 +53,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **Large Page Handling** - automatic snapshot truncation with offset-based pagination
 - **Download Capture** - capture browser downloads and fetch them via API (optional inline base64)
 - **DOM Image Extraction** - list `<img>` src/alt and optionally return inline data URLs
-- **Deploy Anywhere** - Docker, Fly.io, Railway
+- **Deploy Anywhere** - Docker, Fly.io
 - **VNC Interactive Login** - log into sites visually via noVNC, export storage state for agent reuse
 - **OpenAPI Docs** - auto-generated spec at [`/openapi.json`](http://localhost:9377/openapi.json) and interactive docs at [`/docs`](http://localhost:9377/docs)
 - **Structured Extract** - `POST /tabs/:tabId/extract` with a JSON Schema that maps properties to snapshot refs via `x-ref`
@@ -113,9 +113,9 @@ make up VERSION=135.0.1 RELEASE=beta.24
 
 > **⚠️ Do not run `docker build` directly.** The Dockerfile uses bind mounts to pull pre-downloaded binaries from `dist/`. Always use `make up` (or `make fetch` then `make build`) — it downloads the binaries first.
 
-### Fly.io / Railway
+### Fly.io
 
-`railway.toml` is included. For Fly.io or other remote CI, you'll need a Dockerfile that downloads binaries at build time instead of using bind mounts — see [jo-browser](https://github.com/jo-inc/jo-browser) for an example.
+For Fly.io or other remote CI, you'll need a Dockerfile that downloads binaries at build time instead of using bind mounts — see [jo-browser](https://github.com/jo-inc/jo-browser) for an example.
 
 ## Usage
 

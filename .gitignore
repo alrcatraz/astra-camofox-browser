@@ -34,7 +34,6 @@ Thumbs.db
 
 # .github/ — removed to allow CI workflow tracking
 fly.toml
-railway.toml
 
 # Camoufox cache
 .camoufox/
