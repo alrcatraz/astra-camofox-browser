@@ -44,6 +44,24 @@
         "type": "number",
         "description": "Node.js V8 heap limit in MB",
         "default": 128
+      },
+      "apiKey": {
+        "type": "string",
+        "description": "Secret key for cookie import endpoint. Cookie import is disabled if unset. Set via CAMOFOX_API_KEY env var."
+      },
+      "accessKey": {
+        "type": "string",
+        "description": "If set, all routes (except /health) require Authorization: Bearer <key>. Set via CAMOFOX_ACCESS_KEY env var."
+      },
+      "crashReportEnabled": {
+        "type": "boolean",
+        "description": "Enable anonymized crash/hang reporting to the relay. Set false to disable all outbound crash reports.",
+        "default": true
+      },
+      "crashReportUrl": {
+        "type": "string",
+        "description": "Crash report relay endpoint. Override to point to a self-hosted relay. Set via CAMOFOX_CRASH_REPORT_URL env var.",
+        "default": "https://camofox-crash-relay.askjo.workers.dev/report"
       }
     },
     "additionalProperties": false
@@ -105,6 +123,21 @@
     "maxOldSpaceSize": {
       "label": "Node Heap Limit (MB)",
       "placeholder": "128"
+    },
+    "apiKey": {
+      "label": "Cookie Import API Key (CAMOFOX_API_KEY)",
+      "placeholder": "Leave empty to disable cookie import"
+    },
+    "accessKey": {
+      "label": "Global Access Key (CAMOFOX_ACCESS_KEY)",
+      "placeholder": "Leave empty for localhost-only access"
+    },
+    "crashReportEnabled": {
+      "label": "Enable Crash Reporting"
+    },
+    "crashReportUrl": {
+      "label": "Crash Report Relay URL",
+      "placeholder": "https://camofox-crash-relay.askjo.workers.dev/report"
     }
   }
 }
