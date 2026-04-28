@@ -1,5 +1,5 @@
 /**
- * VNC launcher — owns all process spawning and env reads.
+ * VNC launcher -- owns all process spawning and env reads.
  * Isolated from route handlers for OpenClaw scanner compliance.
  */
 
@@ -11,7 +11,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Resolve VNC configuration from pluginConfig + env var fallbacks.
- * All process.env reads live here — callers get a plain config object.
+ * All process.env reads live here -- callers get a plain config object.
  */
 export function resolveVncConfig(pluginConfig = {}) {
   const enabled = process.env.ENABLE_VNC === '1' || pluginConfig.enabled === true;

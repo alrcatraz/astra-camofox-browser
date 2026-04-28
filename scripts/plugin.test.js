@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/plugin.js — plugin install, remove, list.
+ * Tests for scripts/plugin.js -- plugin install, remove, list.
  */
 
 import fs from 'fs';
@@ -32,7 +32,7 @@ describe('plugin list', () => {
   test('lists youtube as enabled', () => {
     const out = run('list');
     expect(out).toContain('youtube');
-    expect(out).toContain('✓');
+    expect(out).toContain('[ok]');
   });
 });
 

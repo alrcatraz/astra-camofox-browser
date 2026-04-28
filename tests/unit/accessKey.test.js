@@ -2,7 +2,7 @@
  * Tests for accessKeyMiddleware (global access-key gate) and
  * requireAuth interaction with CAMOFOX_ACCESS_KEY (superkey behavior).
  *
- * Uses mock req/res objects — no server spawn needed.
+ * Uses mock req/res objects -- no server spawn needed.
  */
 import { describe, test, expect } from '@jest/globals';
 import { jest } from '@jest/globals';
@@ -36,9 +36,9 @@ const API_KEY = 'api-test-secret-key-67890';
 const ADMIN_KEY = 'admin-test-secret-key-99999';
 const WRONG_KEY = 'wrong-key-nope';
 
-// ────────────────────────────────────────────────────────────────────
-// accessKeyMiddleware — global gate
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
+// accessKeyMiddleware -- global gate
+// --------------------------------------------------------------------
 
 describe('accessKeyMiddleware', () => {
   describe('when accessKey is NOT set (backward-compatible)', () => {
@@ -120,7 +120,7 @@ describe('accessKeyMiddleware', () => {
 
     // --- Rejection cases ---
 
-    test('rejects request with no Authorization header → 401', () => {
+    test('rejects request with no Authorization header -> 401', () => {
       const req = mockReq({ method: 'POST', path: '/tabs' });
       const res = mockRes();
       const next = jest.fn();
@@ -138,7 +138,7 @@ describe('accessKeyMiddleware', () => {
       expect(res._headers['www-authenticate']).toBe('Bearer realm="camofox"');
     });
 
-    test('rejects request with wrong bearer token → 401', () => {
+    test('rejects request with wrong bearer token -> 401', () => {
       const req = mockReq({
         method: 'POST',
         path: '/tabs',
@@ -151,7 +151,7 @@ describe('accessKeyMiddleware', () => {
       expect(res._status).toBe(401);
     });
 
-    test('rejects request with empty bearer token → 401', () => {
+    test('rejects request with empty bearer token -> 401', () => {
       const req = mockReq({
         path: '/tabs',
         headers: { authorization: 'Bearer ' },
@@ -163,7 +163,7 @@ describe('accessKeyMiddleware', () => {
       expect(res._status).toBe(401);
     });
 
-    test('rejects Basic auth scheme → 401', () => {
+    test('rejects Basic auth scheme -> 401', () => {
       const req = mockReq({
         path: '/tabs',
         headers: { authorization: `Basic ${ACCESS_KEY}` },
@@ -330,9 +330,9 @@ describe('accessKeyMiddleware', () => {
   });
 });
 
-// ────────────────────────────────────────────────────────────────────
-// requireAuth — per-route middleware with access-key superkey behavior
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
+// requireAuth -- per-route middleware with access-key superkey behavior
+// --------------------------------------------------------------------
 
 describe('requireAuth with accessKey (superkey)', () => {
   describe('both apiKey and accessKey set (double-auth scenario)', () => {
@@ -398,7 +398,7 @@ describe('requireAuth with accessKey (superkey)', () => {
       expect(next).toHaveBeenCalled();
     });
 
-    test('rejects wrong token — does NOT fall through to loopback', () => {
+    test('rejects wrong token -- does NOT fall through to loopback', () => {
       const mw = requireAuth(config);
       const req = mockReq({
         headers: { authorization: `Bearer ${WRONG_KEY}` },
@@ -411,7 +411,7 @@ describe('requireAuth with accessKey (superkey)', () => {
       expect(res._status).toBe(403);
     });
 
-    test('rejects loopback without token — accessKey gates even loopback', () => {
+    test('rejects loopback without token -- accessKey gates even loopback', () => {
       const devConfig = { apiKey: '', accessKey: ACCESS_KEY, nodeEnv: 'development' };
       const mw = requireAuth(devConfig);
       const req = mockReq({ remoteAddress: '127.0.0.1' });
@@ -423,7 +423,7 @@ describe('requireAuth with accessKey (superkey)', () => {
     });
   });
 
-  describe('only apiKey set (no accessKey — original behavior)', () => {
+  describe('only apiKey set (no accessKey -- original behavior)', () => {
     const config = { apiKey: API_KEY, accessKey: '', nodeEnv: 'production' };
 
     test('accepts API key', () => {
@@ -470,12 +470,12 @@ describe('requireAuth with accessKey (superkey)', () => {
   });
 });
 
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 // End-to-end double-auth simulation
-// (accessKeyMiddleware → requireAuth on the same request)
-// ────────────────────────────────────────────────────────────────────
+// (accessKeyMiddleware -> requireAuth on the same request)
+// --------------------------------------------------------------------
 
-describe('double-auth chain (access-key middleware → requireAuth)', () => {
+describe('double-auth chain (access-key middleware -> requireAuth)', () => {
   const config = { apiKey: API_KEY, accessKey: ACCESS_KEY, adminKey: ADMIN_KEY, nodeEnv: 'production' };
   const globalMw = accessKeyMiddleware(config);
   const routeMw = requireAuth(config);
@@ -534,9 +534,9 @@ describe('double-auth chain (access-key middleware → requireAuth)', () => {
   });
 });
 
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 // Named middleware functions (debuggability)
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 
 describe('middleware function naming', () => {
   test('accessKeyMiddleware returns named function', () => {

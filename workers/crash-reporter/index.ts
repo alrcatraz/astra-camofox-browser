@@ -3,12 +3,12 @@
  *
  * Accepts anonymized crash/hang/stall reports from clients and files them as
  * GitHub Issues using a GitHub App. The private key lives here as an env secret
- * — never shipped in the npm package.
+ * -- never shipped in the npm package.
  *
  * Routes:
- *   POST /report  — file or deduplicate a crash report
- *   GET  /source  — returns { commit, sha256 } for verification
- *   GET  /health  — health check
+ *   POST /report  -- file or deduplicate a crash report
+ *   GET  /source  -- returns { commit, sha256 } for verification
+ *   GET  /health  -- health check
  *
  * Env secrets (set via `wrangler secret put`):
  *   GH_APP_ID, GH_INSTALL_ID, GH_PRIVATE_KEY
@@ -228,7 +228,7 @@ export default {
         return Response.json({ error: "invalid payload" }, { status: 400, headers: cors });
       }
 
-      // Dedup: same signature within 1 hour → skip (client already deduped, this is a safety net)
+      // Dedup: same signature within 1 hour -> skip (client already deduped, this is a safety net)
       if (isDuplicate(payload.signature)) {
         return Response.json({ status: "deduped" }, { headers: cors });
       }
@@ -246,7 +246,7 @@ export default {
         const existing = await findExistingIssue(token, repo, payload.signature);
         if (existing) {
           const comment = [
-            `**+1** — ${new Date().toISOString()}`,
+            `**+1** -- ${new Date().toISOString()}`,
             payload.version ? `Version: ${payload.version}` : null,
           ].filter(Boolean).join("\n");
           await commentOnIssue(token, repo, existing, comment);

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * camofox plugin manager — install, remove, and list plugins.
+ * camofox plugin manager -- install, remove, and list plugins.
  *
  * Usage:
  *   node scripts/plugin.js install <source>   Install a plugin from git URL or local path
@@ -32,7 +32,7 @@ const ROOT = path.join(__dirname, '..');
 const PLUGINS_DIR = path.join(ROOT, 'plugins');
 const CONFIG_PATH = path.join(ROOT, 'camofox.config.json');
 
-// ── Config helpers ──────────────────────────────────────────────────────────
+// -- Config helpers ----------------------------------------------------------
 
 function readConfig() {
   try {
@@ -94,7 +94,7 @@ function removeFromConfig(name) {
   }
 }
 
-// ── Source parsing ──────────────────────────────────────────────────────────
+// -- Source parsing ----------------------------------------------------------
 
 function parseSource(source) {
   // Local path
@@ -109,11 +109,11 @@ function parseSource(source) {
     return { type: 'local', path: resolved, name: path.basename(resolved) };
   }
 
-  // Git URL — https://, ssh://, git@, git:
+  // Git URL -- https://, ssh://, git@, git:
   let gitUrl = source;
   if (gitUrl.startsWith('git:')) {
     gitUrl = gitUrl.slice(4);
-    // git:github.com/user/repo → https://github.com/user/repo
+    // git:github.com/user/repo -> https://github.com/user/repo
     if (!gitUrl.startsWith('http') && !gitUrl.startsWith('ssh://') && !gitUrl.startsWith('git@')) {
       gitUrl = `https://${gitUrl}`;
     }
@@ -132,7 +132,7 @@ function parseSource(source) {
   return { type: 'git', url: cloneUrl, name };
 }
 
-// ── Install ─────────────────────────────────────────────────────────────────
+// -- Install -----------------------------------------------------------------
 
 function isPluginDir(dir) {
   const indexPath = path.join(dir, 'index.js');
@@ -177,12 +177,12 @@ function installFromGit(url, name) {
         }
       }
       if (installed.length === 0) {
-        fatal(`No plugins found in ${url} — expected index.js with register() at root or in plugins/*/`);
+        fatal(`No plugins found in ${url} -- expected index.js with register() at root or in plugins/*/`);
       }
       return installed;
     }
 
-    fatal(`No plugins found in ${url} — expected index.js with register() at root or plugins/*/ subdirs`);
+    fatal(`No plugins found in ${url} -- expected index.js with register() at root or plugins/*/ subdirs`);
   } finally {
     if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true });
   }
@@ -198,16 +198,16 @@ function installPluginDeps(name) {
     execSync('npm install --omit=dev', { cwd: pluginDir, stdio: 'inherit' });
   }
 
-  // Check for apt.txt / post-install.sh (just warn — can't run apt locally)
+  // Check for apt.txt / post-install.sh (just warn -- can't run apt locally)
   if (fs.existsSync(path.join(pluginDir, 'apt.txt'))) {
-    console.log(`⚠  ${name} has apt.txt — system packages need Docker build or manual install`);
+    console.log(`WARNING  ${name} has apt.txt -- system packages need Docker build or manual install`);
   }
   if (fs.existsSync(path.join(pluginDir, 'post-install.sh'))) {
-    console.log(`⚠  ${name} has post-install.sh — run it manually or rebuild Docker image`);
+    console.log(`WARNING  ${name} has post-install.sh -- run it manually or rebuild Docker image`);
   }
 }
 
-// ── Remove ──────────────────────────────────────────────────────────────────
+// -- Remove ------------------------------------------------------------------
 
 function removePlugin(name) {
   const pluginDir = path.join(PLUGINS_DIR, name);
@@ -217,10 +217,10 @@ function removePlugin(name) {
 
   fs.rmSync(pluginDir, { recursive: true });
   removeFromConfig(name);
-  console.log(`✓ Removed plugin "${name}"`);
+  console.log(`[ok] Removed plugin "${name}"`);
 }
 
-// ── List ────────────────────────────────────────────────────────────────────
+// -- List --------------------------------------------------------------------
 
 function listPlugins() {
   const config = readConfig();
@@ -244,7 +244,7 @@ function listPlugins() {
   console.log('Installed plugins:\n');
   for (const name of plugins.sort()) {
     const enabled = configPlugins.size === 0 || configPlugins.has(name);
-    const status = enabled ? '✓' : '○';
+    const status = enabled ? '[ok]' : 'o';
     const hasTest = fs.existsSync(path.join(PLUGINS_DIR, name, `${name}.test.js`))
       || fs.readdirSync(path.join(PLUGINS_DIR, name)).some(f => f.endsWith('.test.js'));
     const hasDeps = fs.existsSync(path.join(PLUGINS_DIR, name, 'apt.txt'))
@@ -263,11 +263,11 @@ function listPlugins() {
   if (configPlugins.size > 0) {
     console.log(`\n${configPlugins.size} plugin(s) enabled in camofox.config.json`);
   } else {
-    console.log('\nNo plugins[] in config — all plugins are loaded');
+    console.log('\nNo plugins[] in config -- all plugins are loaded');
   }
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// -- Helpers -----------------------------------------------------------------
 
 function copyDirSync(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
@@ -289,7 +289,7 @@ function fatal(msg) {
   process.exit(1);
 }
 
-// ── CLI ─────────────────────────────────────────────────────────────────────
+// -- CLI ---------------------------------------------------------------------
 
 const [,, action, ...args] = process.argv;
 
@@ -308,7 +308,7 @@ switch (action) {
       installPluginDeps(name);
     }
 
-    console.log(`\n✓ Installed: ${installed.join(', ')}`);
+    console.log(`\n[ok] Installed: ${installed.join(', ')}`);
     console.log('  Restart the server to load new plugin(s).');
     break;
   }

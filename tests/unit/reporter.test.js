@@ -347,7 +347,7 @@ describe('stackSignature', () => {
 // Rate limiter tests
 // ============================================================================
 
-// Reporter is now enabled by default (no appId check — relay handles auth)
+// Reporter is now enabled by default (no appId check -- relay handles auth)
 const TEST_CRASH_CONFIG = {};
 
 describe('rate limiting', () => {
@@ -859,21 +859,21 @@ describe('createTabHealthTracker', () => {
     assert.equal(snap.statusCounts[200], undefined);
   });
 
-  it('does NOT track console errors (noise — cut per oracle)', () => {
+  it('does NOT track console errors (noise -- cut per oracle)', () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     const snap = tracker.snapshot();
     assert.equal(snap.consoleErrors, undefined, 'consoleErrors should not be in snapshot');
   });
 
-  it('does NOT track dialog count (noise — cut per oracle)', () => {
+  it('does NOT track dialog count (noise -- cut per oracle)', () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     const snap = tracker.snapshot();
     assert.equal(snap.dialogCount, undefined, 'dialogCount should not be in snapshot');
   });
 
-  it('does NOT track frame count (noise — cut per oracle)', () => {
+  it('does NOT track frame count (noise -- cut per oracle)', () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     const snap = tracker.snapshot();
@@ -922,7 +922,7 @@ describe('createTabHealthTracker', () => {
 });
 
 // ============================================================================
-// collectResourceSnapshot — native memory fields
+// collectResourceSnapshot -- native memory fields
 // ============================================================================
 
 describe('collectResourceSnapshot native memory', () => {

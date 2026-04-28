@@ -94,7 +94,7 @@ async function detectYtDlp(log) {
       return true;
     } catch {}
   }
-  log('warn', 'yt-dlp not found — YouTube transcript endpoint will use browser fallback');
+  log('warn', 'yt-dlp not found -- YouTube transcript endpoint will use browser fallback');
   return false;
 }
 

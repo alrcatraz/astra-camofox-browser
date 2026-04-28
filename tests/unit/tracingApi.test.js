@@ -5,10 +5,10 @@
  * to test HTTP-level behavior without requiring a real browser.
  *
  * Covers:
- * - GET  /sessions/:userId/traces       — list trace zips
- * - GET  /sessions/:userId/traces/:file  — stream a trace zip
- * - DELETE /sessions/:userId/traces/:file — remove a trace
- * - POST /tabs with trace: true          — session creation with tracing
+ * - GET  /sessions/:userId/traces       -- list trace zips
+ * - GET  /sessions/:userId/traces/:file  -- stream a trace zip
+ * - DELETE /sessions/:userId/traces/:file -- remove a trace
+ * - POST /tabs with trace: true          -- session creation with tracing
  * - 409 when adding trace to existing non-traced session
  */
 
@@ -45,14 +45,14 @@ function buildApp(tracesDir) {
   const app = express();
   app.use(express.json());
 
-  // Auth middleware — same as real server. No apiKey + non-production = loopback allowed.
+  // Auth middleware -- same as real server. No apiKey + non-production = loopback allowed.
   const config = { apiKey: null, nodeEnv: 'test' };
   const auth = () => requireAuth(config);
 
-  // Minimal session store: userId → { tracePath }
+  // Minimal session store: userId -> { tracePath }
   const sessions = new Map();
 
-  // POST /tabs — simplified version that creates/reuses sessions
+  // POST /tabs -- simplified version that creates/reuses sessions
   app.post('/tabs', async (req, res) => {
     try {
       const { userId, sessionKey, trace } = req.body;
@@ -187,7 +187,7 @@ describe('trace API endpoints', () => {
     return resp;
   }
 
-  // ── POST /tabs with trace ──
+  // -- POST /tabs with trace --
 
   test('POST /tabs with trace: true creates a session and trace file', async () => {
     const resp = await req('POST', '/tabs', { userId, sessionKey: 's1', trace: true });
@@ -214,7 +214,7 @@ describe('trace API endpoints', () => {
     expect(data.error).toContain('trace must be set on session creation');
   });
 
-  // ── GET /sessions/:userId/traces ──
+  // -- GET /sessions/:userId/traces --
 
   test('GET /sessions/:userId/traces returns empty list when no traces exist', async () => {
     const resp = await req('GET', `/sessions/nobody/traces`);
@@ -244,7 +244,7 @@ describe('trace API endpoints', () => {
     expect(data.traces[1].sizeBytes).toBe(3);
   });
 
-  // ── GET /sessions/:userId/traces/:filename ──
+  // -- GET /sessions/:userId/traces/:filename --
 
   test('GET /sessions/:userId/traces/:filename streams a zip file', async () => {
     const dir = ensureTracesDir(baseDir, 'dl-user');
@@ -273,7 +273,7 @@ describe('trace API endpoints', () => {
     expect(data.error).toBe('invalid filename');
   });
 
-  // ── DELETE /sessions/:userId/traces/:filename ──
+  // -- DELETE /sessions/:userId/traces/:filename --
 
   test('DELETE /sessions/:userId/traces/:filename removes the file', async () => {
     const dir = ensureTracesDir(baseDir, 'del-user');
@@ -303,16 +303,16 @@ describe('trace API endpoints', () => {
     expect(data.error).toBe('invalid filename');
   });
 
-  // ── Full lifecycle ──
+  // -- Full lifecycle --
 
-  test('full lifecycle: create traced session → list → download → delete', async () => {
+  test('full lifecycle: create traced session -> list -> download -> delete', async () => {
     const uid = 'lifecycle-user';
 
     // 1. Create tab with tracing
     const createResp = await req('POST', '/tabs', { userId: uid, sessionKey: 'lc1', trace: true });
     expect(createResp.status).toBe(200);
 
-    // 2. List traces — should have exactly one
+    // 2. List traces -- should have exactly one
     const listResp = await req('GET', `/sessions/${uid}/traces`);
     const { traces } = await listResp.json();
     expect(traces.length).toBe(1);
@@ -330,13 +330,13 @@ describe('trace API endpoints', () => {
     const delResp = await req('DELETE', `/sessions/${uid}/traces/${filename}`);
     expect(delResp.status).toBe(200);
 
-    // 5. List again — should be empty
+    // 5. List again -- should be empty
     const list2Resp = await req('GET', `/sessions/${uid}/traces`);
     const { traces: remaining } = await list2Resp.json();
     expect(remaining).toEqual([]);
   });
 
-  // ── TOCTOU race: file deleted between stat and stream ──
+  // -- TOCTOU race: file deleted between stat and stream --
 
   test('GET trace download handles file vanishing after stat (TOCTOU)', async () => {
     const dir = ensureTracesDir(baseDir, 'race-user');
@@ -346,14 +346,14 @@ describe('trace API endpoints', () => {
     // stat will succeed, then we delete the file before stream opens
     // We can't perfectly time this, but we CAN delete immediately after stat
     // by hooking into the async flow. Instead, test the stream error path
-    // directly: delete the file, then request it — stat returns null → 404.
+    // directly: delete the file, then request it -- stat returns null -> 404.
     // For the true race, we test stream.on('error') by deleting after stat
     // via a parallel request.
     const statPromise = fetch(`${baseUrl}/sessions/race-user/traces/vanish.zip`);
     // Immediately delete to race the stream open
     fs.unlinkSync(filePath);
     const resp = await statPromise;
-    // Should get 404 from either stat miss or stream error — not a 500 crash
+    // Should get 404 from either stat miss or stream error -- not a 500 crash
     expect([200, 404]).toContain(resp.status);
     if (resp.status === 200) {
       // If we raced past stat, the stream error handler should have fired
@@ -362,7 +362,7 @@ describe('trace API endpoints', () => {
     }
   });
 
-  // ── Auth rejection ──
+  // -- Auth rejection --
 
   test('trace endpoints reject non-loopback requests when API key is set', async () => {
     // Build a separate app WITH an API key
@@ -382,17 +382,17 @@ describe('trace API endpoints', () => {
     const authUrl = `http://localhost:${authServer.address().port}`;
 
     try {
-      // No auth header → 403
+      // No auth header -> 403
       const r1 = await fetch(`${authUrl}/sessions/user1/traces`);
       expect(r1.status).toBe(403);
 
-      // Wrong key → 403
+      // Wrong key -> 403
       const r2 = await fetch(`${authUrl}/sessions/user1/traces`, {
         headers: { Authorization: 'Bearer wrong-key' },
       });
       expect(r2.status).toBe(403);
 
-      // Correct key → 200
+      // Correct key -> 200
       const r3 = await fetch(`${authUrl}/sessions/user1/traces`, {
         headers: { Authorization: 'Bearer test-secret-key' },
       });

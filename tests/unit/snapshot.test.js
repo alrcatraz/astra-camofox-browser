@@ -101,7 +101,7 @@ describe('windowSnapshot', () => {
 
         if (!r.hasMore) break;
         offset = r.nextOffset;
-        if (chunks > 20) throw new Error('too many chunks — infinite loop?');
+        if (chunks > 20) throw new Error('too many chunks -- infinite loop?');
       }
 
       expect(chunks).toBeGreaterThan(1);

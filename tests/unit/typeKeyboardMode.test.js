@@ -18,7 +18,7 @@ import { describe, test, expect } from '@jest/globals';
 
 /**
  * Extracted validation logic matching the /type endpoint in server.js.
- * Kept in sync with the route — if this diverges, integration tests will catch it.
+ * Kept in sync with the route -- if this diverges, integration tests will catch it.
  */
 function validateTypeRequest({ mode = 'fill', text, ref, selector }) {
   const errors = [];

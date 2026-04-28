@@ -88,7 +88,7 @@ describe('Tab Recycling', () => {
         await client.getSnapshot(tabs[i]);
       }
 
-      // Create a 6th tab — should recycle tabs[0] (fewest toolCalls)
+      // Create a 6th tab -- should recycle tabs[0] (fewest toolCalls)
       const result = await client.createTab(`${testSiteUrl}/pageB`);
       expect(result.tabId).toBeDefined();
 
@@ -117,7 +117,7 @@ describe('Tab Recycling', () => {
         tabs.push(result.tabId);
       }
 
-      // Navigate with a non-existent tabId — should recycle and auto-create
+      // Navigate with a non-existent tabId -- should recycle and auto-create
       const fakeTabId = 'nonexistent-tab-id';
       const result = await client.navigate(fakeTabId, `${testSiteUrl}/pageC`);
       expect(result.url).toContain('/pageC');

@@ -2,7 +2,7 @@
  * Unit tests for session cleanup race conditions.
  *
  * Covers:
- * 1. Tab reaper → empty session cleanup (with _closing flag)
+ * 1. Tab reaper -> empty session cleanup (with _closing flag)
  * 2. getSession() skips sessions marked _closing
  * 3. YT transcript cleanup uses context.pages() instead of tabGroups
  * 4. Session expiry sets _closing before teardown
@@ -309,12 +309,12 @@ describe('YT transcript session cleanup', () => {
     const session = { context: {}, tabGroups: new Map(), lastAccess: Date.now() };
     sessions.set('__yt_transcript__', session);
 
-    // Request A finishes first — request B still has a page
+    // Request A finishes first -- request B still has a page
     ytCleanup(sessions, '__yt_transcript__', [{ /* B's page */ }], false);
     expect(sessions.has('__yt_transcript__')).toBe(true);
     expect(session._closing).toBeUndefined();
 
-    // Request B finishes — no pages left
+    // Request B finishes -- no pages left
     ytCleanup(sessions, '__yt_transcript__', [], false);
     expect(sessions.has('__yt_transcript__')).toBe(false);
     expect(session._closing).toBe(true);
