@@ -72,7 +72,7 @@ describe('Navigate abort on tab deletion', () => {
   });
 
   test('suppressed unhandled rejection on goto after abort', async () => {
-    // Simulates the gotoP.catch(() => {}) pattern — no unhandled rejection
+    // Simulates the gotoP.catch(() => {}) pattern -- no unhandled rejection
     const ac = new AbortController();
 
     let gotoReject;
@@ -86,7 +86,7 @@ describe('Navigate abort on tab deletion', () => {
     try {
       await Promise.race([gotoP, abortP]);
     } catch {
-      gotoP.catch(() => {}); // suppress — mirrors production code
+      gotoP.catch(() => {}); // suppress -- mirrors production code
     }
 
     // Now reject the goto (simulates page.close killing in-flight navigation)

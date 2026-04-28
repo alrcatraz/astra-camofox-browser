@@ -24,7 +24,7 @@ if [ -f "$CONFIG" ] && command -v node >/dev/null 2>&1; then
 fi
 
 if [ -z "$PLUGIN_LIST" ]; then
-  # No config or no plugins key — use all plugin directories
+  # No config or no plugins key -- use all plugin directories
   PLUGIN_LIST=""
   for d in "$PLUGINS_DIR"/*/; do
     [ -d "$d" ] || continue

@@ -88,7 +88,7 @@ describe('Security', () => {
         // This will fail to connect but should not be blocked by scheme validation
         await client.createTab('https://localhost:99999/nope');
       } catch (err) {
-        // Connection error is fine — the point is it wasn't a 400 scheme block
+        // Connection error is fine -- the point is it wasn't a 400 scheme block
         expect(err.data?.error || '').not.toContain('Blocked URL scheme');
       } finally {
         await client.cleanup();
@@ -124,7 +124,7 @@ describe('Security', () => {
         // The recycled (oldest) tab should no longer be accessible
         try {
           await client.getSnapshot(tabs[0]);
-          // If it doesn't throw, the tab still exists — that's unexpected but not fatal
+          // If it doesn't throw, the tab still exists -- that's unexpected but not fatal
         } catch (err) {
           // Expected: oldest tab was recycled
           expect(err.status).toBe(404);

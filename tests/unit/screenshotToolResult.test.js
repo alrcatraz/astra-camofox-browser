@@ -12,7 +12,7 @@ import http from 'http';
  *   2. The fixed code correctly returns an image content block.
  */
 
-// Minimal 1x1 red PNG (67 bytes) — valid enough for testing.
+// Minimal 1x1 red PNG (67 bytes) -- valid enough for testing.
 const TINY_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==',
   'base64'

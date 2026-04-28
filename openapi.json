@@ -64,7 +64,7 @@
       "AccessKeyAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Bearer token matching CAMOFOX_ACCESS_KEY. When set, gates all routes except /health, cookie import, and /stop. Acts as a superkey — also accepted by endpoints that normally require CAMOFOX_API_KEY."
+        "description": "Bearer token matching CAMOFOX_ACCESS_KEY. When set, gates all routes except /health, cookie import, and /stop. Acts as a superkey -- also accepted by endpoints that normally require CAMOFOX_API_KEY."
       }
     },
     "schemas": {
@@ -1768,7 +1768,7 @@
             }
           },
           "409": {
-            "description": "No refs available — call snapshot first.",
+            "description": "No refs available -- call snapshot first.",
             "content": {
               "application/json": {
                 "schema": {

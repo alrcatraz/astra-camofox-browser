@@ -1,7 +1,7 @@
 /**
  * Tests for the Cloudflare Worker crash relay contract.
  *
- * Pure logic tests — payload validation, type matching, client↔worker compat.
+ * Pure logic tests -- payload validation, type matching, client<->worker compat.
  * No fs reads in this file (scanner isolation: no file I/O + network import).
  * File-reading tests (source structure, secrets, config) are in noSecrets.test.js.
  */
@@ -137,10 +137,10 @@ describe('payload validation', () => {
 });
 
 // ============================================================================
-// Client↔Worker payload compatibility
+// Client<->Worker payload compatibility
 // ============================================================================
 
-describe('client↔worker payload compatibility', () => {
+describe('client<->worker payload compatibility', () => {
 
   let stackSignature, anonymize;
 

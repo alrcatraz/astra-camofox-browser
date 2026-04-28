@@ -144,7 +144,7 @@ app.use('/tabs/:tabId', fly.replayMiddleware(log));
 
 // Access-key middleware: gates every route when CAMOFOX_ACCESS_KEY is set.
 // Exempts /health (Docker healthcheck) and routes that have their own
-// dedicated keys (cookie import → CAMOFOX_API_KEY, /stop → CAMOFOX_ADMIN_KEY)
+// dedicated keys (cookie import -> CAMOFOX_API_KEY, /stop -> CAMOFOX_ADMIN_KEY)
 // so each key gates a distinct surface. When unset, behavior is unchanged.
 app.use(accessKeyMiddleware(CONFIG));
 
@@ -167,7 +167,7 @@ const SKIP_PATTERNS = [
 const timingSafeCompare = _timingSafeCompare;
 const isLoopbackAddress = _isLoopbackAddress;
 
-// Custom error for stale/unknown element refs — returned as 422 instead of 500
+// Custom error for stale/unknown element refs -- returned as 422 instead of 500
 class StaleRefsError extends Error {
   constructor(ref, maxRef, totalRefs) {
     super(`Unknown ref: ${ref} (valid refs: e1-${maxRef}, ${totalRefs} total). Refs reset after navigation - call snapshot first.`);
@@ -208,7 +208,7 @@ function validateUrl(url) {
   }
 }
 
-// isLoopbackAddress — now imported from lib/auth.js (see top of file)
+// isLoopbackAddress -- now imported from lib/auth.js (see top of file)
 
 // Import cookies into a user's browser context (Playwright cookies format)
 // POST /sessions/:userId/cookies { cookies: Cookie[] }
@@ -634,7 +634,7 @@ function getTotalTabCount() {
 
 // Virtual display for WebGL support and anti-detection.
 // Xvfb gives Firefox a real X display with GLX, enabling software-rendered WebGL
-// via Mesa llvmpipe. Without this, WebGL returns "no context" — a massive bot signal.
+// via Mesa llvmpipe. Without this, WebGL returns "no context" -- a massive bot signal.
 let virtualDisplay = null;
 let browserLaunchProxy = null;
 
@@ -680,8 +680,8 @@ function attachBrowserCleanup(candidateBrowser, localVirtualDisplay) {
  *
  * Serialized: concurrent callers await the same promise (no double-close).
  *
- * Order: capture PID → close browser → force-kill survivors →
- * clean temp profiles → verify FD/handle drop.
+ * Order: capture PID -> close browser -> force-kill survivors ->
+ * clean temp profiles -> verify FD/handle drop.
  */
 async function closeBrowserFully(reason) {
   if (_browserClosePromise) return _browserClosePromise;
@@ -697,7 +697,7 @@ async function _closeBrowserFullyImpl(reason) {
   const b = browser;
   if (!b) return;
 
-  // Capture PID before nulling browser ref — we need it for force-kill
+  // Capture PID before nulling browser ref -- we need it for force-kill
   const pid = _lastBrowserPid;
   const preCloseFds = _countOpenFds();
   const preCloseHandles = _countActiveHandles();
@@ -1032,7 +1032,7 @@ async function getSession(userId, { trace = false } = {}) {
   // Check if existing session's context is still alive
   if (session) {
     if (session._closing) {
-      // Session is being torn down by reaper/expiry — treat as dead
+      // Session is being torn down by reaper/expiry -- treat as dead
       session = null;
     } else {
       try {
@@ -1157,7 +1157,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
   if (userId && isDeadContextError(err)) {
     destroySession(userId);
   }
-  // Proxy errors mean the session is dead — rotate at context level.
+  // Proxy errors mean the session is dead -- rotate at context level.
   // Destroy the user's session so the next request gets a fresh context with a new proxy.
   if (isProxyError(err) && proxyPool?.canRotateSessions && userId) {
     log('warn', 'proxy error detected, destroying user session for fresh proxy on next request', {
@@ -1331,7 +1331,7 @@ function createTabState(page) {
 async function isGoogleUnavailable(page) {
   if (!page || page.isClosed()) return false;
   const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 600) || '').catch(() => '');
-  return /Unable to connect|502 Bad Gateway or Proxy Error|Camoufox can’t establish a connection/.test(bodyText);
+  return /Unable to connect|502 Bad Gateway or Proxy Error|Camoufox can't establish a connection/.test(bodyText);
 }
 
 async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reason, reqId) {
@@ -1340,7 +1340,7 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
 
   browserRestartsTotal.labels(reason).inc(); // track rotation events (not a full restart)
 
-  // Rotate at context level — create a fresh context with a new proxy session
+  // Rotate at context level -- create a fresh context with a new proxy session
   // instead of restarting the entire browser (which kills ALL sessions/tabs).
   const key = normalizeUserId(userId);
   const oldSession = sessions.get(key);
@@ -1672,7 +1672,7 @@ async function buildRefs(page) {
     return refs;
   }
   
-  // Google SERP fast path — skip ariaSnapshot entirely
+  // Google SERP fast path -- skip ariaSnapshot entirely
   const url = page.url();
   if (isGoogleSerp(url)) {
     const { refs: googleRefs } = await extractGoogleSerp(page);
@@ -2207,7 +2207,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         const recreateTabOnFreshContext = async () => {
           const previousRetryCount = tabState.googleRetryCount || 0;
           browserRestartsTotal.labels('google_search_block').inc();
-          // Rotate at context level — destroy this user's session and create
+          // Rotate at context level -- destroy this user's session and create
           // a fresh one with a new proxy session. Does NOT restart the browser.
           const key = normalizeUserId(userId);
           const oldSession = sessions.get(key);
@@ -2243,7 +2243,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         }
         
         // For Google SERP: skip eager ref building during navigate.
-        // Results render asynchronously after DOMContentLoaded — the snapshot
+        // Results render asynchronously after DOMContentLoaded -- the snapshot
         // call will wait for and extract them.
         if (isGoogleSerp(tabState.page.url())) {
           tabState.refs = new Map();
@@ -2383,7 +2383,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
 
       const pageUrl = tabState.page.url();
       
-      // Google SERP fast path — DOM extraction instead of ariaSnapshot
+      // Google SERP fast path -- DOM extraction instead of ariaSnapshot
       if (isGoogleSerp(pageUrl)) {
         const { refs: googleRefs, snapshot: googleSnapshot } = await extractGoogleSerp(tabState.page);
         tabState.refs = googleRefs;
@@ -2617,7 +2617,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       const clickStart = Date.now();
       const remainingBudget = () => Math.max(0, HANDLER_TIMEOUT_MS - 2000 - (Date.now() - clickStart));
       // Full mouse event sequence for stubborn JS click handlers (mirrors Swift WebView.swift)
-      // Dispatches: mouseover → mouseenter → mousedown → mouseup → click
+      // Dispatches: mouseover -> mouseenter -> mousedown -> mouseup -> click
       const dispatchMouseSequence = async (locator) => {
         const box = await locator.boundingBox();
         if (!box) throw new Error('Element not visible (no bounding box)');
@@ -2638,7 +2638,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       };
       
       // On Google SERPs, skip the normal click attempt (always intercepted by overlays)
-      // and go directly to force click — saves 5s timeout per click
+      // and go directly to force click -- saves 5s timeout per click
       const onGoogleSerp = isGoogleSerp(tabState.page.url());
       
       const doClick = async (locatorOrSelector, isLocator) => {
@@ -2710,7 +2710,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
           await tabState.page.waitForLoadState('domcontentloaded', { timeout: 3000 });
         } catch {}
         await tabState.page.waitForTimeout(200);
-        // Skip buildRefs here — SERP clicks typically navigate to a new page,
+        // Skip buildRefs here -- SERP clicks typically navigate to a new page,
         // and the caller always requests /snapshot next which rebuilds refs.
         tabState.lastSnapshot = null;
         tabState.refs = new Map();
@@ -2721,7 +2721,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         await tabState.page.waitForTimeout(500);
       }
       tabState.lastSnapshot = null;
-      // buildRefs after click — use remaining budget (min 2s) so we don't blow the handler timeout.
+      // buildRefs after click -- use remaining budget (min 2s) so we don't blow the handler timeout.
       // If it times out, return without refs (caller's next /snapshot will rebuild them).
       const postClickBudget = Math.max(2000, remainingBudget());
       try {
@@ -2867,7 +2867,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
           await tabState.page.fill(selector, text, { timeout: 10000 });
         }
       } else {
-        // keyboard mode — char-by-char real key events (required for Ember/contenteditable)
+        // keyboard mode -- char-by-char real key events (required for Ember/contenteditable)
         if (locator) {
           await locator.focus({ timeout: 10000 });
         } else if (selector) {
@@ -3099,7 +3099,7 @@ app.post('/tabs/:tabId/back', async (req, res) => {
         await tabState.page.goBack({ timeout: 10000 });
       } catch (navErr) {
         // NS_BINDING_CANCELLED_OLD_LOAD: Firefox cancels the old load when going back.
-        // The navigation itself succeeded — just the prior page's load was interrupted.
+        // The navigation itself succeeded -- just the prior page's load was interrupted.
         if (navErr.message && navErr.message.includes('NS_BINDING_CANCELLED')) {
           log('info', 'goBack cancelled old load (expected)', { reqId: req.reqId, tabId });
         } else {
@@ -3767,7 +3767,7 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, re
  *             schema:
  *               $ref: '#/components/schemas/Error'
  *       409:
- *         description: No refs available — call snapshot first.
+ *         description: No refs available -- call snapshot first.
  *         content:
  *           application/json:
  *             schema:
@@ -3818,7 +3818,7 @@ app.post('/tabs/:tabId/extract', express.json({ limit: '256kb' }), async (req, r
 
     if (!tabState.refs || tabState.refs.size === 0) {
       return res.status(409).json({
-        error: 'no refs available — call GET /tabs/:tabId/snapshot first to build the ref table',
+        error: 'no refs available -- call GET /tabs/:tabId/snapshot first to build the ref table',
         snapshot: tabState.lastSnapshot || null,
       });
     }
@@ -4247,7 +4247,7 @@ setInterval(() => {
   refreshTabLockQueueDepth();
 }, 60_000);
 
-// Per-tab inactivity reaper — close tabs idle for TAB_INACTIVITY_MS
+// Per-tab inactivity reaper -- close tabs idle for TAB_INACTIVITY_MS
 setInterval(() => {
   const now = Date.now();
   for (const [userId, session] of sessions) {
@@ -4278,7 +4278,7 @@ setInterval(() => {
         session.tabGroups.delete(listItemId);
       }
     }
-    // Clean up sessions with zero tabs remaining — free browser context memory
+    // Clean up sessions with zero tabs remaining -- free browser context memory
     if (session.tabGroups.size === 0) {
       session._closing = true;
       log('info', 'session empty after tab reaper, closing', { userId });
@@ -4294,7 +4294,7 @@ setInterval(() => {
 // These allow camoufox to be used as a profile backend for OpenClaw's browser tool
 // =============================================================================
 
-// GET / - Status (passive — does not launch browser)
+// GET / - Status (passive -- does not launch browser)
 /**
  * @openapi
  * /:
@@ -5076,12 +5076,12 @@ setInterval(() => {
   });
 }, 5 * 60_000);
 
-// Active health probe — detect hung browser even when isConnected() lies
+// Active health probe -- detect hung browser even when isConnected() lies
 setInterval(async () => {
   if (!browser || healthState.isRecovering) return;
   const timeSinceSuccess = Date.now() - healthState.lastSuccessfulNav;
   // Skip probe if operations are in flight AND last success was recent.
-  // If it's been >120s since any successful operation, probe anyway —
+  // If it's been >120s since any successful operation, probe anyway --
   // active ops are likely stuck on a frozen browser and will time out eventually.
   if (healthState.activeOps > 0 && timeSinceSuccess < 120000) {
     log('info', 'health probe skipped, operations active', { activeOps: healthState.activeOps });
@@ -5150,7 +5150,7 @@ async function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// Idle self-shutdown REMOVED — it was racing with min_machines_running=2
+// Idle self-shutdown REMOVED -- it was racing with min_machines_running=2
 // and stopping machines that Fly couldn't auto-restart fast enough, leaving
 // only 1 machine to handle all browser traffic (causing timeouts for users).
 // Fly's auto_stop_machines=false + min_machines_running=2 handles scaling.
@@ -5181,7 +5181,7 @@ const pluginCtx = {
   createMetric,
   /** Factory for Xvfb virtual display. Plugins can replace this to customise resolution/args. */
   createVirtualDisplay: () => new VirtualDisplay(),
-  /** The upstream VirtualDisplay class — plugins can subclass it. */
+  /** The upstream VirtualDisplay class -- plugins can subclass it. */
   VirtualDisplay,
 };
 const loadedPlugins = await loadPlugins(app, pluginCtx);
@@ -5235,7 +5235,7 @@ const server = app.listen(PORT, async () => {
     log('error', 'browser pre-warm failed (will retry in background)', { error: err.message });
     scheduleBrowserWarmRetry();
   }
-  // Idle self-shutdown removed — Fly manages machine lifecycle via fly.toml.
+  // Idle self-shutdown removed -- Fly manages machine lifecycle via fly.toml.
 });
 
 server.on('error', (err) => {

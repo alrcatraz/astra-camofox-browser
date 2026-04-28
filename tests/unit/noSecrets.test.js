@@ -2,7 +2,7 @@
  * Verify no secrets are shipped in distributed files.
  *
  * This file has ZERO imports from reporter.js or any network-capable module.
- * Pure fs reads + string assertions only — avoids the scanner's
+ * Pure fs reads + string assertions only -- avoids the scanner's
  * "file read + network send" pattern.
  */
 import { describe, test, expect } from '@jest/globals';

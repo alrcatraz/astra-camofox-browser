@@ -1763,7 +1763,7 @@
             }
           },
           "409": {
-            "description": "No refs available — call snapshot first.",
+            "description": "No refs available -- call snapshot first.",
             "content": {
               "application/json": {
                 "schema": {

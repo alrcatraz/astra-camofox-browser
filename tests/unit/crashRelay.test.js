@@ -1,5 +1,5 @@
 /**
- * Tests for the crash relay client (sendToRelay) and reporter↔relay integration.
+ * Tests for the crash relay client (sendToRelay) and reporter<->relay integration.
  *
  * Uses Jest with mock fetch to verify:
  * - sendToRelay payload format and error handling
@@ -128,7 +128,7 @@ describe('sendToRelay security', () => {
 });
 
 // ============================================================================
-// createReporter → relay integration
+// createReporter -> relay integration
 // ============================================================================
 
 describe('createReporter relay integration', () => {

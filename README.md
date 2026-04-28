@@ -76,7 +76,7 @@ The Docker image includes yt-dlp. For local dev, install it for the `/youtube/tr
 openclaw plugins install @askjo/camofox-browser
 ```
 
-**Tools:** `camofox_create_tab` · `camofox_snapshot` · `camofox_click` · `camofox_type` · `camofox_navigate` · `camofox_scroll` · `camofox_screenshot` · `camofox_close_tab` · `camofox_list_tabs` · `camofox_import_cookies`
+**Tools:** `camofox_create_tab`  |  `camofox_snapshot`  |  `camofox_click`  |  `camofox_type`  |  `camofox_navigate`  |  `camofox_scroll`  |  `camofox_screenshot`  |  `camofox_close_tab`  |  `camofox_list_tabs`  |  `camofox_import_cookies`
 
 ### Standalone
 
@@ -111,7 +111,7 @@ make up ARCH=x86_64
 make up VERSION=135.0.1 RELEASE=beta.24
 ```
 
-> **⚠️ Do not run `docker build` directly.** The Dockerfile uses bind mounts to pull pre-downloaded binaries from `dist/`. Always use `make up` (or `make fetch` then `make build`) -- it downloads the binaries first.
+> **WARNING: Do not run `docker build` directly.** The Dockerfile uses bind mounts to pull pre-downloaded binaries from `dist/`. Always use `make up` (or `make fetch` then `make build`) -- it downloads the binaries first.
 
 ### Fly.io
 
@@ -183,18 +183,18 @@ The agent calls `camofox_import_cookies` -> reads the file -> POSTs to the serve
 
 ```
 ~/.camofox/cookies/linkedin.txt          (Netscape format, on disk)
-        │
-        ▼
+        |
+        v
 camofox_import_cookies tool              (parses file, filters by domain)
-        │
-        ▼  POST /sessions/:userId/cookies
-        │  Authorization: Bearer <CAMOFOX_API_KEY>
-        │  Body: { cookies: [Playwright cookie objects] }
-        ▼
+        |
+        v  POST /sessions/:userId/cookies
+        |  Authorization: Bearer <CAMOFOX_API_KEY>
+        |  Body: { cookies: [Playwright cookie objects] }
+        v
 camofox server                           (validates, sanitizes, injects)
-        │
-        ▼  context.addCookies(...)
-        │
+        |
+        v  context.addCookies(...)
+        |
 Camoufox browser session                 (authenticated browsing)
 ```
 
@@ -208,10 +208,10 @@ By default, camofox persists each user's cookies and localStorage to `~/.camofox
 
 ```
 ~/.camofox/
-├── cookies/          # Bootstrap cookie files (Netscape format)
-└── profiles/         # Persisted session state (auto-managed)
-    └── <hashed-userId>/
-        └── storage_state.json
+|-- cookies/          # Bootstrap cookie files (Netscape format)
+\-- profiles/         # Persisted session state (auto-managed)
+    \-- <hashed-userId>/
+        \-- storage_state.json
 ```
 
 Override the directory with `CAMOFOX_PROFILE_DIR` or set `"profileDir"` in the persistence plugin config. To disable persistence, set `"persistence": { "enabled": false }` in `camofox.config.json`.
@@ -350,11 +350,11 @@ Reports are sent to a lightweight Cloudflare Worker relay at [`https://camofox-c
 
 ```
 lib/reporter.js (client, no secrets)
-    │  anonymize -> POST https://camofox-crash-relay.askjo.workers.dev/report
-    ▼
+    |  anonymize -> POST https://camofox-crash-relay.askjo.workers.dev/report
+    v
 Cloudflare Worker (holds GitHub App key)
-    │  validate -> rate-limit -> dedup -> create GitHub Issue
-    ▼
+    |  validate -> rate-limit -> dedup -> create GitHub Issue
+    v
 GitHub Issue created
 ```
 
@@ -385,7 +385,7 @@ Or skip verification entirely: `CAMOFOX_CRASH_REPORT_ENABLED=false` disables all
 
 All reported data goes through paranoid anonymization ([`lib/reporter.js` L28-290](lib/reporter.js#L28-L290)) before leaving the process:
 
-- **URLs** -- well-known public domains (Google, Amazon, Reddit, Cloudflare, etc.) are shown verbatim so we can identify which sites cause problems. Private/unknown domains are replaced with a stable HMAC hash (`site-a1b2c3d4`) -- same hash across reports for correlation, but not reversible to the original domain. Path segments become `•/•/•` (depth only). Query params become `?[3]` (count only). No keys, values, or path content is ever included.
+- **URLs** -- well-known public domains (Google, Amazon, Reddit, Cloudflare, etc.) are shown verbatim so we can identify which sites cause problems. Private/unknown domains are replaced with a stable HMAC hash (`site-a1b2c3d4`) -- same hash across reports for correlation, but not reversible to the original domain. Path segments become `*/*/*` (depth only). Query params become `?[3]` (count only). No keys, values, or path content is ever included.
 - **File paths** -> stripped to filename only (`<path>/server.js`)
 - **Tokens, secrets, API keys** -> `<token>`
 - **IPs, emails, env vars** -> redacted
@@ -528,7 +528,7 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 curl -X POST http://localhost:9377/youtube/transcript \
   -H 'Content-Type: application/json' \
   -d '{"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "languages": ["en"]}'
-# -> { "status": "ok", "transcript": "[00:18] ♪ We're no strangers to love ♪\n...", "video_title": "...", "total_words": 548 }
+# -> { "status": "ok", "transcript": "[00:18] [music] We're no strangers to love [music]\n...", "video_title": "...", "total_words": 548 }
 ```
 
 Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) when available (fast, no browser needed). Falls back to a browser-based intercept method if yt-dlp is not installed -- this is slower and less reliable due to YouTube ad pre-rolls.
@@ -550,7 +550,7 @@ Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) when available (fast, no browser
 
 ## Search Macros
 
-`@google_search` · `@youtube_search` · `@amazon_search` · `@reddit_search` · `@reddit_subreddit` · `@wikipedia_search` · `@twitter_search` · `@yelp_search` · `@spotify_search` · `@netflix_search` · `@linkedin_search` · `@instagram_search` · `@tiktok_search` · `@twitch_search`
+`@google_search`  |  `@youtube_search`  |  `@amazon_search`  |  `@reddit_search`  |  `@reddit_subreddit`  |  `@wikipedia_search`  |  `@twitter_search`  |  `@yelp_search`  |  `@spotify_search`  |  `@netflix_search`  |  `@linkedin_search`  |  `@instagram_search`  |  `@tiktok_search`  |  `@twitch_search`
 
 Reddit macros return JSON directly (no HTML parsing needed):
 - `@reddit_search` - search all of Reddit, returns JSON with 25 results
@@ -600,12 +600,12 @@ Reddit macros return JSON directly (no HTML parsing needed):
 
 ```
 Browser Instance (Camoufox)
-└── User Session (BrowserContext) - isolated cookies/storage
-    ├── Tab Group (sessionKey: "conv1")
-    │   ├── Tab (google.com)
-    │   └── Tab (github.com)
-    └── Tab Group (sessionKey: "conv2")
-        └── Tab (amazon.com)
+\-- User Session (BrowserContext) - isolated cookies/storage
+    |-- Tab Group (sessionKey: "conv1")
+    |   |-- Tab (google.com)
+    |   \-- Tab (github.com)
+    \-- Tab Group (sessionKey: "conv2")
+        \-- Tab (amazon.com)
 ```
 
 Sessions auto-expire after 30 minutes of inactivity. The browser itself shuts down after 5 minutes with no active sessions, and relaunches on the next request.

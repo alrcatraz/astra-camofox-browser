@@ -2,7 +2,7 @@
  * VNC plugin for camofox-browser.
  *
  * Exposes Camoufox's virtual display via noVNC so a human can interact with
- * the browser visually — log into sites, solve CAPTCHAs, approve OAuth prompts.
+ * the browser visually -- log into sites, solve CAPTCHAs, approve OAuth prompts.
  * After interactive login, export the storage state via the API endpoint this
  * plugin registers.
  *
@@ -35,7 +35,7 @@
  *   NOVNC_PORT=6080        noVNC web UI port
  *
  * Registers:
- *   GET /sessions/:userId/storage_state — export Playwright storageState as JSON
+ *   GET /sessions/:userId/storage_state -- export Playwright storageState as JSON
  *
  * Events emitted:
  *   vnc:watcher:started    { pid }

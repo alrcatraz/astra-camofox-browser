@@ -1,5 +1,5 @@
 /**
- * Tests for lib/plugins.js — createPluginEvents, loadPlugins, and config reading.
+ * Tests for lib/plugins.js -- createPluginEvents, loadPlugins, and config reading.
  */
 import { describe, test, expect, jest } from '@jest/globals';
 import { createPluginEvents, loadPlugins } from '../../lib/plugins.js';
@@ -99,13 +99,13 @@ describe('lib/plugins', () => {
 
     test('returns empty array when plugins directory does not exist', async () => {
       // loadPlugins checks the hardcoded PLUGINS_DIR, not tmpDir.
-      // We test by providing a mock ctx — if no plugins/ dir exists
+      // We test by providing a mock ctx -- if no plugins/ dir exists
       // relative to lib/, it would still load the real plugins.
       // Instead, test via the actual project's plugin loader.
       const ctx = makeMockCtx();
       const app = {};
 
-      // This tests the real plugin loading — should return the project's actual plugins
+      // This tests the real plugin loading -- should return the project's actual plugins
       const loaded = await loadPlugins(app, ctx);
       expect(Array.isArray(loaded)).toBe(true);
       // Each loaded plugin should be a string

@@ -168,14 +168,14 @@ describe('Netscape cookie file parser', () => {
   });
 
   test('skips lines where trailing tab is trimmed (empty value)', () => {
-    // trim() strips the trailing tab, reducing field count to 6 — line is skipped
+    // trim() strips the trailing tab, reducing field count to 6 -- line is skipped
     const text = '.example.com\tTRUE\t/\tFALSE\t0\tname\t';
     const cookies = parseNetscapeCookieFile(text);
     expect(cookies).toHaveLength(0);
   });
 
   test('parses empty value when followed by another line', () => {
-    // Empty value with content after — not just trailing whitespace
+    // Empty value with content after -- not just trailing whitespace
     const text = '.example.com\tTRUE\t/\tFALSE\t0\tempty_val\t\n.b.com\tTRUE\t/\tFALSE\t0\tother\tval';
     const cookies = parseNetscapeCookieFile(text);
     // First line: trim strips trailing tab, falls to 6 fields, skipped
