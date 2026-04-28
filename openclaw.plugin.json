@@ -3,6 +3,30 @@
   "name": "Camofox Browser",
   "description": "Anti-detection browser automation for AI agents using Camoufox (Firefox-based)",
   "version": "1.8.7",
+  "envVars": {
+    "CAMOFOX_API_KEY": {
+      "description": "Secret key for the cookie-import endpoint. Cookie import is disabled when unset. Only set this if you need to import browser cookies and the server is local or access-controlled.",
+      "required": false,
+      "sensitive": true
+    },
+    "CAMOFOX_ACCESS_KEY": {
+      "description": "Global bearer token for all routes (except /health). When set, every request must include Authorization: Bearer <key>. Recommended when exposing the server beyond localhost.",
+      "required": false,
+      "sensitive": true
+    },
+    "CAMOFOX_CRASH_REPORT_ENABLED": {
+      "description": "Enable or disable anonymized crash/hang reporting. Set to 'false' to disable all outbound crash reports.",
+      "required": false,
+      "sensitive": false,
+      "default": "true"
+    },
+    "CAMOFOX_CRASH_REPORT_URL": {
+      "description": "Crash report relay endpoint. Override to point to a self-hosted relay instead of the default Cloudflare Worker.",
+      "required": false,
+      "sensitive": false,
+      "default": "https://camofox-crash-relay.askjo.workers.dev/report"
+    }
+  },
   "configSchema": {
     "type": "object",
     "properties": {
@@ -68,7 +92,7 @@
   },
   "telemetry": {
     "crashReporter": {
-      "description": "Anonymized crash/hang reports sent to a Cloudflare Worker relay. All credentials are environment secrets on the relay — nothing sensitive ships in this package.",
+      "description": "Anonymized crash/hang reports sent to a Cloudflare Worker relay. All credentials are environment secrets on the relay -- nothing sensitive ships in this package.",
       "enabled": true,
       "optOut": "CAMOFOX_CRASH_REPORT_ENABLED=false",
       "relay": "https://camofox-crash-relay.askjo.workers.dev/report",

@@ -17,14 +17,14 @@
 
 > <a href="https://askjo.ai?ref=camofox"><img src="jo-logo.png" alt="Jo" width="80" height="80" align="left" /></a>
 >
-> Built by the team behind <a href="https://askjo.ai?ref=camofox"><strong>jo — a personal AI agent</strong></a> that runs half on your Mac, half on a dedicated cloud machine just for you — with zero maintenance needed. Available on macOS, Telegram, WhatsApp, and email. <a href="https://askjo.ai?ref=camofox">Try the beta free →</a>
+> Built by the team behind <a href="https://askjo.ai?ref=camofox"><strong>jo -- a personal AI agent</strong></a> that runs half on your Mac, half on a dedicated cloud machine just for you -- with zero maintenance needed. Available on macOS, Telegram, WhatsApp, and email. <a href="https://askjo.ai?ref=camofox">Try the beta free -></a>
 
 <br/>
 
 ```bash
 git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser
 npm install && npm start
-# → http://localhost:9377
+# -> http://localhost:9377
 ```
 
 ---
@@ -42,7 +42,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **C++ Anti-Detection** - bypasses Google, Cloudflare, and most bot detection
 - **Element Refs** - stable `e1`, `e2`, `e3` identifiers for reliable interaction
 - **Token-Efficient** - accessibility snapshots are ~90% smaller than raw HTML
-- **Runs on Anything** - lazy browser launch + idle shutdown keeps memory at ~40MB when idle. Designed to share a box with the rest of your stack — Raspberry Pi, $5 VPS, shared infra.
+- **Runs on Anything** - lazy browser launch + idle shutdown keeps memory at ~40MB when idle. Designed to share a box with the rest of your stack -- Raspberry Pi, $5 VPS, shared infra.
 - **Session Isolation** - separate cookies/storage per user
 - **Cookie Import** - inject Netscape-format cookie files for authenticated browsing
 - **Proxy + GeoIP** - route traffic through residential proxies with automatic locale/timezone
@@ -111,7 +111,7 @@ make up ARCH=x86_64
 make up VERSION=135.0.1 RELEASE=beta.24
 ```
 
-> **⚠️ Do not run `docker build` directly.** The Dockerfile uses bind mounts to pull pre-downloaded binaries from `dist/`. Always use `make up` (or `make fetch` then `make build`) — it downloads the binaries first.
+> **⚠️ Do not run `docker build` directly.** The Dockerfile uses bind mounts to pull pre-downloaded binaries from `dist/`. Always use `make up` (or `make fetch` then `make build`) -- it downloads the binaries first.
 
 ### Fly.io
 
@@ -154,7 +154,7 @@ export CAMOFOX_API_KEY="your-generated-key"
 openclaw start
 ```
 
-The same key is used by both the plugin (to authenticate requests) and the server (to verify them). Both run from the same environment — set it once.
+The same key is used by both the plugin (to authenticate requests) and the server (to verify them). Both run from the same environment -- set it once.
 
 > **Why an env var?** The key is a secret. Plugin config in `openclaw.json` is stored in plaintext, so secrets don't belong there. Set `CAMOFOX_API_KEY` in your shell profile, systemd unit, Docker env, or Fly.io secrets.
 
@@ -177,7 +177,7 @@ The default directory is `~/.camofox/cookies/`. Override with `CAMOFOX_COOKIES_D
 
 > Import my LinkedIn cookies from linkedin.txt
 
-The agent calls `camofox_import_cookies` → reads the file → POSTs to the server with the Bearer token → cookies are injected into the browser session. Subsequent `camofox_create_tab` calls to linkedin.com will be authenticated.
+The agent calls `camofox_import_cookies` -> reads the file -> POSTs to the server with the Bearer token -> cookies are injected into the browser session. Subsequent `camofox_create_tab` calls to linkedin.com will be authenticated.
 
 #### How it works
 
@@ -198,13 +198,13 @@ camofox server                           (validates, sanitizes, injects)
 Camoufox browser session                 (authenticated browsing)
 ```
 
-- `cookiesPath` is resolved relative to the cookies directory — path traversal outside it is blocked
+- `cookiesPath` is resolved relative to the cookies directory -- path traversal outside it is blocked
 - Max 500 cookies per request, 5MB file size limit
 - Cookie objects are sanitized to an allowlist of Playwright fields
 
 ### Session Persistence
 
-By default, camofox persists each user's cookies and localStorage to `~/.camofox/profiles/`. Sessions survive browser restarts — log in once (via cookies or VNC), and subsequent sessions restore the authenticated state automatically.
+By default, camofox persists each user's cookies and localStorage to `~/.camofox/profiles/`. Sessions survive browser restarts -- log in once (via cookies or VNC), and subsequent sessions restore the authenticated state automatically.
 
 ```
 ~/.camofox/
@@ -334,26 +334,26 @@ When a proxy is configured:
 
 ### Crash Reporter
 
-Browser automation fails in ways that are hard to predict — Cloudflare challenges, site redesigns breaking selectors, redirect loops, dialog storms, renderer crashes. The scope is wide and the failure modes are diverse. Without telemetry, the only signal is "it didn't work."
+Browser automation fails in ways that are hard to predict -- Cloudflare challenges, site redesigns breaking selectors, redirect loops, dialog storms, renderer crashes. The scope is wide and the failure modes are diverse. Without telemetry, the only signal is "it didn't work."
 
 The crash reporter gives us structured data on *which sites fail*, *how they fail*, and *how often*, so we can prioritize fixes for the patterns that actually affect users. It files GitHub Issues automatically when:
 
 - **Uncaught exceptions** crash the process
 - **Event loop stalls** exceed 5 seconds (watchdog detection)
-- **Frustration patterns** — 3+ consecutive failures (timeout, dead context, navigation abort) on the same tab
+- **Frustration patterns** -- 3+ consecutive failures (timeout, dead context, navigation abort) on the same tab
 
-Each report includes the failure type, stack trace, tab health counters (HTTP status histogram, console errors, request failures, redirect depth), and the target URL — all anonymized.
+Each report includes the failure type, stack trace, tab health counters (HTTP status histogram, console errors, request failures, redirect depth), and the target URL -- all anonymized.
 
 #### How it works
 
-Reports are sent to a lightweight Cloudflare Worker relay at [`https://camofox-crash-relay.askjo.workers.dev`](https://camofox-crash-relay.askjo.workers.dev/health). The relay holds the GitHub App credentials as environment secrets — **no secrets are shipped in this package**.
+Reports are sent to a lightweight Cloudflare Worker relay at [`https://camofox-crash-relay.askjo.workers.dev`](https://camofox-crash-relay.askjo.workers.dev/health). The relay holds the GitHub App credentials as environment secrets -- **no secrets are shipped in this package**.
 
 ```
 lib/reporter.js (client, no secrets)
-    │  anonymize → POST https://camofox-crash-relay.askjo.workers.dev/report
+    │  anonymize -> POST https://camofox-crash-relay.askjo.workers.dev/report
     ▼
 Cloudflare Worker (holds GitHub App key)
-    │  validate → rate-limit → dedup → create GitHub Issue
+    │  validate -> rate-limit -> dedup -> create GitHub Issue
     ▼
 GitHub Issue created
 ```
@@ -362,12 +362,12 @@ The relay source code is in this repo at [`workers/crash-reporter/index.ts`](wor
 
 #### Verification
 
-You don't have to trust us — verify what the live relay is running:
+You don't have to trust us -- verify what the live relay is running:
 
 ```bash
 # 1. Ask the relay what code it's running
 curl https://camofox-crash-relay.askjo.workers.dev/source
-# → { "commit": "abc1234", "sha256": "e3b0c44...", "source": "https://github.com/..." }
+# -> { "commit": "abc1234", "sha256": "e3b0c44...", "source": "https://github.com/..." }
 
 # 2. Compare the sha256 against the source in this repo
 sha256sum workers/crash-reporter/index.ts
@@ -377,20 +377,20 @@ sha256sum workers/crash-reporter/index.ts
 git log --oneline workers/crash-reporter/index.ts | head -1
 ```
 
-If the hashes don't match, the relay is running different code than what's in the repo. The deploy workflow ([`.github/workflows/crash-relay-deploy.yml`](.github/workflows/crash-relay-deploy.yml)) injects the commit and source hash at deploy time — every deploy is auditable in [GitHub Actions](https://github.com/jo-inc/camofox-browser/actions/workflows/crash-relay-deploy.yml).
+If the hashes don't match, the relay is running different code than what's in the repo. The deploy workflow ([`.github/workflows/crash-relay-deploy.yml`](.github/workflows/crash-relay-deploy.yml)) injects the commit and source hash at deploy time -- every deploy is auditable in [GitHub Actions](https://github.com/jo-inc/camofox-browser/actions/workflows/crash-relay-deploy.yml).
 
 Or skip verification entirely: `CAMOFOX_CRASH_REPORT_ENABLED=false` disables all reporting, or point to [your own relay](#self-hosted-relay) with `CAMOFOX_CRASH_REPORT_URL`.
 
 #### Privacy
 
-All reported data goes through paranoid anonymization ([`lib/reporter.js` L28–290](lib/reporter.js#L28-L290)) before leaving the process:
+All reported data goes through paranoid anonymization ([`lib/reporter.js` L28-290](lib/reporter.js#L28-L290)) before leaving the process:
 
-- **URLs** — well-known public domains (Google, Amazon, Reddit, Cloudflare, etc.) are shown verbatim so we can identify which sites cause problems. Private/unknown domains are replaced with a stable HMAC hash (`site-a1b2c3d4`) — same hash across reports for correlation, but not reversible to the original domain. Path segments become `•/•/•` (depth only). Query params become `?[3]` (count only). No keys, values, or path content is ever included.
-- **File paths** → stripped to filename only (`<path>/server.js`)
-- **Tokens, secrets, API keys** → `<token>`
-- **IPs, emails, env vars** → redacted
-- **Docker/Fly machine IDs** → `<id>`
-- **Tab health** — pure counters (crash count, error count, status code histogram). No page content, no URLs, no user data.
+- **URLs** -- well-known public domains (Google, Amazon, Reddit, Cloudflare, etc.) are shown verbatim so we can identify which sites cause problems. Private/unknown domains are replaced with a stable HMAC hash (`site-a1b2c3d4`) -- same hash across reports for correlation, but not reversible to the original domain. Path segments become `•/•/•` (depth only). Query params become `?[3]` (count only). No keys, values, or path content is ever included.
+- **File paths** -> stripped to filename only (`<path>/server.js`)
+- **Tokens, secrets, API keys** -> `<token>`
+- **IPs, emails, env vars** -> redacted
+- **Docker/Fly machine IDs** -> `<id>`
+- **Tab health** -- pure counters (crash count, error count, status code histogram). No page content, no URLs, no user data.
 
 Duplicate issues are detected by stack signature and get a `+1` comment instead of a new issue.
 
@@ -409,14 +409,14 @@ export CAMOFOX_CRASH_REPORT_RATE_LIMIT=5
 
 To file crash reports in your own GitHub repo instead of `jo-inc/camofox-browser`:
 
-1. **Create a GitHub App** — [Settings → Developer settings → GitHub Apps → New](https://github.com/settings/apps/new)
-   - Permissions: **Repository → Issues → Read & Write**
-   - Uncheck **Webhook → Active** (not needed)
-   - Click **Generate a key** — downloads a `.pem` file
-   - Install the app on your target repo (Install App → select repo)
+1. **Create a GitHub App** -- [Settings -> Developer settings -> GitHub Apps -> New](https://github.com/settings/apps/new)
+   - Permissions: **Repository -> Issues -> Read & Write**
+   - Uncheck **Webhook -> Active** (not needed)
+   - Click **Generate a key** -- downloads a `.pem` file
+   - Install the app on your target repo (Install App -> select repo)
    - Note your **App ID** (number on the app's General page) and **Installation ID** (from the URL after installing: `github.com/settings/installations/{id}`)
 
-2. **Deploy the relay** — clone this repo and deploy the worker:
+2. **Deploy the relay** -- clone this repo and deploy the worker:
    ```bash
    cd workers/crash-reporter
    # Edit wrangler.toml: set account_id to your Cloudflare account ID
@@ -444,7 +444,7 @@ To file crash reports in your own GitHub repo instead of `jo-inc/camofox-browser
 5. **Verify:**
    ```bash
    curl https://your-worker.your-subdomain.workers.dev/health
-   # → {"status":"ok"}
+   # -> {"status":"ok"}
    ```
 
 ### Structured Logging
@@ -468,7 +468,7 @@ curl -X POST http://localhost:9377/tabs \
 
 # Get accessibility snapshot with element refs
 curl "http://localhost:9377/tabs/TAB_ID/snapshot?userId=agent1"
-# → { "snapshot": "[button e1] Submit  [link e2] Learn more", ... }
+# -> { "snapshot": "[button e1] Submit  [link e2] Learn more", ... }
 
 # Click by ref
 curl -X POST http://localhost:9377/tabs/TAB_ID/click \
@@ -528,10 +528,10 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 curl -X POST http://localhost:9377/youtube/transcript \
   -H 'Content-Type: application/json' \
   -d '{"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "languages": ["en"]}'
-# → { "status": "ok", "transcript": "[00:18] ♪ We're no strangers to love ♪\n...", "video_title": "...", "total_words": 548 }
+# -> { "status": "ok", "transcript": "[00:18] ♪ We're no strangers to love ♪\n...", "video_title": "...", "total_words": 548 }
 ```
 
-Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) when available (fast, no browser needed). Falls back to a browser-based intercept method if yt-dlp is not installed — this is slower and less reliable due to YouTube ad pre-rolls.
+Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) when available (fast, no browser needed). Falls back to a browser-based intercept method if yt-dlp is not installed -- this is slower and less reliable due to YouTube ad pre-rolls.
 
 ### Server
 
@@ -554,7 +554,7 @@ Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) when available (fast, no browser
 
 Reddit macros return JSON directly (no HTML parsing needed):
 - `@reddit_search` - search all of Reddit, returns JSON with 25 results
-- `@reddit_subreddit` - browse a subreddit (e.g., query `"programming"` → `/r/programming.json`)
+- `@reddit_subreddit` - browse a subreddit (e.g., query `"programming"` -> `/r/programming.json`)
 
 ## Environment Variables
 
@@ -610,7 +610,7 @@ Browser Instance (Camoufox)
 
 Sessions auto-expire after 30 minutes of inactivity. The browser itself shuts down after 5 minutes with no active sessions, and relaunches on the next request.
 
-When a session's tab limit is reached, the oldest/least-used tab is automatically recycled instead of returning an error — so long-running agent sessions don't hit dead ends.
+When a session's tab limit is reached, the oldest/least-used tab is automatically recycled instead of returning an error -- so long-running agent sessions don't hit dead ends.
 
 ## Testing
 
