@@ -45,7 +45,8 @@
     "run.sh",
     "Dockerfile",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "AGENTS.md"
   ],
   "openclaw": {
     "extensions": [
@@ -56,7 +57,49 @@
     },
     "build": {
       "openclawVersion": "2026.4.26"
-    }
+    },
+    "tools": [
+      {
+        "name": "camofox_create_tab",
+        "description": "Open a new browser tab at a URL"
+      },
+      {
+        "name": "camofox_snapshot",
+        "description": "Get accessibility snapshot with element refs"
+      },
+      {
+        "name": "camofox_click",
+        "description": "Click an element by ref or CSS selector"
+      },
+      {
+        "name": "camofox_type",
+        "description": "Type text into an element"
+      },
+      {
+        "name": "camofox_navigate",
+        "description": "Navigate to URL or search macro"
+      },
+      {
+        "name": "camofox_scroll",
+        "description": "Scroll page up/down/left/right"
+      },
+      {
+        "name": "camofox_screenshot",
+        "description": "Capture page screenshot"
+      },
+      {
+        "name": "camofox_close_tab",
+        "description": "Close a browser tab"
+      },
+      {
+        "name": "camofox_list_tabs",
+        "description": "List open tabs for a user"
+      },
+      {
+        "name": "camofox_import_cookies",
+        "description": "Import Netscape cookie file (requires CAMOFOX_API_KEY)"
+      }
+    ]
   },
   "scripts": {
     "start": "node server.js",
