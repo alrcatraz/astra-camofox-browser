@@ -612,6 +612,46 @@ Sessions auto-expire after 30 minutes of inactivity. The browser itself shuts do
 
 When a session's tab limit is reached, the oldest/least-used tab is automatically recycled instead of returning an error -- so long-running agent sessions don't hit dead ends.
 
+## Security Model
+
+This section documents the security boundaries of camofox-browser for users and automated security reviewers.
+
+### Code isolation
+
+All `process.env` reads are centralized in `lib/config.js`. All `child_process` usage is in `lib/launcher.js` (server subprocess) and `plugins/youtube/youtube.js` (yt-dlp). The main `server.js` has route handlers but zero `process.env` reads and zero `child_process` imports. No single file combines environment/credential access with network sends.
+
+### No embedded secrets
+
+Zero credentials, private keys, API tokens, or signing keys ship in this package. All secrets are provided at runtime via environment variables (`CAMOFOX_API_KEY`, `CAMOFOX_ACCESS_KEY`) or are Cloudflare Worker environment secrets (crash relay GitHub App key).
+
+### Cookie import is disabled by default
+
+The cookie import endpoint (`POST /sessions/:userId/cookies`) is gated behind `CAMOFOX_API_KEY`. If this env var is not set, the server rejects all cookie import requests with HTTP 403. Cookie files are read from a sandboxed directory (`~/.camofox/cookies/`) with path traversal protection -- attempts to escape the directory are blocked. Max 500 cookies per request, 5MB file size limit.
+
+### Access control
+
+`CAMOFOX_ACCESS_KEY` provides global bearer token authentication for all routes (except `/health`). When set, every request must include `Authorization: Bearer <key>`. Recommended for any deployment beyond localhost.
+
+### Binary download
+
+The Camoufox browser engine (~300MB) is downloaded at `npm install` time by [`camoufox-js`](https://www.npmjs.com/package/camoufox-js), an npm package maintained by the [Camoufox project](https://camoufox.com). It downloads from [official GitHub releases](https://github.com/nicedayzhu/camoufox/releases) with integrity verification handled by `camoufox-js`. No custom download URLs, no URL shorteners, no raw IP addresses.
+
+### Crash reporting
+
+Anonymized crash/hang reports are sent to a Cloudflare Worker relay. The relay source is [in this repo](workers/crash-reporter/index.ts) and auditable. Verification: `GET /source` on the relay returns the deployed commit hash and sha256 so you can compare against the repo. The reporter ([`lib/reporter.js` L28-290](lib/reporter.js#L28-L290)) applies paranoid anonymization: private domains are HMAC-hashed (not reversible), paths are stripped, tokens/IPs/emails are redacted. No page content, cookies, or user data is ever sent. Disable with `CAMOFOX_CRASH_REPORT_ENABLED=false` or point to your own relay with `CAMOFOX_CRASH_REPORT_URL`.
+
+### Session persistence
+
+The persistence plugin saves cookies and localStorage to `~/.camofox/profiles/<hashed-userId>/` so authenticated sessions survive browser restarts. UserIds are hashed for directory names. Disable via `camofox.config.json` by removing `persistence` from the plugins array.
+
+### Network access
+
+Outbound connections are made to: (1) URLs the agent navigates to (core functionality), (2) the crash report relay (anonymized, opt-out available). Inbound: the REST API on localhost:9377 (default), optionally protected by `CAMOFOX_ACCESS_KEY`.
+
+### Subprocess usage
+
+Two subprocesses may be spawned: (1) the Camoufox browser engine (core functionality, `lib/launcher.js`), (2) yt-dlp for YouTube transcript extraction (optional, `plugins/youtube/youtube.js`). Both are isolated in dedicated files separate from route handlers.
+
 ## Testing
 
 ```bash

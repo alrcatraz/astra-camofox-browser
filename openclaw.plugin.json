@@ -163,5 +163,101 @@
       "label": "Crash Report Relay URL",
       "placeholder": "https://camofox-crash-relay.askjo.workers.dev/report"
     }
+  },
+  "tools": [
+    "camofox_create_tab",
+    "camofox_snapshot",
+    "camofox_click",
+    "camofox_type",
+    "camofox_navigate",
+    "camofox_scroll",
+    "camofox_screenshot",
+    "camofox_close_tab",
+    "camofox_list_tabs",
+    "camofox_import_cookies"
+  ],
+  "runtimeDependencies": {
+    "camoufox": {
+      "description": "Camoufox anti-detection browser (Firefox fork). Downloaded at install time by camoufox-js from the official Camoufox GitHub releases.",
+      "source": "https://github.com/nicedayzhu/camoufox/releases",
+      "installer": "camoufox-js (npm)",
+      "installedBy": "postinstall script: npx camoufox-js fetch",
+      "sizeApprox": "300MB",
+      "platforms": [
+        "linux-x86_64",
+        "linux-aarch64",
+        "macos-x86_64",
+        "macos-aarch64"
+      ],
+      "verifiedBy": "camoufox-js verifies download integrity via GitHub release checksums"
+    }
+  },
+  "permissions": {
+    "network": {
+      "outbound": [
+        {
+          "target": "User-specified URLs (browsed pages)",
+          "purpose": "Browser automation -- navigating to URLs the agent requests",
+          "gatedBy": "Agent request via API"
+        },
+        {
+          "target": "https://camofox-crash-relay.askjo.workers.dev/report",
+          "purpose": "Anonymized crash/hang reporting",
+          "gatedBy": "CAMOFOX_CRASH_REPORT_ENABLED (default: true, set false to disable)"
+        }
+      ],
+      "inbound": {
+        "target": "localhost:9377 (default)",
+        "purpose": "REST API for browser automation",
+        "gatedBy": "CAMOFOX_ACCESS_KEY (optional -- when set, all routes require Bearer auth)"
+      }
+    },
+    "filesystem": {
+      "read": [
+        {
+          "path": "~/.camofox/cookies/",
+          "purpose": "Read Netscape cookie files for authenticated browsing",
+          "gatedBy": "CAMOFOX_API_KEY (disabled entirely when unset)"
+        },
+        {
+          "path": "/proc/self/status (Linux only)",
+          "purpose": "Memory and resource metrics for crash reports",
+          "gatedBy": "Only read when crash reporting is enabled"
+        }
+      ],
+      "write": [
+        {
+          "path": "~/.camofox/profiles/<hashed-userId>/",
+          "purpose": "Persisted session state (cookies + localStorage) so users stay logged in across restarts",
+          "gatedBy": "persistence plugin (enabled by default, disable via camofox.config.json)"
+        },
+        {
+          "path": "~/.camofox/traces/<hashed-userId>/",
+          "purpose": "Optional Playwright session traces for debugging",
+          "gatedBy": "trace: true flag on tab creation (opt-in per session, off by default)"
+        }
+      ]
+    },
+    "subprocess": [
+      {
+        "binary": "Camoufox (Firefox fork)",
+        "purpose": "The browser engine -- core functionality",
+        "isolation": "lib/launcher.js (child_process isolated from route handlers)"
+      },
+      {
+        "binary": "yt-dlp (optional)",
+        "purpose": "YouTube transcript extraction (fast path)",
+        "isolation": "plugins/youtube/youtube.js (child_process isolated from route handlers)"
+      }
+    ]
+  },
+  "securityModel": {
+    "architecture": "All process.env reads are in lib/config.js. All child_process usage is in lib/launcher.js and plugins/youtube/youtube.js. server.js has route handlers but zero process.env reads and zero child_process imports. No single file combines secrets access with network sends.",
+    "cookieImport": "DISABLED by default. Requires CAMOFOX_API_KEY to be explicitly set. Without the key, the server rejects all cookie requests with 403. Cookie files are read from a sandboxed directory (~/.camofox/cookies/) with path traversal protection.",
+    "accessControl": "CAMOFOX_ACCESS_KEY provides global bearer auth for all routes (except /health). Recommended for any non-localhost deployment.",
+    "crashReporting": "Anonymized via lib/reporter.js (L28-290). Private domains are HMAC-hashed. No page content, cookies, tokens, IPs, or user data is ever sent. Relay source is in-repo and auditable. Verification endpoint: GET /source returns commit hash and sha256.",
+    "binaryDownload": "Camoufox is downloaded at npm install time by camoufox-js (an npm package from the Camoufox project). Downloaded from official GitHub releases with integrity verification by camoufox-js.",
+    "sessionPersistence": "User sessions are persisted to ~/.camofox/profiles/ so authenticated browsing survives restarts. UserIds are hashed for directory names. Disable via persistence plugin config.",
+    "noEmbeddedSecrets": "Zero credentials, private keys, or tokens ship in this package. All secrets are environment variables or Cloudflare Worker secrets."
   }
 }
