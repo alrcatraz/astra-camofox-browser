@@ -237,7 +237,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
 
 - **Architecture**: `lib/reporter.js` (client, no secrets, no `fs`) -> POST -> Cloudflare Worker relay -> GitHub Issues
 - **`lib/reporter.js`** has ZERO credentials, ZERO private keys, ZERO `fs` imports. It only does `fetch()` to the relay URL.
-- **`lib/resources.js`** handles `fs`/`child_process` resource snapshots -- separated from reporter.js so no file-read + network-send pattern exists in any single file
+- **`lib/resources.js`** handles `fs`-based resource snapshots (reading /proc on Linux) -- separated from reporter.js so no file-read + network-send pattern exists in any single file. No `child_process` import.
 - **Anonymization** is in `lib/reporter.js` L28-290 -- text scrubbing (`anonymize()`), URL anonymization (`createUrlAnonymizer()`), and tab health tracking (`createTabHealthTracker()`)
 - **Public domain list** (~120 entries) determines which domains are shown verbatim vs HMAC-hashed
 - **Tests**: `tests/unit/crashRelay.test.js` (relay client), `tests/unit/crashRelayWorker.test.js` (worker contract), `tests/unit/noSecrets.test.js` (asserts no key material in shipped files)
