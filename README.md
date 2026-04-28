@@ -344,6 +344,43 @@ The crash reporter gives us structured data on *which sites fail*, *how they fai
 
 Each report includes the failure type, stack trace, tab health counters (HTTP status histogram, console errors, request failures, redirect depth), and the target URL — all anonymized.
 
+#### How it works
+
+Reports are sent to a lightweight Cloudflare Worker relay at [`https://camofox-crash-relay.askjo.workers.dev`](https://camofox-crash-relay.askjo.workers.dev/health). The relay holds the GitHub App credentials as environment secrets — **no secrets are shipped in this package**.
+
+```
+lib/reporter.js (client, no secrets)
+    │  anonymize → POST https://camofox-crash-relay.askjo.workers.dev/report
+    ▼
+Cloudflare Worker (holds GitHub App key)
+    │  validate → rate-limit → dedup → create GitHub Issue
+    ▼
+GitHub Issue created
+```
+
+The relay source code is in this repo at [`workers/crash-reporter/index.ts`](workers/crash-reporter/index.ts).
+
+#### Verification
+
+You don't have to trust us — verify what the live relay is running:
+
+```bash
+# 1. Ask the relay what code it's running
+curl https://camofox-crash-relay.askjo.workers.dev/source
+# → { "commit": "abc1234", "sha256": "e3b0c44...", "source": "https://github.com/..." }
+
+# 2. Compare the sha256 against the source in this repo
+sha256sum workers/crash-reporter/index.ts
+
+# 3. Check the commit matches what CI deployed
+#    https://github.com/jo-inc/camofox-browser/actions/workflows/crash-relay-deploy.yml
+git log --oneline workers/crash-reporter/index.ts | head -1
+```
+
+If the hashes don't match, the relay is running different code than what's in the repo. The deploy workflow ([`.github/workflows/crash-relay-deploy.yml`](.github/workflows/crash-relay-deploy.yml)) injects the commit and source hash at deploy time — every deploy is auditable in [GitHub Actions](https://github.com/jo-inc/camofox-browser/actions/workflows/crash-relay-deploy.yml).
+
+Or skip verification entirely: `CAMOFOX_CRASH_REPORT_ENABLED=false` disables all reporting, or point to [your own relay](#self-hosted-relay) with `CAMOFOX_CRASH_REPORT_URL`.
+
 #### Privacy
 
 All reported data goes through paranoid anonymization ([`lib/reporter.js` L28–290](lib/reporter.js#L28-L290)) before leaving the process:
@@ -357,34 +394,58 @@ All reported data goes through paranoid anonymization ([`lib/reporter.js` L28–
 
 Duplicate issues are detected by stack signature and get a `+1` comment instead of a new issue.
 
-Uses a dedicated GitHub App ([Camofox Crash/Stuck Reporter](https://github.com/apps/camofox-crash-stuck-reporter)) with issues-only permissions — no PAT or configuration required.
-
 ```bash
 # Disable crash reporting
 export CAMOFOX_CRASH_REPORT_ENABLED=false
 
-# Report to a different repo (default: jo-inc/camofox-browser)
-export CAMOFOX_CRASH_REPORT_REPO=your-org/your-repo
+# Point to your own relay (see below)
+export CAMOFOX_CRASH_REPORT_URL=https://your-relay.example.com/report
 
 # Adjust rate limit (default: 10 per hour)
 export CAMOFOX_CRASH_REPORT_RATE_LIMIT=5
 ```
 
-#### Reporting to your own repo
+#### Self-hosted relay
 
-By default, reports go to `jo-inc/camofox-browser`. To file issues in your own repo instead, create a GitHub App:
+To file crash reports in your own GitHub repo instead of `jo-inc/camofox-browser`:
 
-1. Go to **Settings → Developer settings → GitHub Apps → New GitHub App**
-2. Set permissions: **Repository → Issues → Read & Write**. Uncheck **Webhook → Active**.
-3. Click **Generate a private key** — downloads a `.pem` file
-4. Install the app on your target repo (Install App → select repo)
-5. Note your **App ID** (number on the app's settings page) and **Installation ID** (from the URL after installing: `github.com/settings/installations/{id}`)
-6. Base64-encode the private key and split it into two halves:
+1. **Create a GitHub App** — [Settings → Developer settings → GitHub Apps → New](https://github.com/settings/apps/new)
+   - Permissions: **Repository → Issues → Read & Write**
+   - Uncheck **Webhook → Active** (not needed)
+   - Click **Generate a private key** — downloads a `.pem` file
+   - Install the app on your target repo (Install App → select repo)
+   - Note your **App ID** (number on the app's General page) and **Installation ID** (from the URL after installing: `github.com/settings/installations/{id}`)
+
+2. **Deploy the relay** — clone this repo and deploy the worker:
    ```bash
-   base64 < your-app.pem | tr -d '\n' | fold -w $(($(base64 < your-app.pem | tr -d '\n' | wc -c) / 2)) | head -2
+   cd workers/crash-reporter
+   # Edit wrangler.toml: set account_id to your Cloudflare account ID
+   npx wrangler deploy
    ```
-7. Replace `_GH_APP_ID`, `_GH_INSTALL_ID`, `_K_A`, and `_K_B` in `lib/reporter.js` with your values
-8. Set `CAMOFOX_CRASH_REPORT_REPO=your-org/your-repo`
+   The worker is a single TypeScript file with zero npm dependencies. It also runs on Deno, Bun, or any runtime with the Web Crypto API.
+
+3. **Set worker secrets:**
+   ```bash
+   cd workers/crash-reporter
+   echo "YOUR_APP_ID" | npx wrangler secret put GH_APP_ID
+   echo "YOUR_INSTALL_ID" | npx wrangler secret put GH_INSTALL_ID
+   # Key must be PKCS#8 DER base64 (not raw PEM)
+   openssl pkcs8 -topk8 -inform PEM -outform DER -nocrypt -in your-app.pem | \
+     base64 | tr -d '\n' | npx wrangler secret put GH_PRIVATE_KEY
+   # File issues in your repo
+   echo "your-org/your-repo" | npx wrangler secret put GH_REPO
+   ```
+
+4. **Point camofox-browser to your relay:**
+   ```bash
+   export CAMOFOX_CRASH_REPORT_URL=https://your-worker.your-subdomain.workers.dev/report
+   ```
+
+5. **Verify:**
+   ```bash
+   curl https://your-worker.your-subdomain.workers.dev/health
+   # → {"status":"ok"}
+   ```
 
 ### Structured Logging
 
@@ -528,6 +589,7 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `PROXY_STATE` | Target state/region for proxy geo-targeting | - |
 | `TAB_INACTIVITY_MS` | Close tabs idle longer than this | `300000` (5min) |
 | `CAMOFOX_CRASH_REPORT_ENABLED` | Enable anonymized crash/hang reporter (`false` to disable) | `true` |
+| `CAMOFOX_CRASH_REPORT_URL` | Crash report relay endpoint ([self-hosted relay](#self-hosted-relay)) | `https://camofox-crash-relay.askjo.workers.dev/report` |
 | `CAMOFOX_CRASH_REPORT_REPO` | GitHub repo for issue reports | `jo-inc/camofox-browser` |
 | `CAMOFOX_CRASH_REPORT_RATE_LIMIT` | Max reports per hour | `10` |
 | `ENABLE_VNC` | Enable VNC plugin for interactive browser access (`1`) | - |

@@ -1,7 +1,7 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  anonymize, stackSignature, createReporter, createUrlAnonymizer,
+  anonymize, stackSignature, createReporter, sendToRelay, createUrlAnonymizer,
   createTabHealthTracker, collectResourceSnapshot, detectBotProtection,
   classifyProxyError,
 } from '../../lib/reporter.js';
@@ -347,10 +347,8 @@ describe('stackSignature', () => {
 // Rate limiter tests
 // ============================================================================
 
-// Dummy creds so createReporter enters the enabled path (requires appId)
-const TEST_CRASH_CONFIG = {
-  crashReporterConfig: { appId: 'test-app', installationId: 'test-install', repo: 'test/repo', keyA: 'a', keyB: 'b' },
-};
+// Reporter is now enabled by default (no appId check — relay handles auth)
+const TEST_CRASH_CONFIG = {};
 
 describe('rate limiting', () => {
 
@@ -358,7 +356,6 @@ describe('rate limiting', () => {
     const reporter = createReporter({
       ...TEST_CRASH_CONFIG,
       crashReportEnabled: true,
-      crashReportRepo: 'test/repo',
       crashReportRateLimit: 3,
     });
     const rl = reporter._rateLimiter._default;
@@ -373,7 +370,6 @@ describe('rate limiting', () => {
     const reporter = createReporter({
       ...TEST_CRASH_CONFIG,
       crashReportEnabled: true,
-      crashReportRepo: 'test/repo',
       crashReportRateLimit: 2,
     });
     const rl = reporter._rateLimiter._default;
@@ -415,7 +411,6 @@ describe('createReporter', () => {
     const reporter = createReporter({
       ...TEST_CRASH_CONFIG,
       crashReportEnabled: true,
-      crashReportRepo: 'test/repo',
     });
     reporter.startWatchdog();
     const result = await reporter.stop();
@@ -426,7 +421,6 @@ describe('createReporter', () => {
     const reporter = createReporter({
       ...TEST_CRASH_CONFIG,
       crashReportEnabled: true,
-      crashReportRepo: 'test/repo',
     });
     assert.equal(typeof reporter.trackRoute, 'function');
     reporter.trackRoute('POST /tabs/:id/navigate');
