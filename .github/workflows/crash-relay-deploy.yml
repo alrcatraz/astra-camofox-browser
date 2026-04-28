@@ -1,0 +1,29 @@
+name: Deploy Crash Relay
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'workers/crash-reporter/**'
+  workflow_dispatch: # manual trigger for initial deploy / redeploy
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy to Cloudflare Workers
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inject source verification hashes
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          HASH=$(sha256sum workers/crash-reporter/index.ts | cut -d' ' -f1)
+          sed -i "s/__COMMIT_SHA__/$COMMIT/" workers/crash-reporter/index.ts
+          sed -i "s/__SOURCE_SHA256__/$HASH/" workers/crash-reporter/index.ts
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3.14.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/crash-reporter

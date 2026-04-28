@@ -48,6 +48,32 @@
     },
     "additionalProperties": false
   },
+  "telemetry": {
+    "crashReporter": {
+      "description": "Anonymized crash/hang reports sent to a Cloudflare Worker relay. No secrets or private keys are shipped in this package.",
+      "enabled": true,
+      "optOut": "CAMOFOX_CRASH_REPORT_ENABLED=false",
+      "relay": "https://camofox-crash-relay.askjo.workers.dev/report",
+      "relaySource": "https://github.com/jo-inc/camofox-browser/blob/main/workers/crash-reporter/index.ts",
+      "relayVerification": "https://camofox-crash-relay.askjo.workers.dev/source",
+      "selfHostable": true,
+      "selfHostOverride": "CAMOFOX_CRASH_REPORT_URL",
+      "dataCollected": [
+        "error type and anonymized stack trace",
+        "node/platform version and uptime",
+        "memory and resource counters (no content)",
+        "HMAC-hashed private domains (not reversible)",
+        "public domains verbatim (e.g. cloudflare.com, amazon.com)"
+      ],
+      "dataNeverCollected": [
+        "page content or DOM",
+        "URLs with paths, query params, or credentials",
+        "cookies, tokens, API keys, or secrets",
+        "IP addresses or email addresses",
+        "user-identifiable information"
+      ]
+    }
+  },
   "uiHints": {
     "url": {
       "label": "Server URL",
