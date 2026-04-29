@@ -22,15 +22,12 @@ jobs:
 
       - run: npm ci
 
-      - name: Unit tests (node:test)
-        run: node --test tests/unit/reporter.test.js
-
       - name: Unit + plugin tests (Jest)
         run: |
           npm install --no-save jest-junit
           node --experimental-vm-modules node_modules/.bin/jest \
             --testPathPattern='tests/unit|plugins' \
-            --testPathIgnorePatterns='reporter\.test|security\.test|tabRecycling\.test|cookies\.test' \
+            --testPathIgnorePatterns='security\.test|tabRecycling\.test|cookies\.test' \
             --forceExit
         env:
           CI: true
