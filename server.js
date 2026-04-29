@@ -384,6 +384,8 @@ const MAX_CONCURRENT_PER_USER = CONFIG.maxConcurrentPerUser;
 const PAGE_CLOSE_TIMEOUT_MS = 5000;
 const NAVIGATE_TIMEOUT_MS = CONFIG.navigateTimeoutMs;
 const BUILDREFS_TIMEOUT_MS = CONFIG.buildrefsTimeoutMs;
+const NATIVE_MEM_RESTART_THRESHOLD_MB = CONFIG.nativeMemRestartThresholdMb;
+let _nativeMemBaseline = null; // RSS - heapUsed at first idle measurement
 const FAILURE_THRESHOLD = 3;
 const MAX_CONSECUTIVE_TIMEOUTS = 3;
 const TAB_LOCK_TIMEOUT_MS = 35000; // Must be > HANDLER_TIMEOUT_MS so active op times out first
@@ -734,6 +736,7 @@ async function _closeBrowserFullyImpl(reason) {
 
   // Reset native memory baseline so next browser measures from fresh
   reporter.resetNativeMemBaseline();
+  _nativeMemBaseline = null;
 
   // Verify cleanup: check FD/handle counts dropped (after force-kill completes)
   const postCloseFds = _countOpenFds();
@@ -4288,6 +4291,34 @@ setInterval(() => {
   }
   if (sessions.size === 0) scheduleBrowserIdleShutdown();
 }, 60_000);
+
+// Native memory pressure restart -- when all sessions are gone and Firefox's
+// native memory has grown beyond threshold, kill the browser immediately instead
+// of waiting for the idle timer. Firefox/Camoufox doesn't fully reclaim native
+// memory after context.close() due to jemalloc fragmentation, JIT caches, and
+// NSS/TLS session caches. See #1032.
+setInterval(() => {
+  if (sessions.size > 0 || !browser) return;
+  const mem = process.memoryUsage();
+  const nativeMemMb = Math.round((mem.rss - mem.heapUsed) / 1048576);
+  if (_nativeMemBaseline === null) {
+    _nativeMemBaseline = nativeMemMb;
+    return;
+  }
+  const growth = nativeMemMb - _nativeMemBaseline;
+  if (growth >= NATIVE_MEM_RESTART_THRESHOLD_MB) {
+    log('warn', 'native memory pressure, restarting browser', {
+      baselineMb: _nativeMemBaseline,
+      currentMb: nativeMemMb,
+      growthMb: growth,
+      thresholdMb: NATIVE_MEM_RESTART_THRESHOLD_MB,
+    });
+    browserRestartsTotal.labels('memory_pressure').inc();
+    closeBrowserFully('memory_pressure').catch((err) => {
+      log('error', 'memory pressure browser close failed', { error: err.message });
+    });
+  }
+}, 30_000);
 
 // =============================================================================
 // OpenClaw-compatible endpoint aliases
