@@ -71,11 +71,11 @@ describe('no embedded secrets in distributed files', () => {
 
   test('wrangler.toml has correct worker name', () => {
     const toml = readFileSync(join(__dirname, '../../workers/crash-reporter/wrangler.toml'), 'utf-8');
-    expect(toml).toContain('name = "camofox-crash-relay"');
+    expect(toml).toContain('name = "camofox-telemetry"');
   });
 
   test('deploy workflow triggers on worker changes from main', () => {
-    const workflow = readFileSync(join(__dirname, '../../.github/workflows/crash-relay-deploy.yml'), 'utf-8');
+    const workflow = readFileSync(join(__dirname, '../../.github/workflows/telemetry-deploy.yml'), 'utf-8');
     expect(workflow).toContain('workers/crash-reporter/**');
     expect(workflow).toContain('branches: [main]');
     expect(workflow).toContain('CLOUDFLARE_API_TOKEN');

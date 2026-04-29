@@ -45,7 +45,7 @@ describe('sendToRelay', () => {
     await sendToRelay({ type: 'crash', signature: 'aabb1122', title: 'test', body: 'body', labels: ['crash'] });
     expect(fetchCalls).toHaveLength(1);
     const { url, opts } = fetchCalls[0];
-    expect(url).toContain('camofox-crash-relay.askjo.workers.dev/report');
+    expect(url).toContain('camofox-telemetry.askjo.workers.dev/report');
     expect(opts.method).toBe('POST');
     expect(opts.headers['Content-Type']).toBe('application/json');
   });
@@ -212,11 +212,11 @@ describe('createReporter relay integration', () => {
 
 describe('relay URL override', () => {
 
-  test('default URL is camofox-crash-relay.askjo.workers.dev', async () => {
+  test('default URL is camofox-telemetry.askjo.workers.dev', async () => {
     createReporter({ crashReportEnabled: true });
     // sendToRelay uses the module-level _relayUrl set by createReporter
     await sendToRelay({ type: 'crash', signature: '11223344', title: 't', body: 'b', labels: [] });
-    expect(fetchCalls[0].url).toBe('https://camofox-crash-relay.askjo.workers.dev/report');
+    expect(fetchCalls[0].url).toBe('https://camofox-telemetry.askjo.workers.dev/report');
   });
 
   test('custom URL via config.crashReportUrl', async () => {
@@ -228,7 +228,7 @@ describe('relay URL override', () => {
   test('empty crashReportUrl falls back to default', async () => {
     createReporter({ crashReportEnabled: true, crashReportUrl: '' });
     await sendToRelay({ type: 'crash', signature: '11223344', title: 't', body: 'b', labels: [] });
-    expect(fetchCalls[0].url).toBe('https://camofox-crash-relay.askjo.workers.dev/report');
+    expect(fetchCalls[0].url).toBe('https://camofox-telemetry.askjo.workers.dev/report');
   });
 });
 
