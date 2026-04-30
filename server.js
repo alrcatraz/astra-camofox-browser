@@ -35,12 +35,16 @@ import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp
 import { coalesceInflight } from './lib/inflight.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
+import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
 
 const CONFIG = loadConfig();
 
 // --- Crash reporter (opt-in, anonymized GitHub issues) ---
 import { readFileSync } from 'fs';
 const _pkgVersion = (() => { try { return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version; } catch { return 'unknown'; } })();
+
+// --- Sentry error tracking ---
+initSentry({ ...CONFIG, version: _pkgVersion });
 const reporter = createReporter({ ...CONFIG, version: _pkgVersion });
 function _countTabs() {
   let total = 0;
@@ -186,6 +190,15 @@ function sendError(res, err, extraFields = {}) {
   if (err instanceof StaleRefsError) {
     body.code = 'stale_refs';
     body.ref = err.ref;
+  }
+  // Report 500s to Sentry with request context
+  if (status >= 500) {
+    sentryCaptureException(err, {
+      path: res.req?.originalUrl,
+      method: res.req?.method,
+      userId: res.req?.query?.userId || res.req?.body?.userId,
+      reqId: res.req?.reqId,
+    });
   }
   res.status(status).json(body);
 }
@@ -5121,10 +5134,14 @@ process.on('uncaughtException', (err) => {
   pluginEvents.emit('browser:error', { error: err });
   log('error', 'uncaughtException', { error: err.message, stack: err.stack });
   reporter.reportCrash(err, { resourceOpts: _resourceOpts() });
-  process.exit(1);
+  sentryCaptureException(err, { type: 'uncaughtException' });
+  sentryFlush(2000).finally(() => process.exit(1));
 });
 process.on('unhandledRejection', (reason) => {
   log('error', 'unhandledRejection', { reason: String(reason) });
+  if (reason instanceof Error) {
+    sentryCaptureException(reason, { type: 'unhandledRejection' });
+  }
 });
 
 // Graceful shutdown
@@ -5151,6 +5168,7 @@ async function gracefulShutdown(signal) {
   });
 
   await closeBrowserFully(`shutdown:${signal}`);
+  await sentryFlush(2000);
   process.exit(0);
 }
 
@@ -5195,6 +5213,9 @@ const loadedPlugins = await loadPlugins(app, pluginCtx);
 
 // --- OpenAPI docs (after all routes are registered) ---
 mountDocs(app);
+
+// --- Sentry Express error handler (after all routes, before app.listen) ---
+setupSentryErrorHandler(app);
 
 const server = app.listen(PORT, async () => {
   startMemoryReporter();
