@@ -121,12 +121,12 @@ describe('Snapshot and Links', () => {
     }
   });
   
-  test('snapshot for non-existent tab returns 404', async () => {
+  test('snapshot for non-existent tab returns 410', async () => {
     const client = createClient(serverUrl);
     
     try {
       await expect(client.getSnapshot('non-existent-tab-id')).rejects.toMatchObject({
-        status: 404
+        status: 410
       });
     } finally {
       await client.cleanup();
