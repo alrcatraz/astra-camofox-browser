@@ -135,7 +135,7 @@ describe('Screenshot', () => {
     }
   });
 
-  test('screenshot of non-existent tab returns 404 JSON error', async () => {
+  test('screenshot of non-existent tab returns 410 JSON error', async () => {
     const client = createClient(serverUrl);
 
     try {
@@ -143,7 +143,7 @@ describe('Screenshot', () => {
         `${serverUrl}/tabs/non-existent-tab/screenshot?userId=${client.userId}`
       );
 
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(410);
       expect(res.headers.get('content-type')).toContain('application/json');
 
       const data = await res.json();
