@@ -193,13 +193,13 @@ describe('Snapshot with includeScreenshot', () => {
     }
   });
 
-  test('non-existent tab returns 404 even with includeScreenshot', async () => {
+  test('non-existent tab returns 410 even with includeScreenshot', async () => {
     const client = createClient(serverUrl);
 
     try {
       await expect(
         client.getSnapshot('non-existent-tab', { includeScreenshot: true })
-      ).rejects.toMatchObject({ status: 404 });
+      ).rejects.toMatchObject({ status: 410 });
     } finally {
       await client.cleanup();
     }
