@@ -2107,7 +2107,7 @@ app.post('/tabs', async (req, res) => {
           { statusCode: 409 },
         );
       }
-      const session = await getSession(userId, { trace: !!trace });
+      let session = await getSession(userId, { trace: !!trace });
       
       let totalTabs = 0;
       for (const group of session.tabGroups.values()) totalTabs += group.size;
