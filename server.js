@@ -1706,7 +1706,7 @@ app.post('/tabs', async (req, res) => {
     }
     
     const result = await withTimeout((async () => {
-      const session = await getSession(userId);
+      let session = await getSession(userId);
       
       let totalTabs = 0;
       for (const group of session.tabGroups.values()) totalTabs += group.size;
