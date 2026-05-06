@@ -64,6 +64,7 @@ RUN set -eux; \
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+COPY scripts/ ./scripts/
 RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --production
 
 COPY server.js ./
