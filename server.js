@@ -1025,6 +1025,12 @@ async function closeSession(userId, session, {
 
   const key = normalizeUserId(userId);
 
+  // Drain locks BEFORE closing context — queued operations get clean "Tab destroyed"
+  // (410) instead of messy "Target page closed" (500) errors.
+  if (clearLocks) {
+    clearSessionLocks(session);
+  }
+
   if (clearDownloads) {
     await clearSessionDownloads(session).catch(() => {});
   }
@@ -1042,10 +1048,6 @@ async function closeSession(userId, session, {
   await session.context.close().catch(() => {});
   sessions.delete(key);
   await pluginEvents.emitAsync('session:destroyed', { userId: key, reason });
-
-  if (clearLocks) {
-    clearSessionLocks(session);
-  }
 
   refreshActiveTabsGauge();
 }
@@ -1198,8 +1200,21 @@ function handleRouteError(err, req, res, extraFields = {}) {
     browserRestartsTotal.labels('proxy_error').inc();
     destroySession(userId);
   }
+  // Navigation-related timeouts can poison the proxy session (e.g., Cloudflare holding
+  // the connection open for 30s). The browser context shares a single proxy session, so
+  // one poisoned page kills all subsequent navigations in that context. Destroy the
+  // entire session so the next request gets a fresh BrowserContext + proxy.
+  const NAVIGATION_TIMEOUT_ACTIONS = new Set(['click', 'navigate', 'open_url']);
+  if (isTimeoutError(err) && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action)) {
+    log('warn', 'navigation timeout — destroying session for fresh proxy', {
+      action, userId, error: err.message,
+    });
+    browserRestartsTotal.labels('navigation_timeout').inc();
+    destroySession(userId);
+  }
   // Track consecutive timeouts per tab and auto-destroy stuck tabs
-  if (userId && isTimeoutError(err)) {
+  // (for non-navigation timeouts like type, scroll that don't poison the proxy)
+  if (userId && isTimeoutError(err) && !NAVIGATION_TIMEOUT_ACTIONS.has(action)) {
     const tabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
     const session = sessions.get(normalizeUserId(userId));
     if (session && tabId) {
@@ -1224,6 +1239,12 @@ function handleRouteError(err, req, res, extraFields = {}) {
   // Tab was destroyed while this request was queued in the lock
   if (isTabDestroyedError(err)) {
     return res.status(410).json({ error: 'Tab was destroyed. Open a new tab.', ...extraFields });
+  }
+  // Dead context = session torn down (by proxy error, timeout, or reaper) while this op
+  // was in flight. The ROOT CAUSE was already reported — this is a cascade error.
+  // Return 503 (retriable) so the client retries with a fresh session.
+  if (isDeadContextError(err)) {
+    return res.status(503).json({ error: 'Browser session expired. Retry to get a fresh session.', code: 'session_expired', ...extraFields });
   }
   // --- Frustration detection: report when a tab hits a streak of failures ---
   // Individual failures are noise. 3+ consecutive = the site is persistently broken.
@@ -2059,7 +2080,7 @@ app.post('/tabs', async (req, res) => {
           { statusCode: 409 },
         );
       }
-      const session = await getSession(userId, { trace: !!trace });
+      let session = await getSession(userId, { trace: !!trace });
       
       let totalTabs = 0;
       for (const group of session.tabGroups.values()) totalTabs += group.size;
@@ -2076,7 +2097,7 @@ app.post('/tabs', async (req, res) => {
       
       const page = await session.context.newPage();
       const tabId = fly.makeTabId();
-      const tabState = createTabState(page);
+      let tabState = createTabState(page);
       attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
       group.set(tabId, tabState);
       refreshActiveTabsGauge();
@@ -2085,7 +2106,32 @@ app.post('/tabs', async (req, res) => {
         const urlErr = validateUrl(url);
         if (urlErr) throw Object.assign(new Error(urlErr), { statusCode: 400 });
         tabState.lastRequestedUrl = url;
-        await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+        try {
+          await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+        } catch (navErr) {
+          if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
+            log('warn', 'tab create navigate failed, retrying with fresh proxy', {
+              reqId: req.reqId, tabId, error: navErr.message,
+            });
+            browserRestartsTotal.labels('proxy_retry').inc();
+            const key = normalizeUserId(userId);
+            const oldSession = sessions.get(key);
+            if (oldSession) {
+              await closeSession(key, oldSession, { reason: 'proxy_retry_rotate', clearDownloads: true, clearLocks: true });
+            }
+            session = await getSession(userId, { trace: !!trace });
+            const retryGroup = getTabGroup(session, resolvedSessionKey);
+            const retryPage = await session.context.newPage();
+            tabState = createTabState(retryPage);
+            tabState.lastRequestedUrl = url;
+            attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
+            retryGroup.set(tabId, tabState);
+            refreshActiveTabsGauge();
+            await withPageLoadDuration('open_url', () => retryPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+          } else {
+            throw navErr;
+          }
+        }
         tabState.visitedUrls.add(url);
       }
       
@@ -2260,7 +2306,24 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           await prewarmGoogleHome();
         }
 
-        await navigateCurrentPage();
+        // Navigate with transparent retry on proxy/timeout errors.
+        // If the proxy is blocked or the page times out, destroy the session,
+        // get a fresh proxy, and retry once before failing to the caller.
+        try {
+          await navigateCurrentPage();
+        } catch (navErr) {
+          if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
+            log('warn', 'navigate failed, retrying with fresh proxy session', {
+              reqId: req.reqId, tabId, error: navErr.message,
+            });
+            browserRestartsTotal.labels('proxy_retry').inc();
+            await recreateTabOnFreshContext();
+            if (isGoogleSearch) await prewarmGoogleHome();
+            await navigateCurrentPage();
+          } else {
+            throw navErr;
+          }
+        }
 
         if (isGoogleSearch && proxyPool?.canRotateSessions && await isGoogleSearchBlocked(tabState.page)) {
           log('warn', 'google search blocked, rotating browser proxy session', {
@@ -3210,7 +3273,7 @@ app.post('/tabs/:tabId/back', async (req, res) => {
     
     const result = await withTabLock(tabId, async () => {
       try {
-        await tabState.page.goBack({ timeout: 10000 });
+        await tabState.page.goBack({ timeout: 20000 });
       } catch (navErr) {
         // NS_BINDING_CANCELLED_OLD_LOAD: Firefox cancels the old load when going back.
         // The navigation itself succeeded -- just the prior page's load was interrupted.
@@ -4623,7 +4686,7 @@ app.post('/tabs/open', async (req, res) => {
     const urlErr = validateUrl(url);
     if (urlErr) return res.status(400).json({ error: urlErr });
     
-    const session = await getSession(userId);
+    let session = await getSession(userId);
     
     // Recycle oldest tab when limits are reached instead of rejecting
     let totalTabs = 0;
@@ -4635,16 +4698,40 @@ app.post('/tabs/open', async (req, res) => {
       }
     }
     
-    const group = getTabGroup(session, listItemId);
+    let group = getTabGroup(session, listItemId);
     
-    const page = await session.context.newPage();
+    let page = await session.context.newPage();
     const tabId = fly.makeTabId();
-    const tabState = createTabState(page);
+    let tabState = createTabState(page);
     attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
     group.set(tabId, tabState);
     refreshActiveTabsGauge();
     
-    await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+    try {
+      await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+    } catch (navErr) {
+      if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
+        log('warn', 'tab open failed, retrying with fresh proxy', {
+          reqId: req.reqId, tabId, error: navErr.message,
+        });
+        browserRestartsTotal.labels('proxy_retry').inc();
+        const key = normalizeUserId(userId);
+        const oldSession = sessions.get(key);
+        if (oldSession) {
+          await closeSession(key, oldSession, { reason: 'proxy_retry_rotate', clearDownloads: true, clearLocks: true });
+        }
+        session = await getSession(userId);
+        group = getTabGroup(session, listItemId);
+        page = await session.context.newPage();
+        tabState = createTabState(page);
+        attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
+        group.set(tabId, tabState);
+        refreshActiveTabsGauge();
+        await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+      } else {
+        throw navErr;
+      }
+    }
     tabState.visitedUrls.add(url);
     
     log('info', 'openclaw tab opened', { reqId: req.reqId, tabId, url: page.url() });
