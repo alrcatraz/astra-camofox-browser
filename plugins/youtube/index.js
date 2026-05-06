@@ -20,7 +20,7 @@ export async function register(app, ctx, pluginConfig = {}) {
   await detectYtDlp(log);
 
   // Auth is on by default; set { "auth": false } in camofox.config.json to disable
-  // Auth off by default — matches pre-plugin behavior. Set { "auth": true } to require auth.
+  // Auth off by default -- matches pre-plugin behavior. Set { "auth": true } to require auth.
   const middleware = pluginConfig.auth === true ? ctx.auth() : (_req, _res, next) => next();
 
   app.post('/youtube/transcript', middleware, async (req, res) => {
@@ -73,7 +73,7 @@ export async function register(app, ctx, pluginConfig = {}) {
     }
   });
 
-  // Browser fallback — play video, intercept timedtext network response
+  // Browser fallback -- play video, intercept timedtext network response
   async function browserTranscript(reqId, url, videoId, lang) {
     return await withUserLimit('__yt_transcript__', async () => {
       await ensureBrowser();

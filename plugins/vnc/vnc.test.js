@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { jest } from '@jest/globals';
 
-// Mock the launcher module — index.js no longer imports child_process directly
+// Mock the launcher module -- index.js no longer imports child_process directly
 const mockWatcher = () => {
   const proc = new EventEmitter();
   proc.pid = 12345;
@@ -169,7 +169,7 @@ describe('vnc plugin', () => {
 
     await handler(req, res);
     expect(res.status).toHaveBeenCalledWith(500);
-    // safeError returns the message string — not the raw Error object
+    // safeError returns the message string -- not the raw Error object
     expect(res.json).toHaveBeenCalledWith({ error: 'context destroyed' });
   });
 

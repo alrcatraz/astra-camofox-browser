@@ -195,7 +195,7 @@ describe('OpenAPI spec', () => {
     try {
       committed = JSON.parse(readFileSync(join(__dirname, '..', '..', 'openapi.json'), 'utf8'));
     } catch {
-      throw new Error('openapi.json not found — run: npm run generate-openapi');
+      throw new Error('openapi.json not found -- run: npm run generate-openapi');
     }
     expect(committed).toEqual(spec);
   });

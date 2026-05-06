@@ -139,13 +139,13 @@ describe('Health check not affected by context rotation', () => {
     };
 
     // Simulate context rotation (destroy session + recreate)
-    // This is what our new code does — no healthState mutation
+    // This is what our new code does -- no healthState mutation
     const sessions = new Map();
     sessions.set('user-1', { context: 'old' });
     sessions.delete('user-1');
     sessions.set('user-1', { context: 'new' });
 
-    // Health state unchanged — this is the key invariant
+    // Health state unchanged -- this is the key invariant
     expect(healthState.isRecovering).toBe(false);
     expect(healthState.consecutiveNavFailures).toBe(0);
   });

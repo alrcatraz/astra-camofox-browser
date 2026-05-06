@@ -1,5 +1,5 @@
 /**
- * Unit tests for tmp-cleanup.js — orphaned temp files + stale Firefox profiles.
+ * Unit tests for tmp-cleanup.js -- orphaned temp files + stale Firefox profiles.
  */
 
 import fs from 'fs';

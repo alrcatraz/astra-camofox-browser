@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "camofox-browser",
-    "version": "1.7.4",
+    "version": "1.8.15",
     "description": "Anti-detection browser automation server for AI agents. Accessibility snapshots, element refs, session isolation, cookie import, proxy rotation, and structured logs.",
     "license": {
       "name": "MIT",
@@ -59,7 +59,12 @@
       "BearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Bearer token matching CAMOFOX_API_KEY."
+        "description": "Bearer token matching CAMOFOX_API_KEY (per-route auth for sensitive endpoints like cookie import and traces)."
+      },
+      "AccessKeyAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Bearer token matching CAMOFOX_ACCESS_KEY. When set, gates all routes except /health, cookie import, and /stop. Acts as a superkey -- also accepted by endpoints that normally require CAMOFOX_API_KEY."
       }
     },
     "schemas": {
@@ -1024,6 +1029,91 @@
         }
       }
     },
+    "/tabs/{tabId}/viewport": {
+      "post": {
+        "tags": [
+          "Interaction"
+        ],
+        "summary": "Set the page viewport size",
+        "description": "Physically resizes the page via Playwright's `page.setViewportSize`, triggering a real layout reflow. Use for responsive testing — `window.resizeTo()` is a no-op on non-popup windows.\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId",
+                  "width",
+                  "height"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "width": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 4000
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 4000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Viewport set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "width": {
+                      "type": "integer"
+                    },
+                    "height": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Width or height missing or out of range."
+          },
+          "404": {
+            "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tabs/{tabId}/back": {
       "post": {
         "tags": [
@@ -1763,7 +1853,7 @@
             }
           },
           "409": {
-            "description": "No refs available — call snapshot first.",
+            "description": "No refs available -- call snapshot first.",
             "content": {
               "application/json": {
                 "schema": {

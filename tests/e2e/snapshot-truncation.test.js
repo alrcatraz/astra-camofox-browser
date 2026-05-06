@@ -31,7 +31,7 @@ describe('Snapshot truncation (e2e)', () => {
   test('large page snapshot is truncated with pagination preserved', async () => {
     const client = createClient(serverUrl);
     try {
-      // 500 products — should generate a snapshot well over 80K chars
+      // 500 products -- should generate a snapshot well over 80K chars
       const tab = await client.createTab(`${testSiteUrl}/large-page?count=500`);
       const snap = await client.getSnapshot(tab.tabId);
 
@@ -120,7 +120,7 @@ describe('Snapshot truncation (e2e)', () => {
       const snap1 = await client.getSnapshot(tab.tabId);
       expect(snap1.truncated).toBe(true);
 
-      // Click "Next" pagination link — should navigate and clear cache
+      // Click "Next" pagination link -- should navigate and clear cache
       // Find the Next link ref in the snapshot
       const nextMatch = snap1.snapshot.match(/link "Next" \[(e\d+)\]/);
       if (nextMatch) {

@@ -148,7 +148,7 @@ describe('Snapshot with includeScreenshot', () => {
       expect(png.width).toBeGreaterThan(0);
       expect(png.height).toBeGreaterThan(0);
 
-      // Count red pixels (R=255, G=0, B=0) — the 200x200 red box should produce many
+      // Count red pixels (R=255, G=0, B=0) -- the 200x200 red box should produce many
       let redPixels = 0;
       for (let i = 0; i < png.data.length; i += 4) {
         const r = png.data[i];

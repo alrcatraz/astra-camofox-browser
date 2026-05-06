@@ -6,7 +6,7 @@
  * session:destroyed fires AFTER context.close() for cleanup only.
  *
  * Covers:
- * 1. Event ordering: destroying → context.close → destroyed
+ * 1. Event ordering: destroying -> context.close -> destroyed
  * 2. Context is alive during session:destroying
  * 3. Context is closed during session:destroyed
  * 4. Persistence plugin checkpoints on destroying, cleans up on destroyed
@@ -130,7 +130,7 @@ describe('session:destroying event ordering', () => {
       .rejects.toThrow('plugin exploded');
 
     // With Promise.all, destroyed won't fire if destroying rejects.
-    // This documents the current behavior — server.js should wrap in try/catch.
+    // This documents the current behavior -- server.js should wrap in try/catch.
     expect(destroyedCalled).toBe(false);
   });
 
@@ -284,7 +284,7 @@ describe('persistence plugin with session:destroying', () => {
 
     await events.emitAsync('session:created', { userId: 'user-1', context: failingContext });
 
-    // Should not throw — .catch(() => {}) in the plugin handles it
+    // Should not throw -- .catch(() => {}) in the plugin handles it
     await simulateCloseSession(events, { context: failingContext }, 'user-1', 'test');
 
     expect(checkpointCalls).toEqual([]); // checkpoint failed, nothing recorded

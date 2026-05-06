@@ -32,7 +32,7 @@ else
   log "x11vnc: NO password (bind $NOVNC_PORT to 127.0.0.1 on host + SSH tunnel)"
 fi
 
-# Start noVNC (websockify) — proxies to x11vnc regardless of whether it's up yet
+# Start noVNC (websockify) -- proxies to x11vnc regardless of whether it's up yet
 NOVNC_DIR="/usr/share/novnc"
 if [ ! -d "$NOVNC_DIR" ]; then
   log "ERROR: $NOVNC_DIR not found; noVNC cannot start"
@@ -42,7 +42,7 @@ VNC_BIND="${VNC_BIND:-127.0.0.1}"
 log "Starting noVNC (websockify) on $VNC_BIND:$NOVNC_PORT -> 127.0.0.1:$VNC_PORT"
 websockify --web "$NOVNC_DIR" "$VNC_BIND:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/var/log/novnc.log 2>&1 &
 
-log "VNC watcher started — will attach x11vnc when Camoufox's Xvfb appears"
+log "VNC watcher started -- will attach x11vnc when Camoufox's Xvfb appears"
 
 while true; do
   # Find Xvfb with our patched resolution
@@ -53,7 +53,7 @@ while true; do
   ' | head -1)
 
   if [ -n "$FOUND" ] && [ "$FOUND" != "$CURRENT_DISPLAY" ]; then
-    # New or changed display — (re)attach x11vnc
+    # New or changed display -- (re)attach x11vnc
     if [ -n "$X11VNC_PID" ] && kill -0 "$X11VNC_PID" 2>/dev/null; then
       log "Camoufox display changed ($CURRENT_DISPLAY -> $FOUND), restarting x11vnc"
       kill "$X11VNC_PID" 2>/dev/null || true
