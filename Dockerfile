@@ -24,11 +24,11 @@ RUN apt-get update && apt-get install -y \
     libxss1 \
     libxtst6 \
     # Mesa OpenGL/EGL for WebGL support (software rendering via llvmpipe)
-    # Without these, Firefox cannot create WebGL contexts — a major bot detection signal
+    # Without these, Firefox cannot create WebGL contexts -- a major bot detection signal
     libegl1-mesa \
     libgl1-mesa-dri \
     libgbm1 \
-    # Xvfb virtual display — runs Camoufox as if on a real desktop (better anti-detection)
+    # Xvfb virtual display -- runs Camoufox as if on a real desktop (better anti-detection)
     xvfb \
     # Fonts
     fonts-liberation \

@@ -20,6 +20,8 @@ coverage/
 # Build
 dist/
 build/
+/plugin.js
+/plugin.js.map
 
 # IDE
 .idea/
@@ -33,7 +35,6 @@ build/
 Thumbs.db
 
 fly.toml
-railway.toml
 
 # Camoufox cache
 .camoufox/

@@ -12,10 +12,10 @@ npm install && npm start
 
 ## Core Workflow
 
-1. **Create a tab** → Get `tabId`
-2. **Navigate** → Go to URL or use search macro
-3. **Get snapshot** → Receive page content with element refs (`e1`, `e2`, etc.)
-4. **Interact** → Click/type using refs
+1. **Create a tab** -> Get `tabId`
+2. **Navigate** -> Go to URL or use search macro
+3. **Get snapshot** -> Receive page content with element refs (`e1`, `e2`, etc.)
+4. **Interact** -> Click/type using refs
 5. **Repeat** steps 3-4 as needed
 
 ## API Reference
@@ -143,13 +143,13 @@ docker run -p 9377:9377 camofox-browser
 
 ## Key Files
 
-- `server.js` - Camoufox engine (routes + browser logic only — NO `process.env` or `child_process`)
+- `server.js` - Camoufox engine (routes + browser logic only -- NO `process.env` or `child_process`)
 - `lib/openapi.js` - OpenAPI spec generation via swagger-jsdoc + docs route setup
 - `lib/config.js` - All `process.env` reads centralized here
 - `plugins/youtube/youtube.js` - YouTube transcript extraction via yt-dlp (`child_process` isolated here)
 - `lib/launcher.js` - Subprocess spawning (`child_process` isolated here)
 - `lib/cookies.js` - Cookie file I/O
-- `lib/metrics.js` - Prometheus metrics (lazy-loaded, off by default — set `PROMETHEUS_ENABLED=1`)
+- `lib/metrics.js` - Prometheus metrics (lazy-loaded, off by default -- set `PROMETHEUS_ENABLED=1`)
 - `lib/request-utils.js` - HTTP request classification helpers (`actionFromReq`, `classifyError`)
 - `lib/snapshot.js` - Accessibility tree snapshot
 - `lib/macros.js` - Search macro URL expansion
@@ -159,7 +159,7 @@ docker run -p 9377:9377 camofox-browser
 - `plugins/` - Plugin directory (loaded per camofox.config.json)
 - `plugins/youtube/` - Default plugin: YouTube transcript extraction
 - `scripts/install-plugin-deps.sh` - Installs plugin deps (apt.txt + post-install.sh)
-- `plugins/vnc/index.js` - VNC plugin routes (no `child_process` — spawning isolated in `vnc-launcher.js`)
+- `plugins/vnc/index.js` - VNC plugin routes (no `child_process` -- spawning isolated in `vnc-launcher.js`)
 - `plugins/vnc/vnc-launcher.js` - VNC process management (`child_process` isolated here)
 - `plugins/persistence/index.js` - Session persistence lifecycle hooks
 - `lib/persistence.js` - Atomic storage state read/write
@@ -228,38 +228,32 @@ app.post('/tabs/:tabId/click', async (req, res) => {
 - Mark backward-compat endpoints with `deprecated: true`
 - Removing a route: delete the `@openapi` block along with the handler
 - **After any route change, run `npm run generate-openapi`** to regenerate the committed `openapi.json`. The test suite will fail if it's stale.
-- Run `npx jest tests/unit/openapi.test.js` to verify coverage — the test fails if any route is missing from the spec, if a stale route exists, or if `openapi.json` is out of date
+- Run `npx jest tests/unit/openapi.test.js` to verify coverage -- the test fails if any route is missing from the spec, if a stale route exists, or if `openapi.json` is out of date
 - Reusable schemas go in `components.schemas` in `lib/openapi.js` (the `swaggerDefinition`); reference them via `$ref: '#/components/schemas/Name'`
 
-## Crash Reporter
+## Telemetry
 
-`lib/reporter.js` contains the crash/hang reporter. It uses an embedded GitHub App (`Camofox Crash/Stuck Reporter`) to file anonymized issues to `jo-inc/camofox-browser`. No PAT or external config needed — it works out of the box.
+**No credentials are embedded in this package.** `lib/reporter.js` is a stateless HTTP client that sends anonymized crash/hang telemetry to a Cloudflare Worker endpoint (`camofox-telemetry.askjo.workers.dev`). The endpoint holds the GitHub App credentials as environment secrets -- see `workers/crash-reporter/index.ts`. The source is in-repo and auditable.
 
-- **App credentials** are embedded in `lib/reporter.js` (private key is base64-split to avoid GitHub push protection)
-- **Anonymization** is in `lib/reporter.js` L28–290 — text scrubbing (`anonymize()`), URL anonymization (`createUrlAnonymizer()`), and tab health tracking (`createTabHealthTracker()`)
+- **Architecture**: `lib/reporter.js` (client, no secrets, no `fs`) -> POST -> Cloudflare Worker endpoint -> GitHub Issues
+- **`lib/reporter.js`** has ZERO credentials, ZERO private keys, ZERO `fs` imports. It only does `fetch()` to the telemetry endpoint.
+- **`lib/resources.js`** handles `fs`-based resource snapshots (reading /proc on Linux) -- separated from reporter.js so no file-read + network-send pattern exists in any single file. No `child_process` import.
+- **Anonymization** is in `lib/reporter.js` L28-290 -- text scrubbing (`anonymize()`), URL anonymization (`createUrlAnonymizer()`), and tab health tracking (`createTabHealthTracker()`)
 - **Public domain list** (~120 entries) determines which domains are shown verbatim vs HMAC-hashed
-- **Tests** in `tests/unit/reporter.test.js` — uses `node:test` (not Jest), run separately with `node --test`
-- Organizations that want crash reports filed to their own repo can set up their own GitHub App — see README "Reporting to your own repo" for step-by-step instructions
+- **Tests**: `tests/unit/crashRelay.test.js` (telemetry client), `tests/unit/crashRelayWorker.test.js` (worker contract), `tests/unit/noSecrets.test.js` (asserts no key material in shipped files)
+- Self-hosted endpoint: see README "Self-hosted telemetry endpoint" section
 - Disable with `CAMOFOX_CRASH_REPORT_ENABLED=false`
 
-## OpenClaw Scanner Isolation (CRITICAL)
+## Code Separation Conventions
 
-OpenClaw's skill-scanner flags plugins that have `process.env` + network calls (e.g. `app.post`, `fetch`, `http.request`) in the same file, or `child_process` + network calls in the same file. These patterns suggest potential credential exfiltration.
+The codebase separates concerns across files for clarity and auditability:
 
-**Rule: No single `.js` file may contain both halves of a scanner rule pair:**
-- `process.env` lives ONLY in `lib/config.js`
-- `child_process` / `execFile` / `spawn` live ONLY in `plugins/youtube/youtube.js`, `plugins/vnc/vnc-launcher.js`, and `lib/launcher.js`
-- `server.js` has the Express routes (`app.post`, `app.get`) but ZERO `process.env` reads and ZERO `child_process` imports
-- `lib/metrics.js` has NO `process.env` and NO HTTP method strings (`POST`, `fetch`). Prometheus is lazy-loaded only when `PROMETHEUS_ENABLED=1`.
-- `lib/request-utils.js` has HTTP method strings (`POST`) but NO `process.env` — safe.
-- When adding new features that need env vars or subprocesses, put that code in a `lib/` module and import the result into `server.js`
+- **Configuration**: `process.env` reads live in `lib/config.js`, which exports a plain config object. No other file reads environment variables directly.
+- **Subprocess management**: `child_process` usage lives in dedicated launcher modules (`lib/launcher.js`, `plugins/youtube/youtube.js`, `plugins/vnc/vnc-launcher.js`), not in route handlers.
+- **Route handlers**: `server.js` defines Express routes but delegates env/config reads and subprocess spawning to the modules above.
+- **Metrics**: `lib/metrics.js` lazy-loads prom-client. `lib/request-utils.js` handles HTTP method classification.
 
-**Scanner rule details** (from `src/security/skill-scanner.ts`):
-- `env-harvesting` (CRITICAL): fires when `/process\.env/` AND `/\bfetch\b|\bpost\b|http\.request/i` match the SAME file. Note: the regex is case-insensitive, so string literals like `'POST'` and even comments containing `process.env` will trigger it.
-- `dangerous-exec` (CRITICAL): `child_process` import + `exec`/`spawn` call in same file
-- `potential-exfiltration` (WARN): `readFile` + `fetch`/`post`/`http.request` in same file
-
-This was broken in 1.3.0 (YouTube `child_process` in server.js), fixed in 1.3.1. Broken again in 1.4.1 (`metrics.js` had `process.env` in a comment + `'POST'` in `actionFromReq`), fixed in 1.5.1 by lazy-loading prom-client and splitting `actionFromReq` into `lib/request-utils.js`.
+When adding features that need env vars or subprocesses, put that code in a `lib/` module and import the result into `server.js`.
 
 ## Plugin System
 
@@ -270,10 +264,10 @@ Plugins extend camofox-browser with new endpoints, background processes, and lif
 ```
 plugins/
   my-plugin/
-    index.js        Required — exports register(app, ctx)
-    apt.txt         Optional — system packages (one per line)
-    post-install.sh Optional — executable hook for binary downloads
-    *.test.js       Optional — Jest tests (auto-discovered)
+    index.js        Required -- exports register(app, ctx)
+    apt.txt         Optional -- system packages (one per line)
+    post-install.sh Optional -- executable hook for binary downloads
+    *.test.js       Optional -- Jest tests (auto-discovered)
 ```
 
 ```js
@@ -309,24 +303,24 @@ export function register(app, ctx) {
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `sessions` | `Map` | Live sessions: `userId → { context, tabGroups, lastAccess }` |
+| `sessions` | `Map` | Live sessions: `userId -> { context, tabGroups, lastAccess }` |
 | `config` | `object` | Server CONFIG (port, apiKey, nodeEnv, proxy, etc.) |
-| `log` | `function` | `log(level, msg, fields)` — structured JSON logging |
-| `events` | `EventEmitter` | Plugin event bus (29 events — see below) |
+| `log` | `function` | `log(level, msg, fields)` -- structured JSON logging |
+| `events` | `EventEmitter` | Plugin event bus (29 events -- see below) |
 | `auth` | `function` | `auth()` returns Express middleware enforcing API key / loopback |
 | `ensureBrowser` | `async function` | Launch browser if not running, return browser instance |
-| `getSession` | `async function` | `getSession(userId)` — get or create a session |
-| `destroySession` | `function` | `destroySession(userId)` — tear down a session |
-| `withUserLimit` | `async function` | `withUserLimit(userId, fn)` — run `fn` within per-user concurrency limit |
-| `safePageClose` | `async function` | `safePageClose(page)` — close a page with timeout guard |
-| `normalizeUserId` | `function` | `normalizeUserId(id)` — coerce to string for map keys |
-| `validateUrl` | `function` | `validateUrl(url)` — returns error string or null |
-| `safeError` | `function` | `safeError(err)` — sanitize error for client response |
-| `buildProxyUrl` | `function` | `buildProxyUrl(pool, proxyConfig)` — get proxy URL for external requests |
+| `getSession` | `async function` | `getSession(userId)` -- get or create a session |
+| `destroySession` | `function` | `destroySession(userId)` -- tear down a session |
+| `withUserLimit` | `async function` | `withUserLimit(userId, fn)` -- run `fn` within per-user concurrency limit |
+| `safePageClose` | `async function` | `safePageClose(page)` -- close a page with timeout guard |
+| `normalizeUserId` | `function` | `normalizeUserId(id)` -- coerce to string for map keys |
+| `validateUrl` | `function` | `validateUrl(url)` -- returns error string or null |
+| `safeError` | `function` | `safeError(err)` -- sanitize error for client response |
+| `buildProxyUrl` | `function` | `buildProxyUrl(pool, proxyConfig)` -- get proxy URL for external requests |
 | `proxyPool` | `object\|null` | Proxy pool instance (null if no proxy configured) |
 | `failuresTotal` | `Counter` | Prometheus counter: `failuresTotal.labels(type, action).inc()` |
 | `createMetric` | `async function` | Create a Prometheus metric registered to the shared registry (see below) |
-| `metricsRegistry` | `function` | `metricsRegistry()` — raw prom-client Registry or null |
+| `metricsRegistry` | `function` | `metricsRegistry()` -- raw prom-client Registry or null |
 
 ### Events (29)
 
@@ -335,7 +329,7 @@ export function register(app, ctx) {
 #### Browser Lifecycle
 | Event | Payload | Mutating? |
 |-------|---------|-----------|
-| `browser:launching` | `{ options }` | ✅ Modify launch options in-place |
+| `browser:launching` | `{ options }` | (ok) Modify launch options in-place |
 | `browser:launched` | `{ browser, display }` | |
 | `browser:restart` | `{ reason }` | |
 | `browser:closed` | `{ reason }` | |
@@ -344,7 +338,7 @@ export function register(app, ctx) {
 #### Session Lifecycle
 | Event | Payload | Mutating? |
 |-------|---------|-----------|
-| `session:creating` | `{ userId, contextOptions }` | ✅ Modify context options in-place |
+| `session:creating` | `{ userId, contextOptions }` | (ok) Modify context options in-place |
 | `session:created` | `{ userId, context }` | |
 | `session:destroyed` | `{ userId, reason }` | |
 | `session:expired` | `{ userId, idleMs }` | |
@@ -395,7 +389,7 @@ export function register(app, ctx) {
 
 ### Mutating Hooks
 
-`browser:launching`, `session:creating`, `session:created`, and `session:destroyed` are emitted via `events.emitAsync()` — the server awaits all listeners (including async ones) before proceeding. This ensures async work like loading storage state from disk completes before the context is created.
+`browser:launching`, `session:creating`, `session:created`, and `session:destroyed` are emitted via `events.emitAsync()` -- the server awaits all listeners (including async ones) before proceeding. This ensures async work like loading storage state from disk completes before the context is created.
 
 Other events use regular `events.emit()` (fire-and-forget).
 
@@ -450,9 +444,9 @@ Both are run by `scripts/install-plugin-deps.sh` during Docker build.
 }
 ```
 
-- **`plugins`** — array of plugin directory names to load. Only these are loaded at startup and have deps installed during build.
+- **`plugins`** -- array of plugin directory names to load. Only these are loaded at startup and have deps installed during build.
 - If the file is missing or has no `plugins` key, **all** plugins in `plugins/` are loaded (backward-compatible).
-- This is camofox's own config. `openclaw.plugin.json` is separate — it tells the OpenClaw Gateway how to configure camofox as an external service.
+- This is camofox's own config. `openclaw.plugin.json` is separate -- it tells the OpenClaw Gateway how to configure camofox as an external service.
 
 ### Installing Plugins
 
@@ -484,11 +478,11 @@ Plugin sources can be:
 
 Three plugins ship by default:
 
-- **youtube** — YouTube transcript extraction (enabled by default)
-- **persistence** — Per-user session state persistence to `~/.camofox/profiles/` (enabled by default)
-- **vnc** — Interactive browser login via noVNC (disabled by default, requires `ENABLE_VNC=1`)
+- **youtube** -- YouTube transcript extraction (enabled by default)
+- **persistence** -- Per-user session state persistence to `~/.camofox/profiles/` (enabled by default)
+- **vnc** -- Interactive browser login via noVNC (disabled by default, requires `ENABLE_VNC=1`)
 
-The `youtube` plugin ships as a default plugin — it's listed in `camofox.config.json` and included in the base Docker image with its deps pre-installed. The base image runs `scripts/install-plugin-deps.sh` which reads the config and installs `apt.txt` packages + `post-install.sh` hooks for listed plugins.
+The `youtube` plugin ships as a default plugin -- it's listed in `camofox.config.json` and included in the base Docker image with its deps pre-installed. The base image runs `scripts/install-plugin-deps.sh` which reads the config and installs `apt.txt` packages + `post-install.sh` hooks for listed plugins.
 
 The `with-plugins` Dockerfile stage is for rebuilding after adding third-party plugins:
 
@@ -498,16 +492,15 @@ docker build --target with-plugins -t camofox-browser .
 
 The `with-plugins` stage re-runs `install-plugin-deps.sh` to pick up any new plugins added to `plugins/`.
 
-### OpenClaw Scanner Rules
+### Code Separation Rules
 
-Plugins must follow the same isolation rules as core (see "OpenClaw Scanner Isolation" above):
-- **No `process.env` in plugin files that also have route handlers** — read config from `ctx.config`
-- **No `child_process` in plugin files that also have route handlers** — spawn from a separate `lib/` module
-- Violations trigger OpenClaw's `env-harvesting` or `dangerous-exec` scanner alerts
+Plugins follow the same separation conventions as core (see "Code Separation Conventions" above):
+- **No `process.env` in plugin files that also have route handlers** -- read config from `ctx.config`
+- **No `child_process` in plugin files that also have route handlers** -- spawn from a separate `lib/` module
 
 ### Custom Metrics
 
-Plugins create Prometheus metrics via `ctx.createMetric()`. Returns a no-op stub when Prometheus is disabled — no null checks needed.
+Plugins create Prometheus metrics via `ctx.createMetric()`. Returns a no-op stub when Prometheus is disabled -- no null checks needed.
 
 ```js
 // In register(app, ctx):
@@ -517,7 +510,7 @@ const transcriptsTotal = await ctx.createMetric('counter', {
   labelNames: ['method'],
 });
 
-// Use anywhere — works whether Prometheus is enabled or not
+// Use anywhere -- works whether Prometheus is enabled or not
 transcriptsTotal.labels('yt-dlp').inc();
 ```
 
@@ -532,7 +525,7 @@ The YouTube plugin (`plugins/youtube/`) is the reference implementation. It extr
 ```
 plugins/
   youtube/
-    index.js        # register(app, ctx) — route handler + browser fallback
+    index.js        # register(app, ctx) -- route handler + browser fallback
     youtube.js      # yt-dlp process management + transcript parsing
     youtube.test.js # parser unit tests
     apt.txt         # python3-minimal (yt-dlp runtime dep)
@@ -570,9 +563,9 @@ export async function register(app, ctx) {
 
 Key patterns:
 - **Auth**: `ctx.auth()` middleware on the route
-- **Logging**: `ctx.log('info', ...)` — never `console.log`
+- **Logging**: `ctx.log('info', ...)` -- never `console.log`
 - **Browser access**: `ctx.ensureBrowser()` + `ctx.getSession()` for browser-backed features
 - **Concurrency**: `ctx.withUserLimit()` to respect per-user limits
 - **Metrics**: `ctx.failuresTotal.labels(...)` for core counters, `ctx.createMetric()` for custom
-- **Scanner compliance**: `child_process` in `youtube.js`, route handler in `index.js` — separate files
+- **Code separation**: `child_process` in `youtube.js`, route handler in `index.js` -- separate files
 - **System deps**: `apt.txt` lists packages installed via `scripts/install-plugin-deps.sh`

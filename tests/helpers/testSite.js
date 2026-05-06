@@ -235,7 +235,7 @@ function createTestApp() {
     res.send(body);
   });
 
-  // Large page for snapshot truncation tests — simulates a big product listing
+  // Large page for snapshot truncation tests -- simulates a big product listing
   app.get('/large-page', (req, res) => {
     const count = parseInt(req.query.count) || 500;
     const items = Array.from({ length: count }, (_, i) =>

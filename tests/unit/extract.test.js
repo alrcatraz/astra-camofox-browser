@@ -43,7 +43,7 @@ function simulateExtractHandler({ tabId, body, sessions }) {
     return {
       status: 409,
       body: {
-        error: 'no refs available — call GET /tabs/:tabId/snapshot first to build the ref table',
+        error: 'no refs available -- call GET /tabs/:tabId/snapshot first to build the ref table',
         snapshot: tabState.lastSnapshot || null,
       },
     };

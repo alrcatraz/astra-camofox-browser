@@ -127,7 +127,11 @@ class BrowserClient {
   async scroll(tabId, options) {
     return this.request('POST', `/tabs/${tabId}/scroll`, { userId: this.userId, ...options });
   }
-  
+
+  async viewport(tabId, { width, height }) {
+    return this.request('POST', `/tabs/${tabId}/viewport`, { userId: this.userId, width, height });
+  }
+
   async back(tabId) {
     return this.request('POST', `/tabs/${tabId}/back`, { userId: this.userId });
   }

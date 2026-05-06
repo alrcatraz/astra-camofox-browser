@@ -1,5 +1,5 @@
 /**
- * Tests for lib/auth.js — timingSafeCompare, isLoopbackAddress, requireAuth.
+ * Tests for lib/auth.js -- timingSafeCompare, isLoopbackAddress, requireAuth.
  */
 import { describe, test, expect } from '@jest/globals';
 import { jest } from '@jest/globals';
