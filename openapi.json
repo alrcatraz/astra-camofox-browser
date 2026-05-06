@@ -1029,6 +1029,91 @@
         }
       }
     },
+    "/tabs/{tabId}/viewport": {
+      "post": {
+        "tags": [
+          "Interaction"
+        ],
+        "summary": "Set the page viewport size",
+        "description": "Physically resizes the page via Playwright's `page.setViewportSize`, triggering a real layout reflow. Use for responsive testing — `window.resizeTo()` is a no-op on non-popup windows.\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId",
+                  "width",
+                  "height"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "width": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 4000
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 4000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Viewport set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "width": {
+                      "type": "integer"
+                    },
+                    "height": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Width or height missing or out of range."
+          },
+          "404": {
+            "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tabs/{tabId}/back": {
       "post": {
         "tags": [
