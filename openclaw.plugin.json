@@ -1,5 +1,5 @@
 {
-  "id": "camofox-browser",
+  "id": "@skyfallsin/camofox-browser",
   "name": "Camofox Browser",
   "description": "Anti-detection browser automation for AI agents using Camoufox (Firefox-based)",
   "version": "1.9.0",
