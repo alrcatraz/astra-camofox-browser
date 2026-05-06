@@ -510,13 +510,16 @@ async function withUserLimit(userId, operation) {
 }
 
 async function safePageClose(page) {
+  if (!page || page.isClosed()) return;
   try {
     await Promise.race([
-      page.close(),
-      new Promise(resolve => setTimeout(resolve, PAGE_CLOSE_TIMEOUT_MS))
+      page.close({ runBeforeUnload: false }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('page close timed out')), PAGE_CLOSE_TIMEOUT_MS)),
     ]);
   } catch (e) {
-    log('warn', 'page close failed', { error: e.message });
+    log('warn', 'page close timed out or failed, force-closing', { error: e.message });
+    try { await page.close({ runBeforeUnload: false }); } catch (_) {}
+    page.removeAllListeners();
   }
 }
 
@@ -648,8 +651,13 @@ async function restartBrowser(reason) {
 function getTotalTabCount() {
   let total = 0;
   for (const session of sessions.values()) {
-    for (const group of session.tabGroups.values()) {
-      total += group.size;
+    try {
+      // Use real Playwright page count so leaked pages exert backpressure
+      // on MAX_TABS_GLOBAL, surfacing leaks before Firefox starves.
+      total += session.context.pages().length;
+    } catch (_) {
+      // Context is dead — fall back to bookkeeping count for this session.
+      for (const group of session.tabGroups.values()) total += group.size;
     }
   }
   return total;
@@ -4311,6 +4319,34 @@ setInterval(() => {
     }
   }
   if (sessions.size === 0) scheduleBrowserIdleShutdown();
+}, 60_000);
+
+// Orphan page reaper -- force-closes Playwright pages that survived a safePageClose
+// timeout or were otherwise dropped from tabGroups tracking. Without this, leaked
+// pages starve Firefox of DOM threads and eventually block new tab creation.
+setInterval(() => {
+  let reaped = 0;
+  for (const session of sessions.values()) {
+    if (session._closing) continue;
+    let contextPages;
+    try {
+      contextPages = session.context.pages();
+    } catch (_) {
+      continue; // context already dead
+    }
+    const registered = new Set();
+    for (const group of session.tabGroups.values()) {
+      for (const tabState of group.values()) registered.add(tabState.page);
+    }
+    for (const page of contextPages) {
+      if (!registered.has(page)) {
+        reaped++;
+        page.removeAllListeners();
+        page.close({ runBeforeUnload: false }).catch(() => {});
+      }
+    }
+  }
+  if (reaped > 0) log('warn', 'orphan page reaper closed leaked pages', { reaped });
 }, 60_000);
 
 // Native memory pressure restart -- when all sessions are gone and Firefox's
