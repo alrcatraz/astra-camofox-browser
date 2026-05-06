@@ -58,6 +58,7 @@ RUN --mount=type=bind,source=dist,target=/dist \
 WORKDIR /app
 
 COPY package.json ./
+COPY scripts/ ./scripts/
 RUN npm install --production
 
 COPY server.js ./
