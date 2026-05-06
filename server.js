@@ -3072,6 +3072,88 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
   }
 });
 
+// Viewport
+/**
+ * @openapi
+ * /tabs/{tabId}/viewport:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Set the page viewport size
+ *     description: >
+ *       Physically resizes the page via Playwright's `page.setViewportSize`,
+ *       triggering a real layout reflow. Use for responsive testing —
+ *       `window.resizeTo()` is a no-op on non-popup windows.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, width, height]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               width:
+ *                 type: integer
+ *                 minimum: 100
+ *                 maximum: 4000
+ *               height:
+ *                 type: integer
+ *                 minimum: 100
+ *                 maximum: 4000
+ *     responses:
+ *       200:
+ *         description: Viewport set.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 width:
+ *                   type: integer
+ *                 height:
+ *                   type: integer
+ *       400:
+ *         description: Width or height missing or out of range.
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/tabs/:tabId/viewport', async (req, res) => {
+  try {
+    const { userId, width, height } = req.body;
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 100 || height < 100 || width > 4000 || height > 4000) {
+      return res.status(400).json({ error: 'width and height required (100..4000 px)' });
+    }
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    await tabState.page.setViewportSize({ width: Math.round(width), height: Math.round(height) });
+    await tabState.page.waitForTimeout(150);
+
+    pluginEvents.emit('tab:viewport', { userId, tabId: req.params.tabId, width, height });
+    res.json({ ok: true, width: Math.round(width), height: Math.round(height) });
+  } catch (err) {
+    log('error', 'viewport failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
 // Back
 /**
  * @openapi
