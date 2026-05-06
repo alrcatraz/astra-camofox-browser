@@ -28,7 +28,9 @@ jobs:
           find lib server.js -name '*.js' -exec node -c {} +
 
       - name: Run unit tests
-        run: node --test tests/unit/reporter.test.js
+        run: npx jest --runInBand --forceExit tests/unit/
+        env:
+          NODE_OPTIONS: '--experimental-vm-modules'
 
   deploy:
     name: Deploy to Fly.io
