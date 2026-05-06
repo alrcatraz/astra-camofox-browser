@@ -64,7 +64,7 @@ RUN set -eux; \
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci --production
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --production
 
 COPY server.js ./
 COPY camofox.config.json ./
