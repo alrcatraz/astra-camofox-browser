@@ -1032,8 +1032,8 @@ describe('native memory leak detection', () => {
   test('does not fire alert when process uptime < 2 minutes', async () => {
     mockProcessForWatchdog();
     mockUptimeSeconds = 30; // 30 seconds -- below 120s threshold
-    mockRss = 500 * 1048576; // 500MB -- way above any threshold
-    mockHeapUsed = 50 * 1048576; // native = 450MB
+    mockRss = 700 * 1048576; // 700MB -- way above any threshold
+    mockHeapUsed = 50 * 1048576; // native = 650MB
 
     const reporter = createTestReporter();
     reporter.startWatchdog(5000);
@@ -1059,7 +1059,7 @@ describe('native memory leak detection', () => {
     await new Promise(r => setTimeout(r, 100));
 
     // Spike native memory way above threshold (single spike)
-    mockRss = 500 * 1048576; // native = 450MB, growth = 350MB > 200MB threshold
+    mockRss = 700 * 1048576; // native = 650MB, growth = 550MB > 400MB threshold
 
     // Wait for one more check -- should NOT fire yet (only 1 consecutive)
     await new Promise(r => setTimeout(r, 100));
@@ -1099,7 +1099,7 @@ describe('native memory leak detection', () => {
     await new Promise(r => setTimeout(r, 100));
 
     // Spike above threshold
-    mockRss = 500 * 1048576;
+    mockRss = 700 * 1048576;
     await new Promise(r => setTimeout(r, 100));
 
     // Drop back below threshold -- should reset consecutive counter
@@ -1107,7 +1107,7 @@ describe('native memory leak detection', () => {
     await new Promise(r => setTimeout(r, 100));
 
     // Spike again -- counter should be back to 0
-    mockRss = 500 * 1048576;
+    mockRss = 700 * 1048576;
     await new Promise(r => setTimeout(r, 100));
 
     await reporter.stop();
