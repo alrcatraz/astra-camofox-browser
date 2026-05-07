@@ -59,6 +59,7 @@ RUN curl -L -o /usr/local/bin/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/
 WORKDIR /app
 
 COPY package.json ./
+COPY scripts/postinstall.js ./scripts/postinstall.js
 RUN npm install --production
 
 COPY server.js ./
