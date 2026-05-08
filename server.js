@@ -2310,7 +2310,7 @@ app.post('/tabs', async (req, res) => {
       
       const page = await session.context.newPage();
       const tabId = fly.makeTabId();
-      const tabState = createTabState(page);
+      let tabState = createTabState(page);
       attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
       group.set(tabId, tabState);
       refreshActiveTabsGauge();
