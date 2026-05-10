@@ -38,7 +38,7 @@ describe('Tab Recycling', () => {
         await client.getSnapshot(tabs[0]);
         fail('Oldest tab should have been recycled');
       } catch (err) {
-        expect(err.status).toBe(404);
+        expect(err.status).toBe(410);
       }
 
       // The new tab should work
@@ -97,7 +97,7 @@ describe('Tab Recycling', () => {
         await client.getSnapshot(tabs[0]);
         fail('Least-used tab should have been recycled');
       } catch (err) {
-        expect(err.status).toBe(404);
+        expect(err.status).toBe(410);
       }
 
       // tabs[1] should still exist (it had more toolCalls)
