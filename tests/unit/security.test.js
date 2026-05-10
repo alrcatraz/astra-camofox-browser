@@ -127,7 +127,7 @@ describe('Security', () => {
           // If it doesn't throw, the tab still exists -- that's unexpected but not fatal
         } catch (err) {
           // Expected: oldest tab was recycled
-          expect(err.status).toBe(404);
+          expect(err.status).toBe(410);
         }
       } finally {
         await client.cleanup();
@@ -240,7 +240,7 @@ describe('Security', () => {
           await client2.getSnapshot(tabId);
           fail('Should not be able to access another user tab');
         } catch (err) {
-          expect(err.status).toBe(404);
+          expect(err.status).toBe(410);
         }
       } finally {
         await client1.cleanup();

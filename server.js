@@ -159,10 +159,19 @@ const INTERACTIVE_ROLES = [
   // 'combobox' excluded - can trigger date pickers and complex dropdowns
 ];
 
-// Patterns to skip (date pickers, calendar widgets)
+// Patterns to skip (date pickers, calendar widgets -- NOT expiration/expiry fields)
 const SKIP_PATTERNS = [
-  /date/i, /calendar/i, /picker/i, /datepicker/i
+  /datepicker/i, /date.?picker/i, /calendar/i, /^date$/i
 ];
+
+// Iframe support: URL patterns to SKIP (tracking, analytics, pixels)
+const IFRAME_SKIP_PATTERNS = [
+  /web-pixel/i, /analytics/i, /tracking/i, /gtm/i, /facebook/i,
+  /doubleclick/i, /google.*tag/i, /hotjar/i, /segment/i, /sentry/i,
+  /recaptcha/i, /gstatic/i, /app-bridge/i, /extensions\.shopifycdn/i,
+];
+const MAX_IFRAMES_TO_PROCESS = 8;
+const IFRAME_SNAPSHOT_TIMEOUT_MS = 3000;
 
 // timingSafeCompare and isLoopbackAddress imported from lib/auth.js
 const timingSafeCompare = _timingSafeCompare;
@@ -194,6 +203,7 @@ function sendError(res, err, extraFields = {}) {
     body.code = 'stale_refs';
     body.ref = err.ref;
   }
+
   res.status(status).json(body);
 }
 
@@ -369,6 +379,7 @@ app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (r
 let browser = null;
 let _lastBrowserPid = null; // Track PID independently for force-kill after close
 let _browserClosePromise = null; // Shared promise for concurrent close serialization
+let _lastBrowserRestartAt = 0; // Timestamp of last browser relaunch (for stale tab detection)
 // userId -> { context, tabGroups: Map<sessionKey, Map<tabId, TabState>>, lastAccess }
 // TabState = { page, refs: Map<refId, {role, name, nth}>, visitedUrls: Set, downloads: Array, toolCalls: number }
 // Note: sessionKey was previously called listItemId - both are accepted for backward compatibility
@@ -972,6 +983,7 @@ async function launchBrowserInstance() {
       browserLaunchProxy = launchProxy;
       _lastBrowserPid = candidateBrowser.process?.()?.pid ?? null;
       browser = candidateBrowser; // publish AFTER PID is captured
+      _lastBrowserRestartAt = Date.now();
       attachBrowserCleanup(browser, localVirtualDisplay);
       pluginEvents.emit('browser:launched', { browser, display: vdDisplay });
 
@@ -1108,7 +1120,27 @@ async function getSession(userId, { trace = false } = {}) {
   if (!session) {
     session = await coalesceInflight(sessionCreations, key, async () => {
       if (sessions.size >= MAX_SESSIONS) {
-        throw new Error('Maximum concurrent sessions reached');
+        throw Object.assign(
+          new Error('Maximum concurrent sessions reached'),
+          { statusCode: 503 }
+        );
+      }
+      // Memory admission control (Fly.io only) — reject new sessions when
+      // system memory is critically low. 503 tells Fly Proxy to try another machine.
+      if (FLY_MACHINE_ID) {
+        const freeMem = os.freemem();
+        const totalMem = os.totalmem();
+        if ((1 - freeMem / totalMem) >= 0.90) {
+          log('warn', 'memory admission rejected', {
+            usedPct: ((1 - freeMem / totalMem) * 100).toFixed(1),
+            freeMb: Math.round(freeMem / 1048576),
+            sessions: sessions.size,
+          });
+          throw Object.assign(
+            new Error('Server memory pressure — try again shortly'),
+            { statusCode: 503 }
+          );
+        }
       }
       const b = await ensureBrowser();
       const contextOptions = {
@@ -1387,6 +1419,23 @@ function findTab(session, tabId) {
   return null;
 }
 
+// Return 404 or 410 depending on whether the browser restarted recently.
+// 410 Gone tells clients the tab existed but the browser crashed — create a new one.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function tabNotFoundResponse(res, tabId) {
+  // Only return 410 for tabs that look like valid UUIDs (plausibly created by this server),
+  // belonged to this machine, and were lost in a recent browser restart.
+  // Random/invalid strings like 'non-existent-tab' always get 404.
+  if (_lastBrowserRestartAt && (Date.now() - _lastBrowserRestartAt < 300_000) && UUID_RE.test(tabId) && fly.isLocalTab(tabId)) {
+    return res.status(410).json({
+      error: 'Tab no longer exists (browser was restarted). Create a new tab.',
+      code: 'browser_restarted',
+    });
+  }
+  return res.status(404).json({ error: 'Tab not found' });
+}
+
 function createTabState(page) {
   const healthTracker = createTabHealthTracker(page);
   return {
@@ -1403,6 +1452,156 @@ function createTabState(page) {
     lastRequestedUrl: null,
     googleRetryCount: 0,
     navigateAbort: null,
+    pressureObservedAt: Date.now(),
+    pressureObservedToolCalls: 0,
+  };
+}
+
+function pressureHash(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 12);
+}
+
+function pressureLockState(tabId) {
+  const lock = tabLocks.get(tabId);
+  return {
+    active: Boolean(lock?.active),
+    queued: Number(lock?.queue?.length || 0),
+  };
+}
+
+async function camofoxPressureCleanup(options = {}) {
+  const now = Date.now();
+  const minIdleMs = Math.max(0, Number(options.minIdleMs ?? 10 * 60 * 1000));
+  const maxTabsToClose = Math.max(0, Number(options.maxTabsToClose ?? 4));
+  const minTabsPerSession = Math.max(0, Number(options.minTabsPerSession ?? 1));
+  const dryRun = options.dryRun !== false;
+  const closeEmptySessions = options.closeEmptySessions !== false;
+  const before = { sessions: sessions.size, tabs: getTotalTabCount() };
+  const sessionTabCounts = new Map();
+  for (const [userId, session] of sessions) {
+    let count = 0;
+    for (const group of session.tabGroups.values()) count += group.size;
+    sessionTabCounts.set(userId, count);
+  }
+  const preserved = {
+    locked: 0,
+    session_minimum: 0,
+    first_observation: 0,
+    recently_active: 0,
+    below_min_idle: 0,
+  };
+  const candidates = [];
+
+  for (const [userId, session] of sessions) {
+    for (const [listItemId, group] of session.tabGroups) {
+      for (const [tabId, tabState] of group) {
+        const lockState = pressureLockState(tabId);
+        if (lockState.active || lockState.queued > 0) {
+          preserved.locked += 1;
+          continue;
+        }
+
+        if ((sessionTabCounts.get(userId) || 0) <= minTabsPerSession) {
+          preserved.session_minimum += 1;
+          continue;
+        }
+
+        if (!Number.isFinite(tabState.pressureObservedAt)) {
+          tabState.pressureObservedAt = now;
+          tabState.pressureObservedToolCalls = tabState.toolCalls;
+          preserved.first_observation += 1;
+          continue;
+        }
+
+        if (tabState.pressureObservedToolCalls !== tabState.toolCalls) {
+          tabState.pressureObservedAt = now;
+          tabState.pressureObservedToolCalls = tabState.toolCalls;
+          preserved.recently_active += 1;
+          continue;
+        }
+
+        const idleMs = now - tabState.pressureObservedAt;
+        if (idleMs < minIdleMs) {
+          preserved.below_min_idle += 1;
+          continue;
+        }
+
+        candidates.push({
+          userId,
+          session,
+          listItemId,
+          group,
+          tabId,
+          tabState,
+          idleMs,
+          toolCalls: tabState.toolCalls,
+        });
+      }
+    }
+  }
+
+  candidates.sort((a, b) => (b.idleMs - a.idleMs) || (a.toolCalls - b.toolCalls));
+  const selected = candidates.slice(0, maxTabsToClose);
+  const selectedSummary = selected.map((item) => ({
+    session: pressureHash(item.userId),
+    tab: pressureHash(item.tabId),
+    group: pressureHash(item.listItemId),
+    idleMs: item.idleMs,
+    toolCalls: item.toolCalls,
+  }));
+  const closed = [];
+
+  if (!dryRun) {
+    for (const item of selected) {
+      if (!item.group.has(item.tabId)) continue;
+      if ((sessionTabCounts.get(item.userId) || 0) <= minTabsPerSession) continue;
+      const lockState = pressureLockState(item.tabId);
+      if (lockState.active || lockState.queued > 0) continue;
+      if (item.tabState.navigateAbort) item.tabState.navigateAbort.abort();
+      await clearTabDownloads(item.tabState).catch(() => {});
+      await safePageClose(item.tabState.page);
+      item.group.delete(item.tabId);
+      sessionTabCounts.set(item.userId, Math.max(0, (sessionTabCounts.get(item.userId) || 0) - 1));
+      const lock = tabLocks.get(item.tabId);
+      if (lock) {
+        lock.drain();
+        tabLocks.delete(item.tabId);
+      }
+      tabsReapedTotal.inc();
+      pluginEvents.emit('tab:reaped', { userId: item.userId, tabId: item.tabId, listItemId: item.listItemId, reason: 'pressure_cleanup', idleMs: item.idleMs });
+      log('info', 'tab reaped (pressure cleanup)', { userId: item.userId, tabId: item.tabId, listItemId: item.listItemId, idleMs: item.idleMs, toolCalls: item.toolCalls });
+      closed.push({ session: pressureHash(item.userId), tab: pressureHash(item.tabId), group: pressureHash(item.listItemId), idleMs: item.idleMs, toolCalls: item.toolCalls });
+    }
+
+    for (const [userId, session] of Array.from(sessions.entries())) {
+      for (const [listItemId, group] of Array.from(session.tabGroups.entries())) {
+        if (group.size === 0) session.tabGroups.delete(listItemId);
+      }
+      if (closeEmptySessions && session.tabGroups.size === 0) {
+        session._closing = true;
+        await closeSession(userId, session, { reason: 'pressure_cleanup_empty_session', clearDownloads: true, clearLocks: true });
+        sessionsExpiredTotal.inc();
+        log('info', 'session closed (pressure cleanup empty)', { userId });
+      }
+    }
+
+    refreshTabLockQueueDepth();
+    refreshActiveTabsGauge();
+    if (sessions.size === 0) scheduleBrowserIdleShutdown();
+  }
+
+  return {
+    ok: true,
+    dryRun,
+    minIdleMs,
+    maxTabsToClose,
+    minTabsPerSession,
+    before,
+    candidates: candidates.length,
+    selected: selectedSummary,
+    closed,
+    preserved,
+    after: { sessions: sessions.size, tabs: getTotalTabCount() },
   };
 }
 
@@ -1850,6 +2049,75 @@ async function _buildRefsInner(page, refs, start) {
     }
   }
   
+  // --- IFRAME SUPPORT ---
+  // Process child frames to capture elements inside iframes (e.g., Stripe payment fields)
+  const iframeRemaining = BUILDREFS_TIMEOUT_MS - (Date.now() - start);
+  if (iframeRemaining > 2000 && refCounter <= MAX_SNAPSHOT_NODES) {
+    const childFrames = page.frames().filter(f => f !== page.mainFrame());
+    let iframesProcessed = 0;
+    
+    for (const frame of childFrames) {
+      if (iframesProcessed >= MAX_IFRAMES_TO_PROCESS) break;
+      if (refCounter > MAX_SNAPSHOT_NODES) break;
+      
+      const frameUrl = frame.url();
+      const frameName = frame.name();
+      
+      // Skip tracking/analytics iframes
+      if (IFRAME_SKIP_PATTERNS.some(p => p.test(frameUrl) || p.test(frameName))) continue;
+      // Skip about:blank and empty frames
+      if (!frameUrl || frameUrl === 'about:blank' || frameUrl === 'about:srcdoc') continue;
+      
+      try {
+        const frameYaml = await frame.locator('body').ariaSnapshot({ timeout: IFRAME_SNAPSHOT_TIMEOUT_MS });
+        if (!frameYaml || frameYaml.trim().length < 10) continue;
+        
+        // Check if frame has any interactive elements
+        const hasInteractive = INTERACTIVE_ROLES.some(role => {
+          const regex = new RegExp(`^\\s*-\\s+${role}`, 'im');
+          return regex.test(frameYaml);
+        });
+        if (!hasInteractive) continue;
+        
+        iframesProcessed++;
+        // Use a separate seenCounts for each iframe (nth is per-frame for locator resolution)
+        const frameSeenCounts = new Map();
+        
+        const frameLines = frameYaml.split('\n');
+        for (const line of frameLines) {
+          if (refCounter > MAX_SNAPSHOT_NODES) break;
+          
+          const match = line.match(/^\s*-\s+(\w+)(?:\s+"([^"]*)")?/);
+          if (match) {
+            const [, role, name] = match;
+            const normalizedRole = role.toLowerCase();
+            if (normalizedRole === 'combobox') continue;
+            if (name && SKIP_PATTERNS.some(p => p.test(name))) continue;
+            
+            if (INTERACTIVE_ROLES.includes(normalizedRole)) {
+              const normalizedName = name || '';
+              const key = `${normalizedRole}:${normalizedName}`;
+              const nth = frameSeenCounts.get(key) || 0;
+              frameSeenCounts.set(key, nth + 1);
+              
+              const refId = `e${refCounter++}`;
+              refs.set(refId, { role: normalizedRole, name: normalizedName, nth, frameName: frameName || null, frameUrl });
+            }
+          }
+        }
+        
+        log('debug', 'buildRefs: processed iframe', { frameName, frameUrl: frameUrl.slice(0, 80), refs: refCounter - 1 });
+      } catch (err) {
+        // Frame might have navigated away or be inaccessible — skip silently
+        log('debug', 'buildRefs: iframe snapshot failed', { frameName, error: err.message?.slice(0, 80) });
+      }
+    }
+    
+    if (iframesProcessed > 0) {
+      log('info', 'buildRefs: processed iframes', { count: iframesProcessed, totalRefs: refCounter - 1 });
+    }
+  }
+  
   return refs;
 }
 
@@ -1863,19 +2131,89 @@ async function getAriaSnapshot(page) {
     waitForHydration: false,
     settleMs: 100,
   });
+  let mainYaml;
   try {
-    return await page.locator('body').ariaSnapshot({ timeout: 5000 });
+    mainYaml = await page.locator('body').ariaSnapshot({ timeout: 5000 });
   } catch (err) {
     log('warn', 'getAriaSnapshot failed', { error: err.message });
     return null;
   }
+  
+  if (!mainYaml) return null;
+  
+  // --- IFRAME SUPPORT ---
+  // Append accessible iframe content to the snapshot YAML
+  const childFrames = page.frames().filter(f => f !== page.mainFrame());
+  const iframeYamls = [];
+  let iframesProcessed = 0;
+  
+  for (const frame of childFrames) {
+    if (iframesProcessed >= MAX_IFRAMES_TO_PROCESS) break;
+    
+    const frameUrl = frame.url();
+    const frameName = frame.name();
+    
+    // Skip tracking/analytics iframes
+    if (IFRAME_SKIP_PATTERNS.some(p => p.test(frameUrl) || p.test(frameName))) continue;
+    if (!frameUrl || frameUrl === 'about:blank' || frameUrl === 'about:srcdoc') continue;
+    
+    try {
+      const frameYaml = await frame.locator('body').ariaSnapshot({ timeout: IFRAME_SNAPSHOT_TIMEOUT_MS });
+      if (!frameYaml || frameYaml.trim().length < 10) continue;
+      
+      // Only include frames with interactive elements
+      const hasInteractive = INTERACTIVE_ROLES.some(role => {
+        const regex = new RegExp(`^\\s*-\\s+${role}`, 'im');
+        return regex.test(frameYaml);
+      });
+      if (!hasInteractive) continue;
+      
+      iframesProcessed++;
+      // Derive a human-readable label from frame name or URL
+      let label = frameName || '';
+      if (!label) {
+        try { label = new URL(frameUrl).hostname; } catch { label = 'iframe'; }
+      }
+      // Clean up Shopify-style frame names for readability
+      label = label.replace(/card-fields-/, '').replace(/-[a-z0-9]{10,}$/, '');
+      
+      iframeYamls.push(`- iframe "${label}":\n${frameYaml.split('\n').map(l => '  ' + l).join('\n')}`);
+    } catch {
+      // Frame inaccessible — skip
+    }
+  }
+  
+  if (iframeYamls.length > 0) {
+    return mainYaml + '\n' + iframeYamls.join('\n');
+  }
+  return mainYaml;
 }
 
 function refToLocator(page, ref, refs) {
   const info = refs.get(ref);
   if (!info) return null;
   
-  const { role, name, nth } = info;
+  const { role, name, nth, frameName, frameUrl } = info;
+  
+  // If ref belongs to an iframe, resolve via frame locator
+  if (frameName || frameUrl) {
+    let frame = null;
+    if (frameName) {
+      frame = page.frame({ name: frameName });
+    }
+    if (!frame && frameUrl) {
+      // Try matching by URL (partial match for long URLs)
+      frame = page.frames().find(f => f.url() === frameUrl || f.url().startsWith(frameUrl.slice(0, 80)));
+    }
+    if (frame) {
+      let locator = frame.getByRole(role, name ? { name } : undefined);
+      locator = locator.nth(nth);
+      return locator;
+    }
+    // Frame not found (navigated away?) — fall through to page-level resolution
+    log('warn', 'refToLocator: frame not found for iframe ref', { ref, frameName, frameUrl: frameUrl?.slice(0, 60) });
+  }
+  
   let locator = page.getByRole(role, name ? { name } : undefined);
   
   // Always use .nth() to disambiguate duplicate role+name combinations
@@ -2026,6 +2364,95 @@ app.get('/metrics', async (_req, res) => {
   res.send(await reg.metrics());
 });
 
+/**
+ * @openapi
+ * /pressure/cleanup:
+ *   post:
+ *     tags: [System]
+ *     summary: Proactive memory-pressure cleanup
+ *     description: |
+ *       Closes tabs observed idle across multiple checks while preserving tabs
+ *       with active/queued operations. Never returns URLs, titles, cookies,
+ *       page text, or user IDs. Defaults to dry-run mode.
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               dryRun:
+ *                 type: boolean
+ *                 default: true
+ *                 description: When true, returns candidates without closing them.
+ *               minIdleMs:
+ *                 type: number
+ *                 default: 600000
+ *                 description: Minimum idle time (ms) before a tab is eligible.
+ *               maxTabsToClose:
+ *                 type: number
+ *                 default: 4
+ *                 description: Maximum tabs to close per invocation.
+ *               minTabsPerSession:
+ *                 type: number
+ *                 default: 1
+ *                 description: Preserve at least this many tabs per session.
+ *               closeEmptySessions:
+ *                 type: boolean
+ *                 default: true
+ *                 description: Close sessions left with zero tabs after cleanup.
+ *     responses:
+ *       200:
+ *         description: Cleanup result with before/after counts and hashed metadata.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 dryRun:
+ *                   type: boolean
+ *                 before:
+ *                   type: object
+ *                   properties:
+ *                     sessions:
+ *                       type: integer
+ *                     tabs:
+ *                       type: integer
+ *                 after:
+ *                   type: object
+ *                   properties:
+ *                     sessions:
+ *                       type: integer
+ *                     tabs:
+ *                       type: integer
+ *                 candidates:
+ *                   type: integer
+ *                 closed:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 preserved:
+ *                   type: object
+ */
+app.post('/pressure/cleanup', async (req, res) => {
+  try {
+    const result = await camofoxPressureCleanup(req.body || {});
+    log('info', 'pressure cleanup', {
+      dryRun: result.dryRun,
+      beforeTabs: result.before.tabs,
+      afterTabs: result.after.tabs,
+      candidates: result.candidates,
+      closed: result.closed.length,
+      preserved: result.preserved,
+    });
+    res.json(result);
+  } catch (err) {
+    log('error', 'pressure cleanup failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
 // Create new tab
 /**
  * @openapi
@@ -2095,6 +2522,22 @@ app.post('/tabs', async (req, res) => {
     const resolvedSessionKey = sessionKey || listItemId;
     if (!userId || !resolvedSessionKey) {
       return res.status(400).json({ error: 'userId and sessionKey required' });
+    }
+
+    // Session overflow redirect (Fly.io only) — if this machine is above its
+    // fair share of sessions and the user doesn't already have one here,
+    // bounce back through the Fly Proxy to land on a less-loaded machine.
+    if (FLY_MACHINE_ID) {
+      const PER_MACHINE_SESSION_CAP = Math.max(3, Math.ceil(MAX_SESSIONS / 3));
+      const key = normalizeUserId(userId);
+      const isReplayed = !!req.headers['fly-replay-src'];
+      if (sessions.size >= PER_MACHINE_SESSION_CAP && !sessions.has(key) && !isReplayed) {
+        log('info', 'session overflow redirect', {
+          userId: key, sessions: sessions.size, cap: PER_MACHINE_SESSION_CAP,
+        });
+        res.set('fly-replay', `app=${CONFIG.flyAppName || 'camofox-browser'}`);
+        return res.status(307).send();
+      }
     }
 
     const result = await withTimeout((async () => {
@@ -2168,6 +2611,24 @@ app.post('/tabs', async (req, res) => {
     res.json(result);
   } catch (err) {
     log('error', 'tab create failed', { reqId: req.reqId, error: err.message });
+    // SSL certificate errors on initial navigation — non-retriable
+    const isSslError = err.message && (
+      err.message.includes('SEC_ERROR') ||
+      err.message.includes('SSL_ERROR') ||
+      err.message.includes('MOZILLA_PKIX_ERROR')
+    );
+    if (isSslError) {
+      return res.status(502).json({
+        error: `SSL certificate error: ${err.message.split('\n')[0]}`,
+        code: 'ssl_error',
+        recoverable: false,
+      });
+    }
+    // Memory pressure / max sessions → bounce through LB to another machine
+    if (FLY_MACHINE_ID && err.statusCode === 503) {
+      res.set('fly-replay', `app=${CONFIG.flyAppName || 'camofox-browser'}`);
+      return res.status(503).json({ error: safeError(err) });
+    }
     handleRouteError(err, req, res);
   }
 });
@@ -2388,6 +2849,19 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
     if (is400) {
       return res.status(400).json({ error: safeError(err) });
     }
+    // SSL certificate errors — site has a bad/self-signed cert. Non-retriable.
+    const isSslError = err.message && (
+      err.message.includes('SEC_ERROR') ||
+      err.message.includes('SSL_ERROR') ||
+      err.message.includes('MOZILLA_PKIX_ERROR')
+    );
+    if (isSslError) {
+      return res.status(502).json({
+        error: `SSL certificate error: ${err.message.split('\n')[0]}`,
+        code: 'ssl_error',
+        recoverable: false,
+      });
+    }
     handleRouteError(err, req, res);
   }
 });
@@ -2464,7 +2938,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     const offset = parseInt(req.query.offset) || 0;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -2645,7 +3119,7 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
     const { userId, timeout = 10000, waitForNetwork = true } = req.body;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
     
     const { tabState } = found;
     const ready = await waitForPageReady(tabState.page, { timeout, waitForNetwork });
@@ -2724,7 +3198,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -2950,7 +3424,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
     const { userId, ref, selector, text, mode = 'fill', delay = 30, submit = false, pressEnter = false } = req.body;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3074,7 +3548,7 @@ app.post('/tabs/:tabId/press', async (req, res) => {
     const { userId, key } = req.body;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3142,7 +3616,7 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     const { userId, direction = 'down', amount = 500 } = req.body;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3291,7 +3765,7 @@ app.post('/tabs/:tabId/back', async (req, res) => {
     const { userId } = req.body;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3368,7 +3842,7 @@ app.post('/tabs/:tabId/forward', async (req, res) => {
     const { userId } = req.body;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3435,7 +3909,7 @@ app.post('/tabs/:tabId/refresh', async (req, res) => {
     const { userId } = req.body;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3506,7 +3980,7 @@ app.get('/tabs/:tabId/links', async (req, res) => {
     const found = session && findTab(session, req.params.tabId);
     if (!found) {
       log('warn', 'links: tab not found', { reqId: req.reqId, tabId: req.params.tabId, userId, hasSession: !!session });
-      return res.status(404).json({ error: 'Tab not found' });
+      return tabNotFoundResponse(res, req.params.tabId);
     }
     
     const { tabState } = found;
@@ -3590,7 +4064,7 @@ app.get('/tabs/:tabId/downloads', async (req, res) => {
     const maxBytes = Number.isFinite(maxBytesRaw) && maxBytesRaw > 0 ? maxBytesRaw : MAX_DOWNLOAD_INLINE_BYTES;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
 
     const { tabState } = found;
     tabState.toolCalls++;
@@ -3665,7 +4139,7 @@ app.get('/tabs/:tabId/images', async (req, res) => {
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 20) : 8;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
 
     const { tabState } = found;
     tabState.toolCalls++;
@@ -3727,7 +4201,7 @@ app.get('/tabs/:tabId/screenshot', async (req, res) => {
     const fullPage = req.query.fullPage === 'true';
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
     
     const { tabState } = found;
     const buffer = await tabState.page.screenshot({ type: 'png', fullPage });
@@ -3793,7 +4267,7 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
     const userId = req.query.userId;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
     
     const { tabState, listItemId } = found;
     res.json({
@@ -3871,7 +4345,7 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, re
 
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
 
     session.lastAccess = Date.now();
     const { tabState } = found;
@@ -4012,7 +4486,7 @@ app.post('/tabs/:tabId/extract', express.json({ limit: '256kb' }), async (req, r
 
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
 
     session.lastAccess = Date.now();
     const { tabState } = found;
@@ -4449,7 +4923,53 @@ setInterval(() => {
   refreshTabLockQueueDepth();
 }, 60_000);
 
-// Per-tab inactivity reaper -- close tabs idle for TAB_INACTIVITY_MS
+// Memory pressure eviction (Fly.io only) — evict oldest session when RAM is high.
+// Prevents Camoufox OOM by proactively freeing BrowserContexts.
+if (FLY_MACHINE_ID) {
+  const MEMORY_HIGH_WATERMARK = 0.80;
+  setInterval(() => {
+    let totalMem = os.totalmem();
+    let freeMem = os.freemem();
+    let usedRatio = 1 - (freeMem / totalMem);
+
+    // Evict sessions in a loop until memory drops below the watermark
+    // or no more sessions remain. closeSession is async but memory
+    // reclamation (context.close → Firefox frees pages) starts immediately.
+    let evicted = 0;
+    while (usedRatio >= MEMORY_HIGH_WATERMARK && sessions.size > 0) {
+      let oldestKey = null;
+      let oldestAccess = Infinity;
+      for (const [key, session] of sessions) {
+        if (session._closing) continue;
+        if (session.lastAccess < oldestAccess) {
+          oldestAccess = session.lastAccess;
+          oldestKey = key;
+        }
+      }
+      if (!oldestKey) break;
+      const session = sessions.get(oldestKey);
+      const idleMs = Date.now() - session.lastAccess;
+      log('warn', 'memory pressure eviction', {
+        userId: oldestKey,
+        usedPct: (usedRatio * 100).toFixed(1),
+        freeMb: Math.round(freeMem / 1048576),
+        idleMs,
+        sessions: sessions.size,
+      });
+      session._closing = true;
+      sessionsExpiredTotal.inc();
+      closeSession(oldestKey, session, {
+        reason: 'memory_pressure', clearDownloads: true, clearLocks: true,
+      }).catch(() => {});
+      evicted++;
+      // Re-check after marking session for closure
+      freeMem = os.freemem();
+      usedRatio = 1 - (freeMem / totalMem);
+    }
+  }, 30_000);
+}
+
+// Per-tab inactivity reaper — close tabs idle for TAB_INACTIVITY_MS
 setInterval(() => {
   const now = Date.now();
   for (const [userId, session] of sessions) {
@@ -4916,7 +5436,7 @@ app.post('/navigate', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, targetId);
     if (!found) {
-      return res.status(404).json({ error: 'Tab not found' });
+      return tabNotFoundResponse(res, req.params.tabId || targetId);
     }
     
     const { tabState } = found;
@@ -5008,7 +5528,7 @@ app.get('/snapshot', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, targetId);
     if (!found) {
-      return res.status(404).json({ error: 'Tab not found' });
+      return tabNotFoundResponse(res, req.params.tabId || targetId);
     }
     
     const { tabState } = found;
@@ -5176,7 +5696,7 @@ app.post('/act', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, targetId);
     if (!found) {
-      return res.status(404).json({ error: 'Tab not found' });
+      return tabNotFoundResponse(res, req.params.tabId || targetId);
     }
     
     const { tabState } = found;
