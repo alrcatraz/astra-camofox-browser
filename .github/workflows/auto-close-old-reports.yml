@@ -75,6 +75,30 @@ jobs:
                   }
                 }
 
+                // Auto-close memory leaks with 0 sessions + 0 tabs (self-healing restart handles these)
+                if (labels.includes('memory-leak')) {
+                  const ctxMatch = body.match(/\*\*browser contexts:\*\*\s*(\d+)/);
+                  const tabMatch = body.match(/\*\*active tabs:\*\*\s*(\d+)/);
+                  if (ctxMatch && tabMatch &&
+                      parseInt(ctxMatch[1], 10) === 0 && parseInt(tabMatch[1], 10) === 0) {
+                    console.log('Memory leak with 0 contexts + 0 tabs, closing (self-healing).');
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: context.issue.number,
+                      body: 'Closing — native memory growth detected with no active sessions. The memory pressure restart mechanism automatically reclaims this when idle. This is expected Firefox/Playwright behavior (jemalloc fragmentation, CDP buffers). If you experience OOM crashes during active use, please re-open.',
+                    });
+                    await github.rest.issues.update({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: context.issue.number,
+                      state: 'closed',
+                      state_reason: 'not_planned',
+                    });
+                    return;
+                  }
+                }
+
                 console.log('Keeping open.');
                 return;
               }
