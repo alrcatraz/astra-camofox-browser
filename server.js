@@ -1050,7 +1050,7 @@ async function closeSession(userId, session, {
   const key = normalizeUserId(userId);
 
   // Drain locks BEFORE closing context — queued operations get clean "Tab destroyed"
-  // (410) instead of messy "Target page closed" (500) that floods Sentry.
+  // (410) instead of messy "Target page closed" (500) errors.
   if (clearLocks) {
     clearSessionLocks(session);
   }
@@ -4784,11 +4784,13 @@ setInterval(() => {
   if (reaped > 0) log('warn', 'orphan page reaper closed leaked pages', { reaped });
 }, 60_000);
 
-// Native memory pressure restart -- when all sessions are gone and Firefox's
-// native memory has grown beyond threshold, kill the browser immediately instead
-// of waiting for the idle timer. Firefox/Camoufox doesn't fully reclaim native
-// memory after context.close() due to jemalloc fragmentation, JIT caches, and
-// NSS/TLS session caches. See #1032.
+// Native memory pressure restart -- when all sessions are gone and the Node
+// process's native memory (RSS minus V8 heap) has grown beyond threshold, kill
+// the browser process immediately instead of waiting for the idle timer.
+// Note: This measures Node/Playwright internal state (CDP buffers, glibc arenas),
+// NOT Firefox's own memory (which is a separate child process). Firefox jemalloc
+// fragmentation is tracked separately via browser RSS in /proc/<pid>/status.
+// The restart reclaims Playwright state; Firefox's process dies with it.
 setInterval(() => {
   if (sessions.size > 0 || !browser) return;
   const mem = process.memoryUsage();
@@ -5001,7 +5003,7 @@ app.post('/tabs/open', async (req, res) => {
       await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
     } catch (navErr) {
       if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
-        log('warn', 'openclaw tab open failed, retrying with fresh proxy', {
+        log('warn', 'tab open failed, retrying with fresh proxy', {
           reqId: req.reqId, tabId, error: navErr.message,
         });
         browserRestartsTotal.labels('proxy_retry').inc();
