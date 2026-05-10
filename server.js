@@ -1424,6 +1424,156 @@ function createTabState(page) {
     lastRequestedUrl: null,
     googleRetryCount: 0,
     navigateAbort: null,
+    pressureObservedAt: Date.now(),
+    pressureObservedToolCalls: 0,
+  };
+}
+
+function pressureHash(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 12);
+}
+
+function pressureLockState(tabId) {
+  const lock = tabLocks.get(tabId);
+  return {
+    active: Boolean(lock?.active),
+    queued: Number(lock?.queue?.length || 0),
+  };
+}
+
+async function camofoxPressureCleanup(options = {}) {
+  const now = Date.now();
+  const minIdleMs = Math.max(0, Number(options.minIdleMs ?? 10 * 60 * 1000));
+  const maxTabsToClose = Math.max(0, Number(options.maxTabsToClose ?? 4));
+  const minTabsPerSession = Math.max(0, Number(options.minTabsPerSession ?? 1));
+  const dryRun = options.dryRun !== false;
+  const closeEmptySessions = options.closeEmptySessions !== false;
+  const before = { sessions: sessions.size, tabs: getTotalTabCount() };
+  const sessionTabCounts = new Map();
+  for (const [userId, session] of sessions) {
+    let count = 0;
+    for (const group of session.tabGroups.values()) count += group.size;
+    sessionTabCounts.set(userId, count);
+  }
+  const preserved = {
+    locked: 0,
+    session_minimum: 0,
+    first_observation: 0,
+    recently_active: 0,
+    below_min_idle: 0,
+  };
+  const candidates = [];
+
+  for (const [userId, session] of sessions) {
+    for (const [listItemId, group] of session.tabGroups) {
+      for (const [tabId, tabState] of group) {
+        const lockState = pressureLockState(tabId);
+        if (lockState.active || lockState.queued > 0) {
+          preserved.locked += 1;
+          continue;
+        }
+
+        if ((sessionTabCounts.get(userId) || 0) <= minTabsPerSession) {
+          preserved.session_minimum += 1;
+          continue;
+        }
+
+        if (!Number.isFinite(tabState.pressureObservedAt)) {
+          tabState.pressureObservedAt = now;
+          tabState.pressureObservedToolCalls = tabState.toolCalls;
+          preserved.first_observation += 1;
+          continue;
+        }
+
+        if (tabState.pressureObservedToolCalls !== tabState.toolCalls) {
+          tabState.pressureObservedAt = now;
+          tabState.pressureObservedToolCalls = tabState.toolCalls;
+          preserved.recently_active += 1;
+          continue;
+        }
+
+        const idleMs = now - tabState.pressureObservedAt;
+        if (idleMs < minIdleMs) {
+          preserved.below_min_idle += 1;
+          continue;
+        }
+
+        candidates.push({
+          userId,
+          session,
+          listItemId,
+          group,
+          tabId,
+          tabState,
+          idleMs,
+          toolCalls: tabState.toolCalls,
+        });
+      }
+    }
+  }
+
+  candidates.sort((a, b) => (b.idleMs - a.idleMs) || (a.toolCalls - b.toolCalls));
+  const selected = candidates.slice(0, maxTabsToClose);
+  const selectedSummary = selected.map((item) => ({
+    session: pressureHash(item.userId),
+    tab: pressureHash(item.tabId),
+    group: pressureHash(item.listItemId),
+    idleMs: item.idleMs,
+    toolCalls: item.toolCalls,
+  }));
+  const closed = [];
+
+  if (!dryRun) {
+    for (const item of selected) {
+      if (!item.group.has(item.tabId)) continue;
+      if ((sessionTabCounts.get(item.userId) || 0) <= minTabsPerSession) continue;
+      const lockState = pressureLockState(item.tabId);
+      if (lockState.active || lockState.queued > 0) continue;
+      if (item.tabState.navigateAbort) item.tabState.navigateAbort.abort();
+      await clearTabDownloads(item.tabState).catch(() => {});
+      await safePageClose(item.tabState.page);
+      item.group.delete(item.tabId);
+      sessionTabCounts.set(item.userId, Math.max(0, (sessionTabCounts.get(item.userId) || 0) - 1));
+      const lock = tabLocks.get(item.tabId);
+      if (lock) {
+        lock.drain();
+        tabLocks.delete(item.tabId);
+      }
+      tabsReapedTotal.inc();
+      pluginEvents.emit('tab:reaped', { userId: item.userId, tabId: item.tabId, listItemId: item.listItemId, reason: 'pressure_cleanup', idleMs: item.idleMs });
+      log('info', 'tab reaped (pressure cleanup)', { userId: item.userId, tabId: item.tabId, listItemId: item.listItemId, idleMs: item.idleMs, toolCalls: item.toolCalls });
+      closed.push({ session: pressureHash(item.userId), tab: pressureHash(item.tabId), group: pressureHash(item.listItemId), idleMs: item.idleMs, toolCalls: item.toolCalls });
+    }
+
+    for (const [userId, session] of Array.from(sessions.entries())) {
+      for (const [listItemId, group] of Array.from(session.tabGroups.entries())) {
+        if (group.size === 0) session.tabGroups.delete(listItemId);
+      }
+      if (closeEmptySessions && session.tabGroups.size === 0) {
+        session._closing = true;
+        await closeSession(userId, session, { reason: 'pressure_cleanup_empty_session', clearDownloads: true, clearLocks: true });
+        sessionsExpiredTotal.inc();
+        log('info', 'session closed (pressure cleanup empty)', { userId });
+      }
+    }
+
+    refreshTabLockQueueDepth();
+    refreshActiveTabsGauge();
+    if (sessions.size === 0) scheduleBrowserIdleShutdown();
+  }
+
+  return {
+    ok: true,
+    dryRun,
+    minIdleMs,
+    maxTabsToClose,
+    minTabsPerSession,
+    before,
+    candidates: candidates.length,
+    selected: selectedSummary,
+    closed,
+    preserved,
+    after: { sessions: sessions.size, tabs: getTotalTabCount() },
   };
 }
 
@@ -2184,6 +2334,95 @@ app.get('/metrics', async (_req, res) => {
   }
   res.set('Content-Type', reg.contentType);
   res.send(await reg.metrics());
+});
+
+/**
+ * @openapi
+ * /pressure/cleanup:
+ *   post:
+ *     tags: [System]
+ *     summary: Proactive memory-pressure cleanup
+ *     description: |
+ *       Closes tabs observed idle across multiple checks while preserving tabs
+ *       with active/queued operations. Never returns URLs, titles, cookies,
+ *       page text, or user IDs. Defaults to dry-run mode.
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               dryRun:
+ *                 type: boolean
+ *                 default: true
+ *                 description: When true, returns candidates without closing them.
+ *               minIdleMs:
+ *                 type: number
+ *                 default: 600000
+ *                 description: Minimum idle time (ms) before a tab is eligible.
+ *               maxTabsToClose:
+ *                 type: number
+ *                 default: 4
+ *                 description: Maximum tabs to close per invocation.
+ *               minTabsPerSession:
+ *                 type: number
+ *                 default: 1
+ *                 description: Preserve at least this many tabs per session.
+ *               closeEmptySessions:
+ *                 type: boolean
+ *                 default: true
+ *                 description: Close sessions left with zero tabs after cleanup.
+ *     responses:
+ *       200:
+ *         description: Cleanup result with before/after counts and hashed metadata.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 dryRun:
+ *                   type: boolean
+ *                 before:
+ *                   type: object
+ *                   properties:
+ *                     sessions:
+ *                       type: integer
+ *                     tabs:
+ *                       type: integer
+ *                 after:
+ *                   type: object
+ *                   properties:
+ *                     sessions:
+ *                       type: integer
+ *                     tabs:
+ *                       type: integer
+ *                 candidates:
+ *                   type: integer
+ *                 closed:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 preserved:
+ *                   type: object
+ */
+app.post('/pressure/cleanup', async (req, res) => {
+  try {
+    const result = await camofoxPressureCleanup(req.body || {});
+    log('info', 'pressure cleanup', {
+      dryRun: result.dryRun,
+      beforeTabs: result.before.tabs,
+      afterTabs: result.after.tabs,
+      candidates: result.candidates,
+      closed: result.closed.length,
+      preserved: result.preserved,
+    });
+    res.json(result);
+  } catch (err) {
+    log('error', 'pressure cleanup failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
 });
 
 // Create new tab
