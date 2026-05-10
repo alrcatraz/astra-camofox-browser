@@ -1421,10 +1421,13 @@ function findTab(session, tabId) {
 
 // Return 404 or 410 depending on whether the browser restarted recently.
 // 410 Gone tells clients the tab existed but the browser crashed — create a new one.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function tabNotFoundResponse(res, tabId) {
-  // Only return 410 for tabs that belonged to this machine (matching prefix)
-  // and were plausibly lost in a browser restart. Non-local or random bad tabIds get 404.
-  if (_lastBrowserRestartAt && (Date.now() - _lastBrowserRestartAt < 300_000) && fly.isLocalTab(tabId)) {
+  // Only return 410 for tabs that look like valid UUIDs (plausibly created by this server),
+  // belonged to this machine, and were lost in a recent browser restart.
+  // Random/invalid strings like 'non-existent-tab' always get 404.
+  if (_lastBrowserRestartAt && (Date.now() - _lastBrowserRestartAt < 300_000) && UUID_RE.test(tabId) && fly.isLocalTab(tabId)) {
     return res.status(410).json({
       error: 'Tab no longer exists (browser was restarted). Create a new tab.',
       code: 'browser_restarted',
