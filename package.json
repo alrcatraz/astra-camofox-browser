@@ -49,7 +49,10 @@
     "Dockerfile",
     "README.md",
     "LICENSE",
-    "AGENTS.md"
+    "AGENTS.md",
+    "!**/*.test.js",
+    "!**/*.test.ts",
+    "!**/*.spec.js"
   ],
   "openclaw": {
     "extensions": [
@@ -120,10 +123,11 @@
     "generate-openapi": "node scripts/generate-openapi.js",
     "version:sync": "node scripts/sync-version.js",
     "version": "node scripts/sync-version.js && node scripts/generate-openapi.js && git add openclaw.plugin.json openapi.json",
-    "postinstall": "node scripts/postinstall.js"
+    "postinstall": "node scripts/postinstall.js",
+    "fetch-bin": "npx camoufox-js fetch"
   },
   "dependencies": {
-    "camoufox-js": "^0.8.5",
+    "camoufox-js": ">=0.10.0",
     "express": "^4.18.2",
     "playwright-core": "^1.58.0",
     "prom-client": "^15.1.3",
