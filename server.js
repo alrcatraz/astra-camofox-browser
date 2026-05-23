@@ -798,10 +798,12 @@ async function _closeBrowserFullyImpl(reason) {
     clearTimeout(closeTimer);
   }
 
-  // Force-kill the entire process tree if any survivors
+  // Force-kill browser survivors. Playwright's Firefox launcher can return no
+  // process PID, so fall back to scanning the container for Camoufox/Xvfb.
   if (pid) {
     await _forceKillProcessTree(pid, reason);
   }
+  await _forceKillBrowserProcesses(reason, pid);
 
   // Clean up stale Firefox temp profiles (enable_cache: true accumulates data)
   try {
@@ -902,6 +904,36 @@ async function _forceKillProcessTree(pid, reason) {
 
   // Give the OS a moment to reclaim resources
   await new Promise(r => setTimeout(r, 300));
+}
+
+async function _forceKillBrowserProcesses(reason, excludePid = null) {
+  if (process.platform !== 'linux') return;
+  const myPid = process.pid;
+  const victims = [];
+  try {
+    const procDirs = fs.readdirSync('/proc').filter(d => /^\d+$/.test(d));
+    for (const procPid of procDirs) {
+      const numPid = parseInt(procPid);
+      if (numPid === myPid || numPid === excludePid) continue;
+      try {
+        const cmdline = fs.readFileSync(`/proc/${procPid}/cmdline`, 'utf8');
+        if (/camoufox-bin|\/usr\/bin\/Xvfb\b/.test(cmdline)) {
+          victims.push(numPid);
+        }
+      } catch { /* process vanished or permission denied */ }
+    }
+  } catch (err) {
+    log('warn', 'failed to scan for browser survivor processes', { reason, error: err.message });
+    return;
+  }
+
+  if (victims.length > 0) {
+    log('warn', 'killing browser survivor processes', { reason, victims });
+    for (const victimPid of victims) {
+      try { process.kill(victimPid, 'SIGKILL'); } catch { /* already dead */ }
+    }
+    await new Promise(r => setTimeout(r, 300));
+  }
 }
 
 function _countOpenFds() {
@@ -1136,7 +1168,7 @@ async function getSession(userId, { trace = false } = {}) {
       if (sessions.size >= MAX_SESSIONS) {
         throw Object.assign(
           new Error('Maximum concurrent sessions reached'),
-          { statusCode: 503 }
+          { statusCode: 503, code: 'admission_rejected' }
         );
       }
       // Memory admission control (Fly.io only) — reject new sessions when
@@ -1152,7 +1184,7 @@ async function getSession(userId, { trace = false } = {}) {
           });
           throw Object.assign(
             new Error('Server memory pressure — try again shortly'),
-            { statusCode: 503 }
+            { statusCode: 503, code: 'admission_rejected' }
           );
         }
       }
@@ -1305,7 +1337,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
     if (session && tabId) {
       destroyTab(session, tabId, 'lock_queue', userId);
     }
-    return res.status(503).json({ error: 'Tab unresponsive and has been destroyed. Open a new tab.', ...extraFields });
+    return res.status(503).json({ error: 'Tab unresponsive and has been destroyed. Open a new tab.', code: 'tab_destroyed', ...extraFields });
   }
   // Tab was destroyed while this request was queued in the lock
   if (isTabDestroyedError(err)) {
@@ -2660,7 +2692,7 @@ app.post('/tabs', async (req, res) => {
     // Memory pressure / max sessions → bounce through LB to another machine
     if (FLY_MACHINE_ID && err.statusCode === 503) {
       res.set('fly-replay', `app=${CONFIG.flyAppName || 'camofox-browser'}`);
-      return res.status(503).json({ error: safeError(err) });
+      return res.status(503).json({ error: safeError(err), code: err.code || 'admission_rejected' });
     }
     handleRouteError(err, req, res);
   }
