@@ -33,7 +33,7 @@ import {
 import { actionFromReq, classifyError } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
-import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError } from './lib/reporter.js';
+import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
@@ -64,11 +64,13 @@ reporter.startWatchdog(30_000, () => {
   const summary = [];
   for (const [sid, session] of sessions) {
     const tabUrls = [];
-    for (const [tid, tab] of session.tabs) {
-      try {
-        const url = tab.page?.url?.() || 'unknown';
-        tabUrls.push(url);
-      } catch { tabUrls.push('error'); }
+    for (const group of session.tabGroups.values()) {
+      for (const tab of group.values()) {
+        try {
+          const url = tab.page?.url?.() || 'unknown';
+          tabUrls.push(url);
+        } catch { tabUrls.push('error'); }
+      }
     }
     if (tabUrls.length > 0) summary.push({ session: sid, tabs: tabUrls.length, urls: tabUrls });
   }
@@ -578,15 +580,14 @@ let browserLaunchPromise = null;
 let browserWarmRetryTimer = null;
 
 function scheduleBrowserIdleShutdown() {
-  clearBrowserIdleTimer();
-  if (sessions.size === 0 && browser) {
-    browserIdleTimer = setTimeout(async () => {
-      if (sessions.size === 0 && browser) {
-        log('info', 'browser idle shutdown (no sessions)');
-        await closeBrowserFully('idle_shutdown');
-      }
-    }, BROWSER_IDLE_TIMEOUT_MS);
-  }
+  if (browserIdleTimer || sessions.size > 0 || !browser) return;
+  browserIdleTimer = setTimeout(async () => {
+    browserIdleTimer = null;
+    if (sessions.size === 0 && browser) {
+      log('info', 'browser idle shutdown (no sessions)');
+      await closeBrowserFully('idle_shutdown');
+    }
+  }, BROWSER_IDLE_TIMEOUT_MS);
 }
 
 function clearBrowserIdleTimer() {
@@ -773,6 +774,7 @@ async function closeBrowserFully(reason) {
 async function _closeBrowserFullyImpl(reason) {
   const b = browser;
   if (!b) return;
+  clearBrowserIdleTimer();
 
   // Capture PID before nulling browser ref -- we need it for force-kill
   const pid = _lastBrowserPid;
@@ -5082,17 +5084,28 @@ setInterval(() => {
   if (reaped > 0) log('warn', 'orphan page reaper closed leaked pages', { reaped });
 }, 60_000);
 
-// Native memory pressure restart -- when all sessions are gone and the Node
-// process's native memory (RSS minus V8 heap) has grown beyond threshold, kill
-// the browser process immediately instead of waiting for the idle timer.
-// Note: This measures Node/Playwright internal state (CDP buffers, glibc arenas),
-// NOT Firefox's own memory (which is a separate child process). Firefox jemalloc
-// fragmentation is tracked separately via browser RSS in /proc/<pid>/status.
-// The restart reclaims Playwright state; Firefox's process dies with it.
+// Idle memory pressure restart -- when all sessions are gone, kill the browser
+// process immediately if either Node native memory or the Camoufox process tree
+// is large. This prevents idle Firefox children from holding most of the VM RAM
+// while Node reports zero sessions/tabs.
 setInterval(() => {
   if (sessions.size > 0 || !browser) return;
   const mem = process.memoryUsage();
   const nativeMemMb = Math.round((mem.rss - mem.heapUsed) / 1048576);
+  const browserRssMb = browserProcessTreeRssMb(_browserPid());
+
+  if (browserRssMb !== null && browserRssMb >= CONFIG.browserRssRestartThresholdMb) {
+    log('warn', 'browser rss pressure, restarting browser', {
+      browserRssMb,
+      thresholdMb: CONFIG.browserRssRestartThresholdMb,
+    });
+    browserRestartsTotal.labels('browser_rss_pressure').inc();
+    closeBrowserFully('browser_rss_pressure').catch((err) => {
+      log('error', 'browser rss pressure browser close failed', { error: err.message });
+    });
+    return;
+  }
+
   if (_nativeMemBaseline === null) {
     _nativeMemBaseline = nativeMemMb;
     return;
