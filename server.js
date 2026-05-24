@@ -580,6 +580,11 @@ let browserIdleTimer = null;
 let browserLaunchPromise = null;
 let browserWarmRetryTimer = null;
 
+// Tracks why the browser was last stopped. Intentional reasons (idle_shutdown, admin_stop)
+// keep /health returning 200. Unexpected reasons trigger 503 + warm retry.
+let _lastBrowserStopReason = null;
+const INTENTIONAL_STOP_REASONS = new Set(['idle_shutdown', 'admin_stop']);
+
 function scheduleBrowserIdleShutdown() {
   if (browserIdleTimer || sessions.size > 0 || !browser) return;
   browserIdleTimer = setTimeout(async () => {
@@ -787,6 +792,9 @@ async function _closeBrowserFullyImpl(reason) {
   }
   const preCloseFds = _countOpenFds();
   const preCloseHandles = _countActiveHandles();
+
+  // Track stop reason for health semantics
+  _lastBrowserStopReason = reason;
 
   // Null the ref so new requests don't use a dying browser
   browser = null;
@@ -1013,6 +1021,7 @@ async function launchBrowserInstance() {
       browserLaunchProxy = launchProxy;
       _lastBrowserPid = candidateBrowser.process?.()?.pid ?? null;
       browser = candidateBrowser; // publish AFTER PID is captured
+      _lastBrowserStopReason = null; // clear — browser is healthy
       _lastBrowserRestartAt = Date.now();
       attachBrowserCleanup(browser, localVirtualDisplay);
       pluginEvents.emit('browser:launched', { browser, display: vdDisplay });
@@ -2370,6 +2379,23 @@ app.get('/health', (req, res) => {
   const rssMb = Math.round(mem.rss / 1048576);
   const heapUsedMb = Math.round(mem.heapUsed / 1048576);
   const nativeMemMb = rssMb - heapUsedMb;
+
+  // Browser not running: distinguish intentional idle stop from unexpected death
+  if (!running && _lastBrowserStopReason && !INTENTIONAL_STOP_REASONS.has(_lastBrowserStopReason)) {
+    // Unexpected browser absence — schedule recovery and report unhealthy
+    scheduleBrowserWarmRetry();
+    return res.status(503).json({
+      ok: false,
+      engine: 'camoufox',
+      browserRunning: false,
+      reason: _lastBrowserStopReason,
+      activeTabs: 0,
+      activeSessions: sessions.size,
+      memory: { rssMb, heapUsedMb, nativeMemMb },
+      ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
+    });
+  }
+
   res.json({ 
     ok: true, 
     engine: 'camoufox',
