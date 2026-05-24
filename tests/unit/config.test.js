@@ -29,4 +29,12 @@ describe('loadConfig', () => {
     process.env.CAMOFOX_EXECUTABLE_PATH = '/legacy/camoufox';
     expect(loadConfig().camoufoxExecutablePath).toBe('/legacy/camoufox');
   });
+
+  test('configures browser RSS restart threshold', () => {
+    delete process.env.BROWSER_RSS_RESTART_THRESHOLD_MB;
+    expect(loadConfig().browserRssRestartThresholdMb).toBe(1500);
+
+    process.env.BROWSER_RSS_RESTART_THRESHOLD_MB = '2048';
+    expect(loadConfig().browserRssRestartThresholdMb).toBe(2048);
+  });
 });
