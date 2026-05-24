@@ -44,6 +44,7 @@
     "dist/plugin.js",
     "tsconfig.json",
     "openclaw.plugin.json",
+    "bin/",
     "scripts/",
     "run.sh",
     "Dockerfile",
@@ -142,5 +143,8 @@
     "jest": "^29.7.0",
     "pngjs": "^7.0.0",
     "typescript": "^5.7.0"
+  },
+  "bin": {
+    "camofox-browser": "./bin/camofox-browser.js"
   }
 }
