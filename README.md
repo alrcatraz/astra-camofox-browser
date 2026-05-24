@@ -80,6 +80,14 @@ openclaw plugins install @askjo/camofox-browser
 
 ### Standalone
 
+Run from npm:
+
+```bash
+npx @askjo/camofox-browser
+```
+
+Or from source:
+
 ```bash
 git clone https://github.com/jo-inc/camofox-browser
 cd camofox-browser
