@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from '@jest/globals';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'os';
+import { platform, tmpdir } from 'os';
 import { prepareExternalCamoufoxExecutable } from '../../lib/camoufox-executable.js';
 
 const tempDirs = [];
@@ -39,7 +39,10 @@ describe('prepareExternalCamoufoxExecutable', () => {
     expect(existsSync(join(cacheDir, 'version.json'))).toBe(true);
     expect(existsSync(join(cacheDir, 'fontconfig'))).toBe(true);
     expect(existsSync(join(cacheDir, 'properties.json'))).toBe(true);
-    expect(existsSync(join(cacheDir, 'camoufox-bin'))).toBe(true);
+    const cacheExecutable = platform() === 'darwin'
+      ? join(cacheDir, 'Camoufox.app', 'Contents', 'MacOS', 'camoufox')
+      : join(cacheDir, platform() === 'win32' ? 'camoufox.exe' : 'camoufox-bin');
+    expect(existsSync(cacheExecutable)).toBe(true);
   });
 
   test('fails clearly when bundle resources are missing', () => {
