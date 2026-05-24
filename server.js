@@ -1247,6 +1247,11 @@ function getTabGroup(session, listItemId) {
   return group;
 }
 
+/** Safe page URL accessor — returns 'unknown' if page is destroyed/undefined */
+function safePageUrl(page) {
+  try { return page?.url?.() || 'unknown'; } catch { return 'unknown'; }
+}
+
 function isDeadContextError(err) {
   const msg = err && err.message || '';
   return msg.includes('Target page, context or browser has been closed') ||
@@ -1523,8 +1528,8 @@ function attachPopupHandler(page, userId, sessionKey) {
     popupGroup.set(popupTabId, popupTabState);
     currentSession.lastAccess = Date.now();
     refreshActiveTabsGauge();
-    log('info', 'popup registered as managed tab', { userId: key, tabId: popupTabId, url: popupPage.url() });
-    pluginEvents.emit('tab:created', { userId: key, tabId: popupTabId, page: popupPage, url: popupPage.url() });
+    log('info', 'popup registered as managed tab', { userId: key, tabId: popupTabId, url: safePageUrl(popupPage) });
+    pluginEvents.emit('tab:created', { userId: key, tabId: popupTabId, page: popupPage, url: safePageUrl(popupPage) });
     // Recursively handle popups from the popup
     attachPopupHandler(popupPage, userId, sessionKey);
   });
