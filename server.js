@@ -315,26 +315,8 @@ function validateUrl(url) {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (req, res) => {
+app.post('/sessions/:userId/cookies', authMiddleware(), express.json({ limit: '512kb' }), async (req, res) => {
   try {
-    if (CONFIG.apiKey) {
-      const apiKey = CONFIG.apiKey;
-      const auth = String(req.headers['authorization'] || '');
-      const match = auth.match(/^Bearer\s+(.+)$/i);
-      if (!match || !timingSafeCompare(match[1], apiKey)) {
-        return res.status(403).json({ error: 'Forbidden' });
-      }
-    } else {
-      const remoteAddress = req.socket?.remoteAddress || '';
-      const allowUnauthedLocal = CONFIG.nodeEnv !== 'production' && isLoopbackAddress(remoteAddress);
-      if (!allowUnauthedLocal) {
-        return res.status(403).json({
-          error:
-            'Cookie import is disabled without CAMOFOX_API_KEY except for loopback requests in non-production environments.',
-        });
-      }
-    }
-
     const userId = req.params.userId;
     if (!req.body || !('cookies' in req.body)) {
       return res.status(400).json({ error: 'Missing "cookies" field in request body' });
@@ -2498,7 +2480,7 @@ app.get('/metrics', async (_req, res) => {
  *                 preserved:
  *                   type: object
  */
-app.post('/pressure/cleanup', async (req, res) => {
+app.post('/pressure/cleanup', authMiddleware(), async (req, res) => {
   try {
     const result = await camofoxPressureCleanup(req.body || {});
     log('info', 'pressure cleanup', {
@@ -4403,7 +4385,7 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, res) => {
+app.post('/tabs/:tabId/evaluate', authMiddleware(), express.json({ limit: '1mb' }), async (req, res) => {
   try {
     const { userId, expression } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
@@ -4953,7 +4935,7 @@ app.delete('/sessions/:userId/traces/:filename', authMiddleware(), async (req, r
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.delete('/sessions/:userId', async (req, res) => {
+app.delete('/sessions/:userId', authMiddleware(), async (req, res) => {
   try {
     const userId = normalizeUserId(req.params.userId);
     const session = sessions.get(userId);
