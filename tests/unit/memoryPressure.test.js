@@ -19,8 +19,9 @@
  * @param {number} thresholdMb - Growth threshold in MB
  * @returns {'skip'|'baseline_set'|'ok'|'restart'} action to take
  */
-function evaluateMemoryPressure(state, rssMb, heapUsedMb, thresholdMb) {
+function evaluateMemoryPressure(state, rssMb, heapUsedMb, thresholdMb, browserRssMb = null, browserRssThresholdMb = 1500) {
   if (state.sessionsSize > 0 || !state.browserAlive) return 'skip';
+  if (browserRssMb !== null && browserRssMb >= browserRssThresholdMb) return 'browser_rss_restart';
   const nativeMemMb = Math.round(rssMb - heapUsedMb);
   if (state.baseline === null) {
     state.baseline = nativeMemMb;
@@ -215,5 +216,22 @@ describe('baseline lifecycle', () => {
     // But if a session arrives before the interval fires, it skips
     state.sessionsSize = 1;
     expect(evaluateMemoryPressure(state, 500, 50, 200)).toBe('skip');
+  });
+
+  test('browser process tree RSS triggers idle restart before native baseline logic', () => {
+    const state = { baseline: null, sessionsSize: 0, browserAlive: true };
+    expect(evaluateMemoryPressure(state, 500, 100, 300, 2300, 1500)).toBe('browser_rss_restart');
+    expect(state.baseline).toBeNull();
+  });
+
+  test('browser process tree RSS below threshold falls through to native check', () => {
+    const state = { baseline: null, sessionsSize: 0, browserAlive: true };
+    expect(evaluateMemoryPressure(state, 500, 100, 300, 1200, 1500)).toBe('baseline_set');
+    expect(state.baseline).toBe(400);
+  });
+
+  test('browser process tree RSS is ignored while sessions are active', () => {
+    const state = { baseline: null, sessionsSize: 1, browserAlive: true };
+    expect(evaluateMemoryPressure(state, 500, 100, 300, 2300, 1500)).toBe('skip');
   });
 });
