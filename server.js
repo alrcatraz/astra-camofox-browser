@@ -38,6 +38,12 @@ import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
 import { snapshotBrowserProcessPids, killProcessIds } from './lib/browser-processes.js';
+import {
+  safePageUrl, urlDomain, hashIdentifier,
+  isDeadContextError, isPageCrashedError, isTimeoutError,
+  isTabLockQueueTimeout, isTabDestroyedError,
+  browserErrorStatus, browserErrorCode,
+} from './lib/browser-errors.js';
 
 const CONFIG = loadConfig();
 
@@ -204,19 +210,23 @@ function safeError(err) {
 
 // Send error response with appropriate status code (422 for stale refs, 500 otherwise)
 function sendError(res, err, extraFields = {}) {
-  const status = err instanceof StaleRefsError ? 422 : (err.statusCode || 500);
+  const status = err instanceof StaleRefsError ? 422 : (browserErrorStatus(err) || 500);
   const body = { error: safeError(err), ...extraFields };
-  if (err instanceof StaleRefsError) {
-    body.code = 'stale_refs';
-    body.ref = err.ref;
-  }
-  // Report unexpected 500s to Sentry (skip intentional admission-control 503s)
+  const code = err instanceof StaleRefsError ? 'stale_refs' : browserErrorCode(err);
+  if (code) body.code = code;
+  if (err instanceof StaleRefsError) body.ref = err.ref;
+  // Report unexpected 500s to Sentry. Operational 410/503 states are logged with
+  // structured context by handleRouteError but not captured as defects.
   if (status >= 500 && !err.statusCode) {
+    const req = res.req;
+    const userId = req?.query?.userId || req?.body?.userId;
     sentryCaptureException(err, {
-      path: res.req?.originalUrl,
-      method: res.req?.method,
-      userId: res.req?.query?.userId || res.req?.body?.userId,
-      reqId: res.req?.reqId,
+      path: req?.originalUrl,
+      route: req?.route?.path,
+      method: req?.method,
+      action: req ? actionFromReq(req) : undefined,
+      userIdHash: hashIdentifier(userId),
+      reqId: req?.reqId,
     });
   }
   res.status(status).json(body);
@@ -1247,33 +1257,6 @@ function getTabGroup(session, listItemId) {
   return group;
 }
 
-/** Safe page URL accessor — returns 'unknown' if page is destroyed/undefined */
-function safePageUrl(page) {
-  try { return page?.url?.() || 'unknown'; } catch { return 'unknown'; }
-}
-
-function isDeadContextError(err) {
-  const msg = err && err.message || '';
-  return msg.includes('Target page, context or browser has been closed') ||
-         msg.includes('browser has been closed') ||
-         msg.includes('Context closed') ||
-         msg.includes('Browser closed');
-}
-
-function isTimeoutError(err) {
-  const msg = err && err.message || '';
-  return msg.includes('timed out after') ||
-         (msg.includes('Timeout') && msg.includes('exceeded'));
-}
-
-function isTabLockQueueTimeout(err) {
-  return err && err.message === 'Tab lock queue timeout';
-}
-
-function isTabDestroyedError(err) {
-  return err && err.message === 'Tab destroyed';
-}
-
 // Centralized error handler for route catch blocks.
 // Auto-destroys dead browser sessions and returns appropriate status codes.
 function isProxyError(err) {
@@ -1289,8 +1272,37 @@ function handleRouteError(err, req, res, extraFields = {}) {
 
   const userId = req.body?.userId || req.query?.userId;
   const tabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
+  let foundForContext = null;
+  if (userId && tabId) {
+    const session = sessions.get(normalizeUserId(userId));
+    foundForContext = session && findTab(session, tabId);
+  }
+  const pageUrl = safePageUrl(foundForContext?.tabState?.page);
+  const sentryContext = {
+    route: req.route?.path,
+    path: req.originalUrl,
+    method: req.method,
+    action,
+    reqId: req.reqId,
+    tabId,
+    userIdHash: hashIdentifier(userId),
+    urlDomain: urlDomain(pageUrl),
+    browserHealth: {
+      sessions: sessions.size,
+      tabs: _countTabs(),
+      browserPid: _browserPid(),
+      pageClosed: Boolean(foundForContext?.tabState?.page?.isClosed?.()),
+      pageCrashed: Boolean(foundForContext?.tabState?.crashed),
+    },
+    tabHealth: foundForContext?.tabState?.healthTracker?.snapshot?.(),
+  };
   if (tabId) {
-    pluginEvents.emit('tab:error', { userId, tabId, error: err });
+    pluginEvents.emit('tab:error', { userId, tabId, error: err, ...sentryContext });
+  }
+  if (isPageCrashedError(err)) {
+    if (foundForContext) destroyTab(sessions.get(normalizeUserId(userId)), tabId, 'page_crashed', userId);
+    sentryCaptureException(err, sentryContext);
+    return res.status(410).json({ error: 'Page crashed. Open a new tab.', code: 'page_crashed', ...extraFields });
   }
   if (userId && isDeadContextError(err)) {
     destroySession(userId);
@@ -1338,7 +1350,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
     if (session && tabId) {
       destroyTab(session, tabId, 'lock_queue', userId);
     }
-    return res.status(503).json({ error: 'Tab unresponsive and has been destroyed. Open a new tab.', code: 'tab_destroyed', ...extraFields });
+    return res.status(503).json({ error: 'Tab unresponsive and has been destroyed. Open a new tab.', code: 'tab_unresponsive', ...extraFields });
   }
   // Tab was destroyed while this request was queued in the lock
   if (isTabDestroyedError(err)) {
@@ -1489,7 +1501,7 @@ function tabNotFoundResponse(res, tabId) {
 
 function createTabState(page) {
   const healthTracker = createTabHealthTracker(page);
-  return {
+  const tabState = {
     page,
     refs: new Map(),
     visitedUrls: new Set(),
@@ -1505,7 +1517,10 @@ function createTabState(page) {
     navigateAbort: null,
     pressureObservedAt: Date.now(),
     pressureObservedToolCalls: 0,
+    crashed: false,
   };
+  page?.on?.('crash', () => { tabState.crashed = true; });
+  return tabState;
 }
 
 /**
@@ -3419,7 +3434,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
           return res.status(500).json({
             error: safeError(err),
             hint: 'The page may have changed. Call snapshot to see the current state and retry.',
-            url: found.tabState.page.url(),
+            url: safePageUrl(found.tabState.page),
             refsCount: found.tabState.refs.size,
           });
         }
@@ -3557,7 +3572,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
           return res.status(500).json({
             error: safeError(err),
             hint: 'The page may have changed. Call snapshot to see the current state and retry.',
-            url: found.tabState.page.url(),
+            url: safePageUrl(found.tabState.page),
             refsCount: found.tabState.refs.size,
           });
         }
