@@ -15,7 +15,7 @@ primary_region = "sjc"
   auto_start_machines = true       # Fly starts stopped machines on demand
   min_machines_running = 2         # 2 always up for zero-downtime rolling deploys
   [http_service.concurrency]
-    type = "connections"
+    type = "requests"
     soft_limit = 25
     hard_limit = 35
   [[http_service.checks]]
@@ -39,3 +39,4 @@ primary_region = "sjc"
   NODE_ENV = "production"
   SESSION_TIMEOUT_MS = "86400000"
   MAX_SESSIONS = "10"
+  MAX_OLD_SPACE_SIZE = "512"
