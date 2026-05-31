@@ -159,6 +159,16 @@ describe('actionFromReq classifies routes correctly', () => {
   test('create_tab route → "create_tab"', () => {
     expect(actionFromReq(makeReq('POST', '/tabs'))).toBe('create_tab');
   });
+
+  test('concrete tab action paths are normalized', () => {
+    expect(actionFromReq({ method: 'POST', path: '/tabs/68341eecdd3168_abc-123/navigate' })).toBe('navigate');
+    expect(actionFromReq({ method: 'GET', path: '/tabs/68341eecdd3168_abc-123/snapshot' })).toBe('snapshot');
+  });
+
+  test('concrete session paths are normalized', () => {
+    expect(actionFromReq({ method: 'DELETE', path: '/sessions/17900' })).toBe('delete_session');
+    expect(actionFromReq({ method: 'POST', path: '/sessions/17900/cookies' })).toBe('set_cookies');
+  });
 });
 
 describe('classifyError categorizes timeout vs proxy', () => {
