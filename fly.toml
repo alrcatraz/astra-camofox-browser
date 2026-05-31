@@ -38,6 +38,6 @@ primary_region = "sjc"
 [env]
   NODE_ENV = "production"
   SESSION_TIMEOUT_MS = "600000"
-  BROWSER_IDLE_TIMEOUT_MS = "3900000"
+  BROWSER_IDLE_TIMEOUT_MS = "900000"
   MAX_SESSIONS = "10"
   MAX_OLD_SPACE_SIZE = "512"
