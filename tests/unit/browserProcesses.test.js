@@ -1,11 +1,11 @@
 import { isBrowserProcessCmdline, selectBrowserProcessVictims } from '../../lib/browser-processes.js';
 
 describe('browser process survivor selection', () => {
-  test('identifies Camoufox, Firefox, Gecko children, and Xvfb processes', () => {
+  test('identifies Camoufox, Firefox, and Gecko child processes but not external Xvfb', () => {
     expect(isBrowserProcessCmdline('/app/camoufox-bin --profile /tmp/x')).toBe(true);
     expect(isBrowserProcessCmdline('/usr/lib/firefox-esr/firefox-esr')).toBe(true);
     expect(isBrowserProcessCmdline('GeckoChildProcess -contentproc')).toBe(true);
-    expect(isBrowserProcessCmdline('/usr/bin/Xvfb :99')).toBe(true);
+    expect(isBrowserProcessCmdline('/usr/bin/Xvfb :99')).toBe(false);
     expect(isBrowserProcessCmdline('node server.js')).toBe(false);
   });
 
@@ -30,7 +30,7 @@ describe('browser process survivor selection', () => {
     const snapshotVictims = selectBrowserProcessVictims(beforeClose, { myPid: 1, excludePid: null });
     const unsafeFreshScanVictims = selectBrowserProcessVictims([...beforeClose, launchedAfterCloseStarted], { myPid: 1, excludePid: null });
 
-    expect(snapshotVictims).toEqual([21, 22]);
-    expect(unsafeFreshScanVictims).toEqual([21, 22, 99]);
+    expect(snapshotVictims).toEqual([21]);
+    expect(unsafeFreshScanVictims).toEqual([21, 99]);
   });
 });
