@@ -37,4 +37,27 @@ describe('loadConfig', () => {
     process.env.BROWSER_RSS_RESTART_THRESHOLD_MB = '2048';
     expect(loadConfig().browserRssRestartThresholdMb).toBe(2048);
   });
+
+  test('forwards VNC env vars to server subprocess whitelist', () => {
+    process.env.ENABLE_VNC = '1';
+    process.env.VNC_RESOLUTION = '1280x720';
+    process.env.VNC_PASSWORD = 'secret';
+    process.env.VIEW_ONLY = '1';
+    process.env.VNC_PORT = '5901';
+    process.env.NOVNC_PORT = '6081';
+    process.env.VNC_BIND = '0.0.0.0';
+
+    const config = loadConfig();
+
+    expect(config.pluginEnv).toEqual({ ENABLE_VNC: '1' });
+    expect(config.serverEnv).toMatchObject({
+      ENABLE_VNC: '1',
+      VNC_RESOLUTION: '1280x720',
+      VNC_PASSWORD: 'secret',
+      VIEW_ONLY: '1',
+      VNC_PORT: '5901',
+      NOVNC_PORT: '6081',
+      VNC_BIND: '0.0.0.0',
+    });
+  });
 });
