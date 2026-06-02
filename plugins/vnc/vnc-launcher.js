@@ -9,24 +9,49 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+function envFlagEnabled(value) {
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
+}
+
+function compactEnv(env) {
+  return Object.fromEntries(
+    Object.entries(env)
+      .filter(([, value]) => value !== undefined && value !== null)
+      .map(([key, value]) => [key, String(value)])
+  );
+}
+
 /**
  * Resolve VNC configuration from pluginConfig + env var fallbacks.
  * All process.env reads live here -- callers get a plain config object.
  */
-export function resolveVncConfig(pluginConfig = {}) {
-  const enabled = process.env.ENABLE_VNC === '1' || pluginConfig.enabled === true;
+export function resolveVncConfig(pluginConfig = {}, env = process.env) {
+  const enabled = envFlagEnabled(env.ENABLE_VNC) || pluginConfig.enabled === true;
 
-  const rawResolution = process.env.VNC_RESOLUTION || pluginConfig.resolution || '1920x1080';
+  const rawResolution = env.VNC_RESOLUTION || pluginConfig.resolution || '1920x1080';
   const resolution = rawResolution.includes('x', rawResolution.indexOf('x') + 1)
     ? rawResolution
     : `${rawResolution}x24`;
 
-  const vncPassword = process.env.VNC_PASSWORD || pluginConfig.password || '';
-  const viewOnly = process.env.VIEW_ONLY === '1' || pluginConfig.viewOnly === true;
-  const vncPort = process.env.VNC_PORT || pluginConfig.vncPort || '5900';
-  const novncPort = process.env.NOVNC_PORT || pluginConfig.novncPort || '6080';
+  const vncPassword = env.VNC_PASSWORD || pluginConfig.password || '';
+  const viewOnly = envFlagEnabled(env.VIEW_ONLY) || pluginConfig.viewOnly === true;
+  const vncPort = env.VNC_PORT || pluginConfig.vncPort || '5900';
+  const novncPort = env.NOVNC_PORT || pluginConfig.novncPort || '6080';
 
   return { enabled, resolution, vncPassword, viewOnly, vncPort, novncPort };
+}
+
+export function buildWatcherEnv({ resolution, vncPassword, viewOnly, vncPort, novncPort }, env = process.env) {
+  return compactEnv({
+    PATH: env.PATH,
+    HOME: env.HOME,
+    VNC_BIND: env.VNC_BIND,
+    VNC_PASSWORD: vncPassword,
+    VNC_RESOLUTION: resolution,
+    VIEW_ONLY: viewOnly ? '1' : '0',
+    VNC_PORT: vncPort,
+    NOVNC_PORT: novncPort,
+  });
 }
 
 /**
@@ -36,14 +61,7 @@ export function resolveVncConfig(pluginConfig = {}) {
 export function startWatcher({ resolution, vncPassword, viewOnly, vncPort, novncPort, log, events }) {
   const watcherPath = path.join(__dirname, 'vnc-watcher.sh');
   const watcher = spawn('sh', [watcherPath], {
-    env: {
-      ...process.env,
-      VNC_PASSWORD: vncPassword,
-      VNC_RESOLUTION: resolution,
-      VIEW_ONLY: viewOnly ? '1' : '0',
-      VNC_PORT: String(vncPort),
-      NOVNC_PORT: String(novncPort),
-    },
+    env: buildWatcherEnv({ resolution, vncPassword, viewOnly, vncPort, novncPort }),
     stdio: ['ignore', 'inherit', 'inherit'],
     detached: false,
   });
