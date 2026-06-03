@@ -208,30 +208,19 @@
         }
       }
     },
-    "/auth-sessions/{provider}/{userId}/cookies": {
+    "/auth-sessions/{userId}/cookies": {
       "post": {
         "tags": [
           "Sessions"
         ],
-        "summary": "Import provider-scoped auth cookies",
-        "description": "Import cookies for an allowlisted provider, rejecting cookies outside the provider domain. Requires BearerAuth in production.",
+        "summary": "Import domain-scoped auth cookies",
+        "description": "Import cookies for a declared domain, rejecting cookies outside that domain. Optional provider presets (for example amazon) supply defaults. Requires BearerAuth in production.",
         "security": [
           {
             "BearerAuth": []
           }
         ],
         "parameters": [
-          {
-            "name": "provider",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "enum": [
-                "amazon"
-              ]
-            }
-          },
           {
             "name": "userId",
             "in": "path",
@@ -248,9 +237,16 @@
               "schema": {
                 "type": "object",
                 "required": [
+                  "domain",
                   "cookies"
                 ],
                 "properties": {
+                  "domain": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
                   "cookies": {
                     "type": "array",
                     "maxItems": 500,
@@ -270,7 +266,7 @@
         },
         "responses": {
           "200": {
-            "description": "Provider cookies imported.",
+            "description": "Auth session cookies imported.",
             "content": {
               "application/json": {
                 "schema": {
@@ -280,7 +276,7 @@
             }
           },
           "400": {
-            "description": "Invalid provider or cookies.",
+            "description": "Invalid auth session spec or cookies.",
             "content": {
               "application/json": {
                 "schema": {
@@ -302,30 +298,19 @@
         }
       }
     },
-    "/auth-sessions/{provider}/{userId}/verify": {
+    "/auth-sessions/{userId}/verify": {
       "post": {
         "tags": [
           "Sessions"
         ],
-        "summary": "Verify provider auth session",
-        "description": "Opens a provider-specific read-only page and reports whether the session appears authenticated.",
+        "summary": "Verify domain auth session",
+        "description": "Opens a declared read-only verification URL and reports whether the session appears authenticated.",
         "security": [
           {
             "BearerAuth": []
           }
         ],
         "parameters": [
-          {
-            "name": "provider",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "enum": [
-                "amazon"
-              ]
-            }
-          },
           {
             "name": "userId",
             "in": "path",
@@ -335,6 +320,31 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "domain",
+                  "verifyUrl"
+                ],
+                "properties": {
+                  "domain": {
+                    "type": "string"
+                  },
+                  "verifyUrl": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Auth verification result.",
@@ -347,7 +357,7 @@
             }
           },
           "400": {
-            "description": "Unsupported provider.",
+            "description": "Invalid auth session spec.",
             "content": {
               "application/json": {
                 "schema": {
