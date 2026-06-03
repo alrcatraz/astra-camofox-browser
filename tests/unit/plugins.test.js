@@ -97,6 +97,90 @@ describe('lib/plugins', () => {
       };
     }
 
+    function makePlugin(pluginsDir, name, source, metadata = null) {
+      const pluginDir = path.join(pluginsDir, name);
+      fs.mkdirSync(pluginDir, { recursive: true });
+      fs.writeFileSync(path.join(pluginDir, 'index.js'), source);
+      if (metadata) {
+        fs.writeFileSync(path.join(pluginDir, 'plugin.json'), JSON.stringify(metadata));
+      }
+    }
+
+    test('loads config-disabled plugin when its enable env var is set', async () => {
+      const pluginsDir = path.join(tmpDir, 'plugins');
+      const configPath = path.join(tmpDir, 'camofox.config.json');
+      fs.mkdirSync(pluginsDir);
+      makePlugin(
+        pluginsDir,
+        'env-enabled',
+        'export async function register(app, _ctx, pluginConfig) { app.loaded.push(pluginConfig); }\n',
+        { enableEnvVar: 'ENABLE_TEST_PLUGIN' }
+      );
+      makePlugin(
+        pluginsDir,
+        'disabled',
+        'export async function register(app) { app.loaded.push("disabled"); }\n'
+      );
+      fs.writeFileSync(configPath, JSON.stringify({
+        plugins: {
+          'env-enabled': { enabled: false, resolution: '1280x720' },
+          disabled: { enabled: false },
+        },
+      }));
+
+      const ctx = makeMockCtx();
+      const app = { loaded: [] };
+      await loadPlugins(app, ctx, {
+        pluginsDir,
+        configPath,
+        env: { ENABLE_TEST_PLUGIN: '1' },
+      });
+
+      // Assert the load/skip decision, which is the unit under test: the
+      // env-override gate runs (and logs) before the plugin's index.js is
+      // imported. We do not assert on the registration itself because jest's
+      // experimental VM modules cannot dynamic-import an ESM file from the
+      // temp dir, which would make the test flaky for reasons unrelated to
+      // the gate. The "plugin enabled by environment" log fires only when the
+      // gate decides to load a config-disabled plugin from its env var.
+      expect(ctx.log).toHaveBeenCalledWith('info', 'plugin enabled by environment', {
+        plugin: 'env-enabled',
+        envVar: 'ENABLE_TEST_PLUGIN',
+      });
+      // The sibling plugin has no enable env var, so it stays skipped.
+      expect(ctx.log).toHaveBeenCalledWith(
+        'debug',
+        'plugin "disabled" not in camofox.config.json plugins list, skipping'
+      );
+    });
+
+    test('skips config-disabled plugin when its enable env var is not set', async () => {
+      const pluginsDir = path.join(tmpDir, 'plugins');
+      const configPath = path.join(tmpDir, 'camofox.config.json');
+      fs.mkdirSync(pluginsDir);
+      makePlugin(
+        pluginsDir,
+        'env-enabled',
+        'export async function register(app) { app.loaded.push("env-enabled"); }\n',
+        { enableEnvVar: 'ENABLE_TEST_PLUGIN' }
+      );
+      fs.writeFileSync(configPath, JSON.stringify({
+        plugins: {
+          'env-enabled': { enabled: false },
+        },
+      }));
+
+      const app = { loaded: [] };
+      const loaded = await loadPlugins(app, makeMockCtx(), {
+        pluginsDir,
+        configPath,
+        env: {},
+      });
+
+      expect(loaded).toEqual([]);
+      expect(app.loaded).toEqual([]);
+    });
+
     test('returns empty array when plugins directory does not exist', async () => {
       // loadPlugins checks the hardcoded PLUGINS_DIR, not tmpDir.
       // We test by providing a mock ctx -- if no plugins/ dir exists
