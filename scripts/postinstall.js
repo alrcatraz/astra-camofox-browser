@@ -31,6 +31,65 @@ const EXTERNAL_EXECUTABLE_ENV_VARS = [
   'CAMOFOX_EXECUTABLE_PATH',
 ];
 
+const FETCH_CHILD_ENV_VARS = [
+  'PATH',
+  'Path',
+  'HOME',
+  'USERPROFILE',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'XDG_CACHE_HOME',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'SystemRoot',
+  'WINDIR',
+  'ComSpec',
+  'PATHEXT',
+  'CI',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'ALL_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'all_proxy',
+  'npm_config_proxy',
+  'npm_config_https_proxy',
+  'npm_config_http_proxy',
+  'npm_config_noproxy',
+  'npm_config_no_proxy',
+  'npm_config_registry',
+  'npm_config_cache',
+  'npm_config_fetch_retries',
+  'npm_config_fetch_retry_factor',
+  'npm_config_fetch_retry_mintimeout',
+  'npm_config_fetch_retry_maxtimeout',
+  'npm_config_fetch_timeout',
+  'NPM_CONFIG_PROXY',
+  'NPM_CONFIG_HTTPS_PROXY',
+  'NPM_CONFIG_HTTP_PROXY',
+  'NPM_CONFIG_NOPROXY',
+  'NPM_CONFIG_NO_PROXY',
+  'NPM_CONFIG_REGISTRY',
+  'NPM_CONFIG_CACHE',
+  'NPM_CONFIG_FETCH_RETRIES',
+  'NPM_CONFIG_FETCH_RETRY_FACTOR',
+  'NPM_CONFIG_FETCH_RETRY_MINTIMEOUT',
+  'NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT',
+  'NPM_CONFIG_FETCH_TIMEOUT',
+  'CAMOFOX_SKIP_DOWNLOAD',
+  'CAMOUFOX_EXECUTABLE',
+  'CAMOUFOX_EXECUTABLE_PATH',
+  'CAMOFOX_EXECUTABLE_PATH',
+  'CAMOUFOX_CACHE_DIR',
+  'GITHUB_TOKEN',
+];
+
 function camoufoxCacheDir() {
   const home = homedir();
   const plat = platform();
@@ -61,6 +120,14 @@ export function externalExecutableFromEnv(env = process.env) {
     if (value) return { name, value };
   }
   return null;
+}
+
+export function childEnvForFetch(env = process.env) {
+  const childEnv = {};
+  for (const name of FETCH_CHILD_ENV_VARS) {
+    if (env[name] !== undefined) childEnv[name] = env[name];
+  }
+  return childEnv;
 }
 
 function assertExternalExecutable(path) {
@@ -104,13 +171,10 @@ export async function main() {
   // names like spawn/spawnSync/exec/execSync in the same file as "child_process".
   const { spawnSync: run } = await import('node:child_process');
 
-  const childEnv = { ...process.env };
-  delete childEnv.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD;
-
   const isWindows = platform() === 'win32';
   const result = run(isWindows ? 'npx.cmd' : 'npx', ['camoufox-js', 'fetch'], {
     stdio: 'inherit',
-    env: childEnv,
+    env: childEnvForFetch(),
     shell: isWindows,
   });
 
