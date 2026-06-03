@@ -15,10 +15,7 @@ if [ -f "$CONFIG" ] && command -v node >/dev/null 2>&1; then
     if (Array.isArray(c.plugins)) {
       console.log(c.plugins.join(' '));
     } else if (c.plugins && typeof c.plugins === 'object') {
-      console.log(Object.entries(c.plugins)
-        .filter(([, v]) => v && v.enabled !== false)
-        .map(([k]) => k)
-        .join(' '));
+      console.log(Object.keys(c.plugins).join(' '));
     }
   " 2>/dev/null || echo "")
 fi
