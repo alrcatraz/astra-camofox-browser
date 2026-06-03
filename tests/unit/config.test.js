@@ -37,4 +37,15 @@ describe('loadConfig', () => {
     process.env.BROWSER_RSS_RESTART_THRESHOLD_MB = '2048';
     expect(loadConfig().browserRssRestartThresholdMb).toBe(2048);
   });
+
+  test('preserves zero browser idle timeout and falls back for invalid values', () => {
+    delete process.env.BROWSER_IDLE_TIMEOUT_MS;
+    expect(loadConfig().browserIdleTimeoutMs).toBe(300000);
+
+    process.env.BROWSER_IDLE_TIMEOUT_MS = 'not-a-number';
+    expect(loadConfig().browserIdleTimeoutMs).toBe(300000);
+
+    process.env.BROWSER_IDLE_TIMEOUT_MS = '0';
+    expect(loadConfig().browserIdleTimeoutMs).toBe(0);
+  });
 });
