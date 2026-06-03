@@ -561,7 +561,12 @@ let browserIdleTimer = null;
 let browserLaunchPromise = null;
 let browserWarmRetryTimer = null;
 
+if (BROWSER_IDLE_TIMEOUT_MS <= 0) {
+  log('info', 'browser idle shutdown disabled (BROWSER_IDLE_TIMEOUT_MS=0)');
+}
+
 function scheduleBrowserIdleShutdown() {
+  if (BROWSER_IDLE_TIMEOUT_MS <= 0) return;
   if (browserIdleTimer || sessions.size > 0 || !browser) return;
   browserIdleTimer = setTimeout(async () => {
     browserIdleTimer = null;
