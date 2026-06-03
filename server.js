@@ -44,6 +44,12 @@ import {
   isTabLockQueueTimeout, isTabDestroyedError,
   browserErrorStatus, browserErrorCode, browserErrorRecovery, isRetryableBrowserError,
 } from './lib/browser-errors.js';
+import {
+  authSessionProvider,
+  listAuthSessionProviders,
+  sanitizeProviderCookies,
+  verifyAuthSessionPage,
+} from './lib/auth-sessions.js';
 
 const CONFIG = loadConfig();
 
@@ -430,6 +436,168 @@ app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (r
     failuresTotal.labels(classifyError(err), 'set_cookies').inc();
     log('error', 'cookie import failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
+  }
+});
+
+/**
+ * @openapi
+ * /auth-sessions/{provider}/{userId}/cookies:
+ *   post:
+ *     tags: [Sessions]
+ *     summary: Import provider-scoped auth cookies
+ *     description: Import cookies for an allowlisted provider, rejecting cookies outside the provider domain. Requires BearerAuth in production.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: provider
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [amazon]
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [cookies]
+ *             properties:
+ *               cookies:
+ *                 type: array
+ *                 maxItems: 500
+ *                 items:
+ *                   type: object
+ *                   required: [name, value, domain]
+ *     responses:
+ *       200:
+ *         description: Provider cookies imported.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Invalid provider or cookies.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Forbidden.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/auth-sessions/:provider/:userId/cookies', authMiddleware(), express.json({ limit: '512kb' }), async (req, res) => {
+  try {
+    const providerConfig = authSessionProvider(req.params.provider);
+    if (!providerConfig) {
+      return res.status(400).json({ error: 'Unsupported auth session provider', supportedProviders: listAuthSessionProviders() });
+    }
+    if (!req.body || !('cookies' in req.body)) {
+      return res.status(400).json({ error: 'Missing "cookies" field in request body' });
+    }
+
+    let cookies;
+    try {
+      cookies = sanitizeProviderCookies(providerConfig, req.body.cookies);
+    } catch (err) {
+      return res.status(400).json({
+        error: err.message,
+        invalid: err.invalid || [],
+        rejectedDomains: err.rejectedDomains || [],
+      });
+    }
+
+    const userId = req.params.userId;
+    const session = await getSession(userId);
+    await session.context.addCookies(cookies);
+    pluginEvents.emit('session:cookies:import', { userId: String(userId), count: cookies.length });
+    log('info', 'provider auth cookies imported', {
+      reqId: req.reqId,
+      userId: String(userId),
+      provider: providerConfig.provider,
+      count: cookies.length,
+    });
+    res.json({ ok: true, provider: providerConfig.provider, userId: String(userId), count: cookies.length });
+  } catch (err) {
+    failuresTotal.labels(classifyError(err), 'set_auth_cookies').inc();
+    log('error', 'provider auth cookie import failed', { reqId: req.reqId, provider: req.params.provider, error: err.message });
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
+/**
+ * @openapi
+ * /auth-sessions/{provider}/{userId}/verify:
+ *   post:
+ *     tags: [Sessions]
+ *     summary: Verify provider auth session
+ *     description: Opens a provider-specific read-only page and reports whether the session appears authenticated.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: provider
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [amazon]
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Auth verification result.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Unsupported provider.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Forbidden.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/auth-sessions/:provider/:userId/verify', authMiddleware(), async (req, res) => {
+  let page = null;
+  try {
+    const providerConfig = authSessionProvider(req.params.provider);
+    if (!providerConfig) {
+      return res.status(400).json({ error: 'Unsupported auth session provider', supportedProviders: listAuthSessionProviders() });
+    }
+    const userId = req.params.userId;
+    const session = await getSession(userId);
+    page = await session.context.newPage();
+    const result = await verifyAuthSessionPage(page, providerConfig);
+    log('info', 'provider auth session verified', {
+      reqId: req.reqId,
+      userId: String(userId),
+      provider: providerConfig.provider,
+      status: result.status,
+    });
+    res.json(result);
+  } catch (err) {
+    failuresTotal.labels(classifyError(err), 'verify_auth_session').inc();
+    log('error', 'provider auth session verify failed', { reqId: req.reqId, provider: req.params.provider, error: err.message });
+    res.status(500).json({ error: safeError(err) });
+  } finally {
+    if (page) await safePageClose(page).catch(() => {});
   }
 });
 
