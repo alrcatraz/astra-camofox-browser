@@ -42,24 +42,30 @@ RUN apt-get update && apt-get install -y \
     python3-minimal \
     && rm -rf /var/lib/apt/lists/*
 
-# Pre-bake Camoufox browser binary into image via bind mount (downloaded by Makefile)
+# Pre-bake Camoufox browser binary into image
 # Note: unzip returns exit code 1 for warnings (Unicode filenames), so we use || true and verify
-RUN --mount=type=bind,source=dist,target=/dist \
-    mkdir -p /root/.cache/camoufox \
-    && (unzip -q /dist/camoufox-${ARCH}.zip -d /root/.cache/camoufox || true) \
+COPY dist/camoufox-${ARCH}.zip /tmp/camoufox.zip
+RUN mkdir -p /root/.cache/camoufox \
+    && (unzip -q /tmp/camoufox.zip -d /root/.cache/camoufox || true) \
     && chmod -R 755 /root/.cache/camoufox \
     && echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > /root/.cache/camoufox/version.json \
+    && rm /tmp/camoufox.zip \
     && test -f /root/.cache/camoufox/camoufox-bin && echo "Camoufox installed successfully"
 
 # Install yt-dlp for YouTube transcript extraction (no browser needed)
-RUN --mount=type=bind,source=dist,target=/dist \
-    install -m 755 /dist/yt-dlp-${ARCH} /usr/local/bin/yt-dlp
+COPY dist/yt-dlp-${ARCH} /usr/local/bin/yt-dlp
+RUN chmod 755 /usr/local/bin/yt-dlp
 
 WORKDIR /app
 
 COPY package.json ./
 COPY scripts/ ./scripts/
 RUN npm install --production
+
+# Pin playwright-core to v1.58.0 for Camoufox compatibility
+# (v1.61.0+ sends isMobile in setDefaultViewport which Camoufox doesn't support)
+RUN npm install playwright-core@1.58.0 --no-save 2>/dev/null && \
+    echo "playwright-core@1.58.0 installed for Camoufox compatibility"
 
 COPY server.js ./
 COPY camofox.config.json ./

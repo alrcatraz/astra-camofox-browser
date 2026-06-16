@@ -27,9 +27,9 @@ YTDLP_URL    := https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
 
 .PHONY: build build-arm64 build-x86 fetch fetch-arm64 fetch-x86 up down reset clean
 
-## Build the Docker image for the current ARCH (default: x86_64)
+## Build the Podman image for the current ARCH (default: x86_64)
 build: fetch
-	docker build --no-cache \
+	podman build \
 	  --build-arg ARCH=$(ARCH) \
 	  --build-arg CAMOUFOX_VERSION=$(VERSION) \
 	  --build-arg CAMOUFOX_RELEASE=$(RELEASE) \
@@ -60,18 +60,20 @@ $(YTDLP_BIN):
 	curl -fSL "$(YTDLP_URL)" -o $@
 
 up:
-	@if ! docker image inspect $(IMAGE) > /dev/null 2>&1; then \
+	@if ! podman image inspect $(IMAGE) > /dev/null 2>&1; then \
 	  $(MAKE) build; \
 	fi
-	docker run -d --restart unless-stopped --name camofox-browser -p 9377:9377 $(IMAGE)
+	podman run -d --restart unless-stopped --name camofox-browser \
+	  -v ~/.camofox/profiles:/root/.camofox/profiles:Z \
+	  -p 9377:9377 $(IMAGE)
 
 down:
-	docker stop camofox-browser && docker rm camofox-browser
+	podman stop camofox-browser && podman rm camofox-browser
 
 reset:
-	-docker stop camofox-browser 2>/dev/null
-	-docker rm camofox-browser 2>/dev/null
-	-docker rmi $(IMAGE) 2>/dev/null
+	-podman stop camofox-browser 2>/dev/null
+	-podman rm camofox-browser 2>/dev/null
+	-podman rmi $(IMAGE) 2>/dev/null
 	$(MAKE) build
 
 clean:
