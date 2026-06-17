@@ -1,0 +1,6 @@
+[project]
+name = "astra-<component_name>"
+version = "0.1.0"
+description = "<one_liner>"
+requires-python = ">=3.11"
+dependencies = []

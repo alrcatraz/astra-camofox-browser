@@ -13,12 +13,15 @@ astra-<name>/
 ├── README.md                ← Standard README skeleton (replace content)
 ├── AGENTS.md                ← AI Agent guide (recommended)
 ├── LICENSE                  ← MIT (adjust per project)
-├── .gitignore               ← Base + Python/Node layers (adjust per project)
+├── .gitignore               ← Base + Python (default) / Node (opt-in)
 │
 ├── config/                  ← Sample config *.yaml.example (recommended)
 ├── scripts/                 ← Utility scripts (recommended)
 ├── references/              ← Design docs, decision records (recommended)
 ├── tests/                   ← Tests (recommended)
+│
+├── pyproject.toml           ← Python projects (uv, stdlib-only by default)
+├── package.json             ← Node.js projects (alternative to pyproject.toml)
 ```
 
 ## Conventions Quick Reference
@@ -46,7 +49,8 @@ astra-<name>/
 | `README.md` | Replace `{{ ... }}` placeholders with real content |
 | `AGENTS.md` | Write AI Agent workflow guide |
 | `LICENSE` | Replace with the appropriate license (MIT / CC-BY-SA 4.0 / AGPL-3.0 / …) |
-| `.gitignore` | Uncomment the language-specific sections that apply |
+| `.gitignore` | Remove Python section if not Python; uncomment Node section if Node.js |
+| `pyproject.toml` | Update name, description; add dependencies |
 | `config/` | Add config samples, delete `.gitkeep` |
 | `scripts/` | Add utility scripts, delete `.gitkeep` |
 | `tests/` | Add tests, delete `.gitkeep` |
