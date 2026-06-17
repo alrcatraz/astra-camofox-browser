@@ -3,9 +3,10 @@
   <h1>astra-camofox-browser</h1>
   <p><strong>Anti-detection browser server for AI agents, powered by Camoufox</strong></p>
   <p>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
+    <a href="LICENSE"><img src="https://badgen.net/github/license/alrcatraz/astra-camofox-browser" alt="License: MIT" /></a>
     <a href="https://github.com/alrcatraz/astra-camofox-browser"><img src="https://badgen.net/github/stars/alrcatraz/astra-camofox-browser" alt="GitHub stars" /></a>
     <a href="https://github.com/alrcatraz/astra-camofox-browser/commits/astra"><img src="https://badgen.net/github/last-commit/alrcatraz/astra-camofox-browser/astra" alt="GitHub last commit" /></a>
+    <a href="https://github.com/alrcatraz/astra-camofox-browser"><img src="https://badgen.net/github/contributors/alrcatraz/astra-camofox-browser" alt="Contributors" /></a>
   </p>
   <p>
     Part of the <a href="https://github.com/alrcatraz/astra-aiagent-infra"><strong>Astra AI Agent Infrastructure</strong></a> ecosystem.
@@ -710,3 +711,17 @@ Sketchy people are doing sketchy things with crypto tokens named "Camofox" now t
 ## License
 
 MIT
+
+> CI/CD: coming soon — see [astra-aiagent-infra](https://github.com/alrcatraz/astra-aiagent-infra) for ecosystem-wide pipeline plans.
+
+---
+
+<p align="center">
+  <a href="https://star-history.com/#alrcatraz/astra-camofox-browser&Date">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=alrcatraz/astra-camofox-browser&type=Date&theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=alrcatraz/astra-camofox-browser&type=Date" />
+      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=alrcatraz/astra-camofox-browser&type=Date" width="600" />
+    </picture>
+  </a>
+</p>
