@@ -6,12 +6,12 @@
 *.swo
 *~
 
-# ── Python (uncomment if using pyproject.toml) ─────
-# __pycache__/
-# *.pyc
-# .venv/
-# .python-version
-# *.db
+# ── Python (remove section entirely if not Python) ─
+__pycache__/
+*.pyc
+.venv/
+.python-version
+*.db
 
 # ── Node.js (uncomment if using package.json) ──────
 # node_modules/
