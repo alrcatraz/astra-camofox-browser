@@ -710,3 +710,4 @@ Sketchy people are doing sketchy things with crypto tokens named "Camofox" now t
 ## License
 
 MIT
+automated test
