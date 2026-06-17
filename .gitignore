@@ -1,0 +1,27 @@
+# ── Base (always) ──────────────────────────────────
+.env
+*.local
+.DS_Store
+*.swp
+*.swo
+*~
+
+# ── Python (uncomment if using pyproject.toml) ─────
+# __pycache__/
+# *.pyc
+# .venv/
+# .python-version
+# *.db
+
+# ── Node.js (uncomment if using package.json) ──────
+# node_modules/
+# dist/
+# *.log
+
+# ── IDE / Editor ───────────────────────────────────
+.idea/
+.vscode/
+*.code-workspace
+
+# ── OS ─────────────────────────────────────────────
+Thumbs.db
