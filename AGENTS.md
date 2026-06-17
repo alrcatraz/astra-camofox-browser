@@ -1,4 +1,7 @@
-# camofox-browser Agent Guide
+# astra-camofox-browser Agent Guide
+
+> **astra fork** — Part of [Astra AI Agent Infrastructure](https://github.com/alrcatraz/astra-aiagent-infra).
+> Adapted from [`jo-inc/camofox-browser`](https://github.com/jo-inc/camofox-browser) (MIT).
 
 Headless browser automation server for AI agents. Run locally or deploy to any cloud provider.
 
