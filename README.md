@@ -84,6 +84,9 @@ The Docker image includes yt-dlp. For local dev, install it for the `/youtube/tr
 
 ### OpenClaw Plugin
 
+> **Note:** This fork (`astra`) does not publish to the OpenClaw registry.
+> The plugin section below documents upstream's integration for reference.
+
 ```bash
 openclaw plugins install @askjo/camofox-browser
 ```
@@ -92,17 +95,9 @@ openclaw plugins install @askjo/camofox-browser
 
 ### Standalone
 
-Run from npm:
-
 ```bash
-npx @askjo/camofox-browser
-```
-
-Or from source:
-
-```bash
-git clone https://github.com/jo-inc/camofox-browser
-cd camofox-browser
+git clone https://github.com/alrcatraz/astra-camofox-browser
+cd astra-camofox-browser
 npm install
 npm start  # downloads Camoufox on first run (~300MB)
 ```
@@ -172,28 +167,7 @@ On Windows, `make` is not available. Use the included `build.ps1` PowerShell scr
 
 > **WARNING: Do not run `docker build` directly.** The Dockerfile uses bind mounts to pull pre-downloaded binaries from `dist/`. Always use `make up` (or `make fetch` then `make build`) -- it downloads the binaries first.
 
-### Fly.io
-
-For Fly.io or other remote CI, you'll need a Dockerfile that downloads binaries at build time instead of using bind mounts.
-
-### Railway
-
-A `railway.toml` is included. It uses `Dockerfile.ci` (which downloads binaries at build time) and maps Railway's `PORT` env var to `CAMOFOX_PORT` automatically.
-
-```bash
-# Install Railway CLI, then:
-railway link
-railway up
-```
-
-Set secrets via the Railway dashboard or CLI:
-```bash
-railway variables set CAMOFOX_API_KEY="your-generated-key"
-```
-
 ## Usage
-
-### Cookie Import
 
 Import cookies from your browser into Camoufox to skip interactive login on sites like LinkedIn, Amazon, etc.
 
@@ -721,12 +695,6 @@ npm test              # all tests
 npm run test:e2e      # e2e tests only
 npm run test:live     # live site tests (Google, macros)
 npm run test:debug    # with server output
-```
-
-## npm
-
-```bash
-npm install @askjo/camofox-browser
 ```
 
 ## Credits
