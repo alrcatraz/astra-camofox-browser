@@ -46,11 +46,26 @@ log "VNC watcher started -- will attach x11vnc when Camoufox's Xvfb appears"
 
 while true; do
   # Find Xvfb with our patched resolution
+  # Camoufox uses -displayfd <N> (dynamic display), not a fixed :<N> arg,
+  # so also check /tmp/.X11-unix/ for X sockets when no explicit :<N> found.
   FOUND=$(ps -eo args= 2>/dev/null | awk -v res="$VNC_RESOLUTION" '
-    /\/Xvfb :[0-9]+/ && index($0, res) {
-      for (i=1;i<=NF;i++) if ($i ~ /^:[0-9]+$/) { print $i; exit }
+    /Xvfb/ && index($0, res) {
+      for (i=1;i<=NF;i++) if ($i ~ /^:[0-9]+$/) { print $i; found=1; exit }
+      found_xvfb=1
     }
+    END { if (!found && found_xvfb) print "xvfb_running" }
   ' | head -1)
+
+  # If Xvfb is running but no explicit :N was found, try /tmp/.X11-unix sockets
+  if [ "$FOUND" = "xvfb_running" ]; then
+    for sock in /tmp/.X11-unix/X*; do
+      if [ -e "$sock" ]; then
+        display_num="${sock#/tmp/.X11-unix/X}"
+        FOUND=":${display_num}"
+        break
+      fi
+    done
+  fi
 
   if [ -n "$FOUND" ] && [ "$FOUND" != "$CURRENT_DISPLAY" ]; then
     # New or changed display -- (re)attach x11vnc

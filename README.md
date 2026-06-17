@@ -1,28 +1,40 @@
 <div align="center">
-  <img src="fox.png" alt="camofox-browser" width="200" />
-  <h1>camofox-browser</h1>
+  <img src="fox.png" alt="astra-camofox-browser" width="200" />
+  <h1>astra-camofox-browser</h1>
   <p><strong>Anti-detection browser server for AI agents, powered by Camoufox</strong></p>
   <p>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
-    <a href="https://github.com/jo-inc/camofox-browser/stargazers"><img src="https://img.shields.io/github/stars/jo-inc/camofox-browser" alt="GitHub stars" /></a>
-    <a href="https://www.npmjs.com/package/camofox-browser"><img src="https://img.shields.io/npm/v/camofox-browser" alt="npm version" /></a>
-    <a href="https://github.com/jo-inc/camofox-browser/commits"><img src="https://img.shields.io/github/last-commit/jo-inc/camofox-browser" alt="GitHub last commit" /></a>
+    <a href="https://github.com/alrcatraz/astra-camofox-browser"><img src="https://img.shields.io/github/stars/alrcatraz/astra-camofox-browser" alt="GitHub stars" /></a>
+    <a href="https://github.com/alrcatraz/astra-camofox-browser/commits/astra"><img src="https://img.shields.io/github/last-commit/alrcatraz/astra-camofox-browser/astra" alt="GitHub last commit" /></a>
   </p>
   <p>
-    Standing on the mighty shoulders of <a href="https://camoufox.com">Camoufox</a> - a Firefox fork with fingerprint spoofing at the C++ level.
+    Part of the <a href="https://github.com/alrcatraz/astra-aiagent-infra"><strong>Astra AI Agent Infrastructure</strong></a> ecosystem.
+    Adapted from <a href="https://github.com/jo-inc/camofox-browser"><code>jo-inc/camofox-browser</code></a> — MIT License, upstream copyright preserved.
   </p>
 </div>
 
 <br/>
 
-> <a href="https://askjo.ai?ref=camofox"><img src="jo-logo.png" alt="Jo" width="80" height="80" align="left" /></a>
->
-> Built by the team behind <a href="https://askjo.ai?ref=camofox"><strong>jo, a personal AI agent</strong></a> that runs half on your Mac, half on a dedicated cloud machine just for you -- with zero maintenance needed. Available on macOS, Telegram, WhatsApp, and email. <a href="https://askjo.ai?ref=camofox">Try the beta free -></a>
+<details>
+<summary><strong>Astra Adaptations</strong> — click to expand</summary>
+
+| Adaptation | Details |
+|:-----------|:--------|
+| **VNC** | Fixed dynamic display detection (`-displayfd`); `xvfb-run` in Docker CMD |
+| **Persistence** | Podman volume-based session storage for cookies & login state |
+| **Container** | Podman-first Makefile; Playwright pinned to 1.58.0 |
+| **Telemetry** | Crash reporter left intact (opt-out via `CAMOFOX_CRASH_REPORT_ENABLED=false`) |
+
+</details>
+
+<br/>
+
+---
 
 <br/>
 
 ```bash
-git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser
+git clone https://github.com/alrcatraz/astra-camofox-browser && cd astra-camofox-browser
 npm install && npm start
 # -> http://localhost:9377
 ```
