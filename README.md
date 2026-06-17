@@ -1,66 +1,66 @@
 # astra-aiagent-infra-template
 
-> 项目模板 · 统一 Astra AI Agent 生态的组件结构、文档规范与命名约定。
+> Project template — unify the Astra AI Agent ecosystem's component structure, documentation conventions, and naming standards.
 
-使用 GitHub 的 **"Use this template"** 按钮，或 clone 后手动复制，快速初始化一个新的生态组件。
+Use GitHub's **"Use this template"** button, or clone and copy manually, to bootstrap a new ecosystem component.
 
 ---
 
-## 结构
+## Layout
 
 ```
 astra-<name>/
-├── README.md                ← 统一 README 骨架（替换内容）
-├── AGENTS.md                ← AI Agent 指南（推荐）
-├── LICENSE                  ← MIT（按项目调整）
-├── .gitignore               ← 基座 + Python/Node 选配（按项目调整）
+├── README.md                ← Standard README skeleton (replace content)
+├── AGENTS.md                ← AI Agent guide (recommended)
+├── LICENSE                  ← MIT (adjust per project)
+├── .gitignore               ← Base + Python/Node layers (adjust per project)
 │
-├── config/                  ← 配置样例 *.yaml.example（推荐）
-├── scripts/                 ← 工具脚本（推荐）
-├── references/              ← 设计文档、决策记录（推荐）
-├── tests/                   ← 测试（推荐）
+├── config/                  ← Sample config *.yaml.example (recommended)
+├── scripts/                 ← Utility scripts (recommended)
+├── references/              ← Design docs, decision records (recommended)
+├── tests/                   ← Tests (recommended)
 ```
 
-## 约定速查
+## Conventions Quick Reference
 
-| 层面 | 规范 |
-|:----|:------|
-| Repo 名 | `astra-` + kebab-case |
-| Python 标识符 | snake_case |
-| 通用文件名 | kebab-case |
-| 配置文件 | YAML > TOML > JSON |
-| 数据交换 | JSON |
-| README 语言 | English |
-| Commit | Conventional Commits |
+| Scope | Convention |
+|:------|:-----------|
+| Repo name | `astra-` + kebab-case |
+| Python identifiers | snake_case |
+| Generic filenames | kebab-case |
+| Config files | YAML > TOML > JSON |
+| Data interchange | JSON |
+| README language | English |
+| Commit style | Conventional Commits |
 
-## 使用方法
+## How to Use
 
-### 创建新组件
+### Creating a New Component
 
-1. 点本仓库页面的 **"Use this template"** → 输入新 repo 名
-2. clone 到本地
-3. 替换以下内容：
+1. Click **"Use this template"** on this repo's GitHub page → enter the new repo name
+2. Clone locally
+3. Replace the following:
 
-| 文件 | 做什么 |
-|:----|:-------|
-| `README.md` | 把骨架中的 `{{ ... }}` 占位符替换为真实内容 |
-| `AGENTS.md` | 替换为 AI Agent 操作指南 |
-| `LICENSE` | 替换为项目合适的许可证（MIT / CC-BY-SA 4.0 / AGPL-3.0 / …） |
-| `.gitignore` | 取消注释项目语言对应的部分 |
-| `config/` | 添加配置样例，删除 `.gitkeep` |
-| `scripts/` | 添加工具脚本，删除 `.gitkeep` |
-| `tests/` | 添加测试，删除 `.gitkeep` |
-| `references/` | 添加设计文档，删除 `.gitkeep` |
+| File | Action |
+|:-----|:-------|
+| `README.md` | Replace `{{ ... }}` placeholders with real content |
+| `AGENTS.md` | Write AI Agent workflow guide |
+| `LICENSE` | Replace with the appropriate license (MIT / CC-BY-SA 4.0 / AGPL-3.0 / …) |
+| `.gitignore` | Uncomment the language-specific sections that apply |
+| `config/` | Add config samples, delete `.gitkeep` |
+| `scripts/` | Add utility scripts, delete `.gitkeep` |
+| `tests/` | Add tests, delete `.gitkeep` |
+| `references/` | Add design docs, delete `.gitkeep` |
 
-### 改善现有组件
+### Migrating an Existing Component
 
-参照 [结构](#结构) 和 [约定速查](#约定速查) 表，补齐缺失的文件、统一命名与格式。
+Refer to the [Layout](#layout) and [Conventions](#conventions-quick-reference) tables above. Fill in missing files and align naming/format.
 
 ---
 
-## README 骨架
+## README Skeleton
 
-以下是 `README.md` 的标准布局。创建新组件时以此为准，替换 `{{ ... }}` 占位符：
+The standard `README.md` layout. When creating a new component, replace placeholders with real content:
 
 ```markdown
 # astra-<component_name>
@@ -142,4 +142,4 @@ Key features:
 
 ## License
 
-[CC-BY-SA 4.0](LICENSE) — 模板本身使用 CC-BY-SA 4.0，方便各组件选用不同许可证而模板说明不受限。
+[CC-BY-SA 4.0](LICENSE) — The template itself uses CC-BY-SA 4.0 so that each component can choose its own license without being constrained by the template's.
