@@ -4,8 +4,7 @@
   <p><strong>Anti-detection browser server for AI agents, powered by Camoufox</strong></p>
   <p>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
-    <a href="https://github.com/alrcatraz/astra-camofox-browser"><img src="https://img.shields.io/github/stars/alrcatraz/astra-camofox-browser" alt="GitHub stars" /></a>
-    <a href="https://github.com/alrcatraz/astra-camofox-browser/commits/astra"><img src="https://img.shields.io/github/last-commit/alrcatraz/astra-camofox-browser/astra" alt="GitHub last commit" /></a>
+    <a href="https://github.com/alrcatraz/astra-camofox-browser/commits/astra"><img src="https://badgen.net/github/last-commit/alrcatraz/astra-camofox-browser/astra" alt="GitHub last commit" /></a>
   </p>
   <p>
     Part of the <a href="https://github.com/alrcatraz/astra-aiagent-infra"><strong>Astra AI Agent Infrastructure</strong></a> ecosystem.
