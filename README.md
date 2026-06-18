@@ -706,17 +706,43 @@ npm run test:debug    # with server output
 
 ## Crypto Scam Warning
 
-Sketchy people are doing sketchy things with crypto tokens named "Camofox" now that this project is getting attention. **Camofox is not a crypto project and will never be one.** Any token, coin, or NFT using the Camofox name has nothing to do with us.
-
 ## License
 
-MIT
-
-> CI/CD: coming soon — see [astra-aiagent-infra](https://github.com/alrcatraz/astra-aiagent-infra) for ecosystem-wide pipeline plans.
+MIT — see [LICENSE](LICENSE).
 
 ---
 
-<p align="center">
+> CI/CD: coming soon — see [astra-aiagent-infra](https://github.com/alrcatraz/astra-aiagent-infra) for ecosystem-wide pipeline plans.
+
+## Dependencies
+
+| Resource | Required | Purpose |
+|:---------|:--------:|:--------|
+| [jo-inc/camofox-browser](https://github.com/jo-inc/camofox-browser) (upstream) | Required | Core browser automation engine — this repo is an astra fork with deployment patches |
+| Node.js + npm | Required | Runtime and package management |
+| [Playwright](https://playwright.dev) | Required | Browser automation layer |
+
+---
+
+## 中文版
+
+### 这是什么
+
+基于 Camoufox 的反检测浏览器服务器，为 AI Agent 提供绕过机器人检测的网页自动化能力。
+这是 [`jo-inc/camofox-browser`](https://github.com/jo-inc/camofox-browser) 的 astra 分支，添加了 Linux Xvfb 兼容性补丁和 Podman 部署支持。
+
+### Astra 分支的改动
+
+| 改动 | 详情 |
+|:-----|:------|
+| **VNC** | 修复动态 display 检测（`-displayfd`）；Docker CMD 中使用 `xvfb-run` |
+| **持久化** | 基于 Podman Volume 的会话存储（cookies 和登录状态）|
+| **容器** | 优先 Podman 的 Makefile；Playwright 锁定至 1.58.0 |
+| **遥测** | 保留事故报告功能（可在 `CAMOFOX_CRASH_REPORT_ENABLED=false` 时关闭）|
+
+---
+
+&lt;p align=&quot;center&quot;&gt;
   <a href="https://star-history.com/#alrcatraz/astra-camofox-browser&Date">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=alrcatraz/astra-camofox-browser&type=Date&theme=dark" />
