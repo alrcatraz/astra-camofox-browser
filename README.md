@@ -706,14 +706,6 @@ npm run test:debug    # with server output
 
 ## Crypto Scam Warning
 
-## License
-
-MIT — see [LICENSE](LICENSE).
-
----
-
-> CI/CD: coming soon — see [astra-aiagent-infra](https://github.com/alrcatraz/astra-aiagent-infra) for ecosystem-wide pipeline plans.
-
 ## Dependencies
 
 | Resource | Required | Purpose |
@@ -721,6 +713,24 @@ MIT — see [LICENSE](LICENSE).
 | [jo-inc/camofox-browser](https://github.com/jo-inc/camofox-browser) (upstream) | Required | Core browser automation engine — this repo is an astra fork with deployment patches |
 | Node.js + npm | Required | Runtime and package management |
 | [Playwright](https://playwright.dev) | Required | Browser automation layer |
+
+## Related
+
+- [astra-aiagent-infra](https://github.com/alrcatraz/astra-aiagent-infra) — ecosystem portal
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+> CI/CD: coming soon — see [astra-aiagent-infra](https://github.com/alrcatraz/astra-aiagent-infra) for ecosystem-wide pipeline plans.
+
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=alrcatraz/astra-camofox-browser&type=date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=alrcatraz/astra-camofox-browser&type=date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=alrcatraz/astra-camofox-browser&type=date" width="600" />
+  </picture>
+</div>
 
 ---
 
@@ -739,15 +749,3 @@ MIT — see [LICENSE](LICENSE).
 | **持久化** | 基于 Podman Volume 的会话存储（cookies 和登录状态）|
 | **容器** | 优先 Podman 的 Makefile；Playwright 锁定至 1.58.0 |
 | **遥测** | 保留事故报告功能（可在 `CAMOFOX_CRASH_REPORT_ENABLED=false` 时关闭）|
-
----
-
-&lt;p align=&quot;center&quot;&gt;
-  <a href="https://star-history.com/#alrcatraz/astra-camofox-browser&Date">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=alrcatraz/astra-camofox-browser&type=Date&theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=alrcatraz/astra-camofox-browser&type=Date" />
-      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=alrcatraz/astra-camofox-browser&type=Date" width="600" />
-    </picture>
-  </a>
-</p>
