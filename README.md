@@ -33,8 +33,11 @@ astra-<name>/
 | Generic filenames | kebab-case |
 | Config files | YAML > TOML > JSON |
 | Data interchange | JSON |
-| README language | English |
+| README language | English (main) + Chinese (translation at end) |
 | Commit style | Conventional Commits |
+| Dependencies | Declare in `README.md` table + `AGENTS.md`; aggregated in meta-repo `registry.yaml` |
+| Task routing | Prefer `execution-framework` as single entry point (language-independent) over keyword-based triggers in individual skills |
+| Versioning | SemVer `X.Y.Z` in SKILL.md frontmatter + `git tag vX.Y.Z`. Local tweaks use `+local.N` suffix; forks use `+author.N`. Registry.yaml stores clean version only (no suffix). See [VERSIONING.md](VERSIONING.md) |
 
 ## How to Use
 
@@ -102,6 +105,12 @@ Key features:
 |:---------|:--------:|:--------|:------------|
 | `<VAR_NAME>` | ✅/— | `<default>` | <description> |
 
+## Dependencies
+
+| Repository | Resource | Required | Purpose |
+|:-----------|:---------|:--------:|:--------|
+| `alrcatraz/astra-<dependency>` | — | Optional/Recommended | <why> |
+
 ## Usage
 
 ### CLI / API / MCP Tools
@@ -147,3 +156,39 @@ Key features:
 ## License
 
 [CC-BY-SA 4.0](LICENSE) — The template itself uses CC-BY-SA 4.0 so that each component can choose its own license without being constrained by the template's.
+
+---
+
+## 中文版
+
+### 布局
+
+```
+astra-<名称>/
+├── README.md              ← 标准 README 骨架（替换内容）
+├── AGENTS.md              ← AI Agent 指南（推荐）
+├── LICENSE                ← MIT（按项目调整）
+├── .gitignore             ← 基础 + Python（默认）/ Node（按需启用）
+│
+├── config/                ← 示例配置 *.yaml.example（推荐）
+├── scripts/               ← 工具脚本（推荐）
+├── references/            ← 设计文档、决策记录（推荐）
+├── tests/                 ← 测试（推荐）
+│
+├── pyproject.toml         ← Python 项目（uv，默认仅 stdlib）
+├── package.json           ← Node.js 项目（替代 pyproject.toml）
+```
+
+### 约定速查
+
+| 范围 | 约定 |
+|:-----|:------|
+| 仓库名 | `astra-` + kebab-case |
+| Python 标识符 | snake_case |
+| 通用文件名 | kebab-case |
+| 配置文件 | YAML > TOML > JSON |
+| 数据交换 | JSON |
+| README 语言 | 英文（正文）+ 中文（末尾翻译）|
+| 提交风格 | Conventional Commits |
+| 依赖声明 | 在 `README.md` 表格 + `AGENTS.md` 中声明；meta-repo 的 `registry.yaml` 做聚合 |
+| 版本号 | SemVer `X.Y.Z` 写入 SKILL.md 头部 + `git tag vX.Y.Z`。本地小修改用 `+local.N` 后缀；fork 用 `+作者.N`。registry.yaml 只存干净版本号。详见 [VERSIONING.md](VERSIONING.md) |
