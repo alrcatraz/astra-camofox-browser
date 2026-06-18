@@ -1,3 +1,7 @@
+---
+version: 1.0.0
+---
+
 # astra-camofox-browser Agent Guide
 
 > **astra fork** — Part of [Astra AI Agent Infrastructure](https://github.com/alrcatraz/astra-aiagent-infra).
