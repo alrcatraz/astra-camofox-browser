@@ -18,6 +18,22 @@ describe('launch compatibility source contract', () => {
     expect(serverSource).not.toMatch(/vdDisplay\s*=\s*localVirtualDisplay\.get\(\)/);
   });
 
+  test('sizes the default virtual display used with null context viewports', () => {
+    const defaultVirtualDisplay = sourceBetween(
+      'const DEFAULT_VIRTUAL_DISPLAY_RESOLUTION',
+      'let virtualDisplay = null;'
+    );
+    const pluginContext = sourceBetween(
+      'const pluginCtx = {',
+      'const loadedPlugins = await loadPlugins'
+    );
+
+    expect(defaultVirtualDisplay).toContain("DEFAULT_VIRTUAL_DISPLAY_RESOLUTION = '1280x720x24'");
+    expect(defaultVirtualDisplay).toContain('class DefaultVirtualDisplay extends VirtualDisplay');
+    expect(defaultVirtualDisplay).toContain('patched[idx + 1] = DEFAULT_VIRTUAL_DISPLAY_RESOLUTION');
+    expect(pluginContext).toContain('createVirtualDisplay: () => new DefaultVirtualDisplay()');
+  });
+
   test('does not configure a fixed default browser context viewport', () => {
     const googleProbeOptions = sourceBetween(
       'context = await candidateBrowser.newContext({',
