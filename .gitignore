@@ -42,3 +42,5 @@ fly.toml
 # Test artifacts
 test-results/
 playwright-report/
+
+.codegraph/

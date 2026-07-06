@@ -1,0 +1,6 @@
+[project]
+name = "astra-camofox-browser"
+version = "1.0.0"
+description = "<one_liner>"
+requires-python = ">=3.11"
+dependencies = []
