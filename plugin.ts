@@ -82,7 +82,7 @@ type ToolFactory = (ctx: ToolContext) => ToolDefinition | ToolDefinition[] | nul
 interface PluginApi {
   registerTool: (
     tool: ToolDefinition | ToolFactory,
-    options?: { optional?: boolean }
+    options?: { name?: string; names?: string[]; optional?: boolean }
   ) => void;
   registerCommand: (cmd: {
     name: string;
@@ -234,7 +234,7 @@ export default function register(api: PluginApi) {
       });
       return toToolResult(result);
     },
-  }));
+  }), { name: "camofox_create_tab" });
 
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_snapshot",
@@ -264,7 +264,7 @@ export default function register(api: PluginApi) {
       }
       return { content };
     },
-  }));
+  }), { name: "camofox_snapshot" });
 
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_click",
@@ -287,7 +287,7 @@ export default function register(api: PluginApi) {
       });
       return toToolResult(result);
     },
-  }));
+  }), { name: "camofox_click" });
 
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_type",
@@ -312,7 +312,7 @@ export default function register(api: PluginApi) {
       });
       return toToolResult(result);
     },
-  }));
+  }), { name: "camofox_type" });
 
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_navigate",
@@ -355,7 +355,7 @@ export default function register(api: PluginApi) {
       });
       return toToolResult(result);
     },
-  }));
+  }), { name: "camofox_navigate" });
 
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_scroll",
@@ -378,7 +378,7 @@ export default function register(api: PluginApi) {
       });
       return toToolResult(result);
     },
-  }));
+  }), { name: "camofox_scroll" });
 
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_screenshot",
@@ -418,7 +418,7 @@ export default function register(api: PluginApi) {
         ],
       };
     },
-  }));
+  }), { name: "camofox_screenshot" });
 
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_close_tab",
@@ -438,7 +438,7 @@ export default function register(api: PluginApi) {
       });
       return toToolResult(result);
     },
-  }));
+  }), { name: "camofox_close_tab" });
 
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_evaluate",
@@ -461,7 +461,7 @@ export default function register(api: PluginApi) {
       });
       return toToolResult(result);
     },
-  }));
+  }), { name: "camofox_evaluate" });
 
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_list_tabs",
@@ -476,7 +476,7 @@ export default function register(api: PluginApi) {
       const result = await fetchApi(baseUrl, `/tabs?userId=${userId}`);
       return toToolResult(result);
     },
-  }));
+  }), { name: "camofox_list_tabs" });
 
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_import_cookies",
@@ -526,7 +526,7 @@ export default function register(api: PluginApi) {
 
       return toToolResult({ imported: pwCookies.length, userId, result });
     },
-  }));
+  }), { name: "camofox_import_cookies" });
 
   api.registerCommand({
     name: "camofox",
