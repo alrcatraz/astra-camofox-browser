@@ -68,6 +68,11 @@ while true; do
   fi
 
   if [ -n "$FOUND" ] && [ "$FOUND" != "$CURRENT_DISPLAY" ]; then
+    # Skip if we only saw the Xvfb process but no socket yet (race condition)
+    if [ "$FOUND" = "xvfb_running" ]; then
+      sleep 1
+      continue
+    fi
     # New or changed display -- (re)attach x11vnc
     if [ -n "$X11VNC_PID" ] && kill -0 "$X11VNC_PID" 2>/dev/null; then
       log "Camoufox display changed ($CURRENT_DISPLAY -> $FOUND), restarting x11vnc"
