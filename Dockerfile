@@ -60,6 +60,7 @@ WORKDIR /app
 
 COPY package.json ./
 COPY scripts/ ./scripts/
+ENV npm_config_registry=https://registry.npmmirror.com
 RUN npm install --production
 
 # Pin playwright-core to v1.58.0 for Camoufox compatibility
