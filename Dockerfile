@@ -60,19 +60,14 @@ WORKDIR /app
 
 COPY package.json ./
 COPY scripts/ ./scripts/
-ENV npm_config_registry=https://registry.npmmirror.com
-RUN npm install --production
-
-# Pin playwright-core to v1.58.0 for Camoufox compatibility
-# (v1.61.0+ sends isMobile in setDefaultViewport which Camoufox doesn't support)
-RUN npm install playwright-core@1.58.0 --no-save 2>/dev/null && \
-    echo "playwright-core@1.58.0 installed for Camoufox compatibility"
-
-COPY server.js ./
-COPY camofox.config.json ./
+COPY node_modules ./node_modules
 COPY lib/ ./lib/
 COPY plugins/ ./plugins/
 COPY scripts/ ./scripts/
+COPY server.js ./
+COPY camofox.config.json ./
+
+# Pin playwright-core to v1.58.0 for Camoufox compatibility
 
 # Install default plugin dependencies (apt packages + post-install hooks)
 RUN sh scripts/install-plugin-deps.sh
