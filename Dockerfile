@@ -78,10 +78,13 @@ RUN sh scripts/install-plugin-deps.sh
 
 ENV NODE_ENV=production
 ENV CAMOFOX_PORT=9377
+ENV ENABLE_VNC=1
+ENV BROWSER_IDLE_TIMEOUT_MS=0
 
 EXPOSE 9377
+EXPOSE 5900
 
-CMD ["sh", "-c", "xvfb-run -a node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
+CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
 
 # Optional: rebuild plugin deps after adding third-party plugins
 # Usage: docker build --target with-plugins -t camofox-browser .
