@@ -1,0 +1,13 @@
+# Thin override layer — based on existing VNC image
+FROM localhost/camofox-browser:135.0.1-x86_64-vnc
+
+# Copy patched vnc-watcher.sh (fix -displayfd detection)
+COPY plugins/vnc/vnc-watcher.sh /app/plugins/vnc/vnc-watcher.sh
+
+# Override CMD: remove xvfb-run (VNC plugin manages its own display)
+ENV ENABLE_VNC=1
+ENV BROWSER_IDLE_TIMEOUT_MS=0
+
+EXPOSE 5900
+
+CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js & sleep 5 && x11vnc -display :0 -forever -shared -rfbport 5900 -noxdamage -bg -o /var/log/x11vnc.log -nopw && wait"]
