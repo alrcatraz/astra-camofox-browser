@@ -1258,6 +1258,15 @@ async function launchBrowserInstance() {
         exclude_addons: CONFIG.disableDefaultAddons ? ['UBO'] : undefined,
       });
       options.proxy = normalizePlaywrightProxy(options.proxy);
+      // Playwright's launcher defaults handleSIGTERM/SIGINT/SIGHUP to true,
+      // registering its own process signal handlers that send Browser.close
+      // straight to Firefox over its debug transport the instant a signal
+      // arrives -- independent of and racing ahead of our own gracefulShutdown()
+      // sequencing (including the persistence plugin's shutdown checkpoint).
+      // Disable them so gracefulShutdown() is the sole authority over shutdown.
+      options.handleSIGTERM = false;
+      options.handleSIGINT = false;
+      options.handleSIGHUP = false;
       await pluginEvents.emitAsync('browser:launching', { options });
 
       candidateBrowser = await firefox.launch(options);
@@ -6335,8 +6344,11 @@ async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   log('info', 'shutting down', { signal });
-  pluginEvents.emit('server:shutdown', { signal });
 
+  // Arm the watchdog and stop accepting new connections before anything
+  // that can block or reject -- a hung or failing server:shutdown listener
+  // must not disable the force-exit safety net or widen the window where
+  // the server still accepts new sessions.
   const forceTimeout = setTimeout(() => {
     log('error', 'shutdown timed out, forcing exit');
     process.exit(1);
@@ -6345,6 +6357,10 @@ async function gracefulShutdown(signal) {
 
   server.close();
   stopMemoryReporter();
+
+  await pluginEvents.emitAsync('server:shutdown', { signal }).catch((err) => {
+    log('error', 'server:shutdown listener failed', { error: err.message });
+  });
 
   await closeAllSessions(`shutdown:${signal}`, {
     clearDownloads: false,
