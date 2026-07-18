@@ -37,7 +37,8 @@ import { createReporter, createTabHealthTracker, collectResourceSnapshot, classi
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
-import { snapshotBrowserProcessPids, killProcessIds } from './lib/browser-processes.js';
+import { killProcessIds } from './lib/browser-processes.js';
+import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses } from './lib/process-ownership.js';
 import {
   safePageUrl, urlDomain, hashIdentifier,
   isDeadContextError, isPageCrashedError, isTimeoutError,
@@ -866,12 +867,10 @@ async function _closeBrowserFullyImpl(reason) {
 
   // Capture PID/process snapshot before nulling browser ref.
   const pid = _lastBrowserPid;
-  let preCloseBrowserPids = [];
-  try {
-    preCloseBrowserPids = snapshotBrowserProcessPids({ excludePid: pid });
-  } catch (err) {
-    log('warn', 'failed to snapshot browser processes before close', { reason, error: err.message });
-  }
+  // Capture ownership before Playwright closes and reparents its children.
+  // Multiple scoped servers may share a host, so a later /proc name scan must
+  // never treat another server's browser as one of our survivors.
+  const ownedBrowserProcesses = snapshotOwnedBrowserProcesses(process.pid);
   const preCloseFds = _countOpenFds();
   const preCloseHandles = _countActiveHandles();
 
@@ -899,7 +898,7 @@ async function _closeBrowserFullyImpl(reason) {
   if (pid) {
     await _forceKillProcessTree(pid, reason);
   }
-  await _forceKillBrowserProcesses(reason, preCloseBrowserPids);
+  await _forceKillBrowserProcesses(reason, ownedBrowserProcesses);
 
   // Clean up stale Firefox temp profiles (enable_cache: true accumulates data)
   try {
@@ -933,7 +932,8 @@ async function _closeBrowserFullyImpl(reason) {
 
 /**
  * Force-kill a browser process tree by PID. On Linux, kills the process group
- * (SIGKILL -pid) then scans /proc for any orphaned children.
+ * (SIGKILL -pid). Orphan cleanup is deliberately left to the ownership
+ * snapshot captured before browser.close(), below.
  */
 async function _forceKillProcessTree(pid, reason) {
   if (!pid || pid <= 1) return;
@@ -956,54 +956,24 @@ async function _forceKillProcessTree(pid, reason) {
     // ESRCH = group doesn't exist (browser wasn't a group leader), which is fine
   }
 
-  // Wait for kernel to reparent children to PID 1 before scanning
+  // Give the group kill time to complete. Any descendants that escaped it are
+  // selected later only from the pre-close, starttime-safe ownership snapshot.
   await new Promise(r => setTimeout(r, 200));
-
-  // On Linux: scan /proc for orphaned children that escaped the process group
-  // (reparented to PID 1 by init/systemd, common with Firefox content processes).
-  // Also checks PPid === Node PID for containerized environments without init.
-  if (process.platform === 'linux') {
-    const myPid = process.pid;
-    // Snapshot the current browser PID to avoid killing a newly launched browser
-    const currentBrowserPid = _lastBrowserPid;
-    try {
-      const procDirs = fs.readdirSync('/proc').filter(d => /^\d+$/.test(d));
-      const orphans = [];
-      for (const procPid of procDirs) {
-        const numPid = parseInt(procPid);
-        // Never kill ourselves, the old PID (already killed), or the new browser
-        if (numPid === myPid || numPid === pid || numPid === currentBrowserPid) continue;
-        try {
-          const status = fs.readFileSync(`/proc/${procPid}/status`, 'utf8');
-          const ppidMatch = status.match(/PPid:\s+(\d+)/);
-          const ppid = ppidMatch ? parseInt(ppidMatch[1]) : -1;
-          // Orphaned to init (PID 1) or reparented to us (Node is PID 1 in containers)
-          if (ppid === 1 || ppid === myPid) {
-            const cmdline = fs.readFileSync(`/proc/${procPid}/cmdline`, 'utf8');
-            // Firefox-specific: binary name or Gecko child process marker
-            if (/firefox-esr|firefox|camoufox|libxul\.so|GeckoChildProcess/i.test(cmdline)) {
-              orphans.push(numPid);
-            }
-          }
-        } catch { /* process vanished or permission denied */ }
-      }
-      if (orphans.length > 0) {
-        log('warn', 'killing orphaned browser child processes', { orphans, reason });
-        for (const orphanPid of orphans) {
-          try { process.kill(orphanPid, 'SIGKILL'); } catch { /* already dead */ }
-        }
-      }
-    } catch (err) {
-      log('warn', 'failed to scan for orphaned browser processes', { error: err.message });
-    }
-  }
 
   // Give the OS a moment to reclaim resources
   await new Promise(r => setTimeout(r, 300));
 }
 
-async function _forceKillBrowserProcesses(reason, candidatePids = []) {
-  const victims = candidatePids.filter((pid) => pid && pid !== process.pid);
+async function _forceKillBrowserProcesses(reason, ownedBrowserProcesses = []) {
+  if (process.platform !== 'linux') return;
+  let victims = [];
+  try {
+    victims = survivingOwnedBrowserProcesses(ownedBrowserProcesses).map(proc => proc.pid);
+  } catch (err) {
+    log('warn', 'failed to scan for browser survivor processes', { reason, error: err.message });
+    return;
+  }
+
   if (victims.length > 0) {
     log('warn', 'killing browser survivor processes', { reason, victims });
     await killProcessIds(victims, { signal: 'SIGKILL', delayMs: 300 });
