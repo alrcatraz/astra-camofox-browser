@@ -37,4 +37,21 @@ describe('loadConfig', () => {
     process.env.BROWSER_RSS_RESTART_THRESHOLD_MB = '2048';
     expect(loadConfig().browserRssRestartThresholdMb).toBe(2048);
   });
+
+  test('disables default addons when CAMOFOX_DISABLE_DEFAULT_ADDONS is set', () => {
+    delete process.env.CAMOFOX_DISABLE_DEFAULT_ADDONS;
+    expect(loadConfig().disableDefaultAddons).toBe(false);
+
+    process.env.CAMOFOX_DISABLE_DEFAULT_ADDONS = '0';
+    expect(loadConfig().disableDefaultAddons).toBe(false);
+
+    process.env.CAMOFOX_DISABLE_DEFAULT_ADDONS = '1';
+    expect(loadConfig().disableDefaultAddons).toBe(true);
+
+    process.env.CAMOFOX_DISABLE_DEFAULT_ADDONS = 'true';
+    const config = loadConfig();
+    expect(config.disableDefaultAddons).toBe(true);
+    expect(config.serverEnv.CAMOFOX_DISABLE_DEFAULT_ADDONS).toBe('true');
+  });
+
 });
