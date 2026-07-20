@@ -263,6 +263,8 @@ By default, camofox persists each user's cookies and localStorage to `~/.camofox
 
 Override the directory with `CAMOFOX_PROFILE_DIR` or set `"profileDir"` in the persistence plugin config. To disable persistence, set `"persistence": { "enabled": false }` in `camofox.config.json`.
 
+By default, storage state contains cookies and localStorage only. To also persist IndexedDB, set `"indexedDB": true` in the persistence plugin config. This captures all serializable IndexedDB records—not only authentication data—and may make snapshots significantly larger and checkpoints slower.
+
 ### Session Tracing
 
 Capture a Playwright trace of every action in a session: page screenshots, DOM snapshots, network requests, and console output. Output is a single `.zip` file you can open in Playwright's built-in Trace Viewer.
