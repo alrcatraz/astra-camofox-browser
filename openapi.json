@@ -1845,6 +1845,26 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Page navigated while evaluating; caller should retry once the page settles.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Browser session expired; caller should retry to get a fresh session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
