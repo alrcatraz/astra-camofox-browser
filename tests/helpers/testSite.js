@@ -36,6 +36,18 @@ function createTestApp() {
     `);
   });
   
+  // Page that fires a client-side redirect shortly after DOMContentLoaded
+  app.get('/lateRedirect', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Late Redirect</title></head>
+      <body>
+        <h1>Redirecting soon</h1>
+        <script>setTimeout(() => { location.href = '/pageA'; }, 300);</script>
+      </body></html>
+    `);
+  });
+
   // Page with multiple links for links extraction test
   app.get('/links', (req, res) => {
     res.send(`
