@@ -27,6 +27,14 @@ jobs:
       - name: Build plugin (TypeScript → JS)
         run: npm run build
 
+      - name: Verify standalone MCP package
+        run: npm run test:mcp
+
+      - name: Audit standalone MCP package
+        run: |
+          npm ci --prefix mcp --ignore-scripts
+          npm audit --prefix mcp --omit=dev
+
       - name: Run unit + plugin tests (Jest)
         run: |
           npm install --no-save jest-junit
