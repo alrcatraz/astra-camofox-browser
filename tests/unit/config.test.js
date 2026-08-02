@@ -51,6 +51,16 @@ describe('loadConfig', () => {
     expect(config.serverEnv.CAMOFOX_UPLOADS_DIR).toBe('/mounted/uploads');
   });
 
+  test('configures and forwards the evaluate body size limit', () => {
+    delete process.env.CAMOFOX_EVALUATE_MAX_BODY_SIZE;
+    expect(loadConfig().evaluateMaxBodySize).toBe('1mb');
+
+    process.env.CAMOFOX_EVALUATE_MAX_BODY_SIZE = '10mb';
+    const config = loadConfig();
+    expect(config.evaluateMaxBodySize).toBe('10mb');
+    expect(config.serverEnv.CAMOFOX_EVALUATE_MAX_BODY_SIZE).toBe('10mb');
+  });
+
   test('configures browser RSS restart threshold', () => {
     delete process.env.BROWSER_RSS_RESTART_THRESHOLD_MB;
     expect(loadConfig().browserRssRestartThresholdMb).toBe(1500);
