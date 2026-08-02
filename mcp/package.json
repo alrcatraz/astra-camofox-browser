@@ -1,5 +1,5 @@
 {
-  "name": "@askjo/camofox-mcp",
+  "name": "@askjo/camofox-browser-mcp",
   "version": "1.12.1",
   "description": "Standalone stdio MCP server exposing the camofox-browser REST API as MCP tools (Claude Code, Codex, agy, Cursor, opencode). Proxies to an already-running camofox-browser REST server — does not itself require the browser binary, Playwright, or the core server's dependencies.",
   "type": "module",
