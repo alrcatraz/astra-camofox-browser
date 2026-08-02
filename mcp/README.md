@@ -4,6 +4,8 @@ A standalone [Model Context Protocol](https://modelcontextprotocol.io) server th
 
 It mirrors the existing OpenClaw plugin **1:1**: same 11 tool names, identical JSON-Schema parameters, and the same REST routes. Whether an agent reaches camofox via OpenClaw or MCP, the behavior is identical.
 
+The initial MCP server implementation was contributed by [@epicsagas](https://github.com/epicsagas).
+
 ## Architecture
 
 The MCP server is a thin stdio client over the camofox REST server. Two pieces:
