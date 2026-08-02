@@ -272,7 +272,7 @@ describe('runTool (end-to-end)', () => {
 describe('cookie import contract', () => {
   let tmpDir;
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'camofox-mcp-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'camofox-browser-mcp-'));
   });
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
