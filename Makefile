@@ -30,7 +30,7 @@ YTDLP_URL    := https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
 ## Build the Docker image for the current ARCH (default: x86_64)
 build: fetch
 	docker build --no-cache \
-	  --build-arg ARCH=$(ARCH) \
+	  --build-arg ARCH=$(CAMOUFOX_ARCH) \
 	  --build-arg CAMOUFOX_VERSION=$(VERSION) \
 	  --build-arg CAMOUFOX_RELEASE=$(RELEASE) \
 	  -t $(IMAGE) .
@@ -63,7 +63,7 @@ up:
 	@if ! docker image inspect $(IMAGE) > /dev/null 2>&1; then \
 	  $(MAKE) build; \
 	fi
-	docker run -d --restart unless-stopped --name camofox-browser -p 9377:9377 $(IMAGE)
+	docker run -d --restart unless-stopped --name camofox-browser --shm-size=2g -p 9377:9377 $(IMAGE)
 
 down:
 	docker stop camofox-browser && docker rm camofox-browser

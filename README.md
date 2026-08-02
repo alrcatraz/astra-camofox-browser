@@ -45,6 +45,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **Runs on Anything** - lazy browser launch + idle shutdown keeps memory at ~40MB when idle. Designed to share a box with the rest of your stack -- Raspberry Pi, $5 VPS, shared infra.
 - **Session Isolation** - separate cookies/storage per user
 - **Cookie Import** - inject Netscape-format cookie files for authenticated browsing
+- **File Upload** - attach files from a configured upload directory without a native OS dialog
 - **Proxy + GeoIP** - route traffic through residential proxies with automatic locale/timezone
 - **Structured Logging** - JSON log lines with request IDs for production observability
 - **YouTube Transcripts** - extract captions from any YouTube video via yt-dlp, no API key needed
@@ -262,6 +263,8 @@ By default, camofox persists each user's cookies and localStorage to `~/.camofox
 ```
 
 Override the directory with `CAMOFOX_PROFILE_DIR` or set `"profileDir"` in the persistence plugin config. To disable persistence, set `"persistence": { "enabled": false }` in `camofox.config.json`.
+
+By default, storage state contains cookies and localStorage only. To also persist IndexedDB, set `"indexedDB": true` in the persistence plugin config. This captures all serializable IndexedDB records—not only authentication data—and may make snapshots significantly larger and checkpoints slower.
 
 ### Session Tracing
 
@@ -593,7 +596,8 @@ Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) when available (fast, no browser
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/sessions/:userId/cookies` | Add cookies to a user session (Playwright cookie objects) |
-| `GET` | `/sessions/:userId/storage_state` | Export cookies + localStorage ([VNC plugin](plugins/vnc/)) |
+| `GET` | `/sessions/:userId/storage_state` | Export persisted browser storage ([VNC plugin](plugins/vnc/)) |
+| `DELETE` | `/sessions/:userId/storage_state` | Reset the live session and delete its persisted browser storage ([persistence plugin](plugins/persistence/)) |
 
 ## Search Macros
 
@@ -603,20 +607,35 @@ Reddit macros return JSON directly (no HTML parsing needed):
 - `@reddit_search` - search all of Reddit, returns JSON with 25 results
 - `@reddit_subreddit` - browse a subreddit (e.g., query `"programming"` -> `/r/programming.json`)
 
+## Browser Configuration
+
+Browser behavior can be tuned in `camofox.config.json`:
+
+```json
+{
+  "newPageTimeoutMs": 10000
+}
+```
+
+`newPageTimeoutMs` controls how long tab creation waits for Firefox to create a page. If the context is unresponsive, Camofox replaces only that user's context and retries once. The default is 10 seconds.
+
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CAMOFOX_PORT` | Server port | `9377` |
 | `PORT` | Server port (fallback, for platforms like Fly.io, Railway) | `9377` |
+| `CAMOFOX_BIND_HOST` | Optional server bind host. Set to `127.0.0.1` for loopback-only access or `0.0.0.0` for IPv4 on all interfaces. When unset, Node uses its default all-interface binding. | - |
 | `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_ACCESS_KEY` | If set, all routes (except `/health`, cookie import, and `/stop`) require `Authorization: Bearer <key>`. Lets you safely expose the server beyond loopback. | - |
+| `CAMOFOX_EVALUATE_MAX_BODY_SIZE` | Max JSON request body size for `POST /tabs/:tabId/evaluate`; other JSON routes remain limited to `100kb`. | `1mb` |
 | `CAMOUFOX_EXECUTABLE` | External Camoufox executable to use instead of downloading/launching the bundled cache. Must point to a Camoufox bundle with sibling resources. | - |
 | `CAMOUFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
 | `CAMOFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
 | `CAMOFOX_DISABLE_DEFAULT_ADDONS` | Set to `1`/`true` to skip downloading and launching the default uBlock Origin (UBO) addon. Useful for deployments where the addons.mozilla.org download is unreliable or unwanted (a failed download otherwise leaves a broken addon cache that blocks startup). | `0` |
 | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
+| `CAMOFOX_UPLOADS_DIR` | Directory allowed for `POST /tabs/:tabId/upload` file attachments. Paths outside it, including symlink escapes, are rejected. | `~/.camofox/uploads` |
 | `CAMOFOX_PROFILE_DIR` | Directory for persisted session profiles | `~/.camofox/profiles` |
 | `CAMOFOX_TRACES_DIR` | Directory for session trace zips | `~/.camofox/traces` |
 | `CAMOFOX_TRACES_MAX_BYTES` | Max size per trace, removed on next startup if exceeded | `52428800` (50MB) |
@@ -697,7 +716,7 @@ The persistence plugin saves cookies and localStorage to `~/.camofox/profiles/<h
 
 ### Network access
 
-Outbound connections are made to: (1) URLs the agent navigates to (core functionality), (2) the telemetry endpoint (anonymized, opt-out available). Inbound: the REST API on localhost:9377 (default), optionally protected by `CAMOFOX_ACCESS_KEY`.
+Outbound connections are made to: (1) URLs the agent navigates to (core functionality), (2) the telemetry endpoint (anonymized, opt-out available). Inbound: the REST API on port 9377, bound to all interfaces by default or to `CAMOFOX_BIND_HOST` when configured, optionally protected by `CAMOFOX_ACCESS_KEY`.
 
 ### Subprocess usage
 

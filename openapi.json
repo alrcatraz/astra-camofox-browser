@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "camofox-browser",
-    "version": "1.12.1",
+    "version": "1.13.0",
     "description": "Anti-detection browser automation server for AI agents. Accessibility snapshots, element refs, session isolation, cookie import, proxy rotation, and structured logs.",
     "license": {
       "name": "MIT",
@@ -908,6 +908,82 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/tabs/{tabId}/upload": {
+      "post": {
+        "tags": [
+          "Interaction"
+        ],
+        "summary": "Attach a file to an upload control",
+        "description": "Attaches files from the configured upload directory without going through the native OS file dialog. Set CAMOFOX_UPLOADS_DIR to a directory that contains the files (default: ~/.camofox/uploads). Two strategies are tried in order: (1) if an <input type=\"file\"> is already present, call Playwright setInputFiles on it directly (works for hidden inputs); (2) otherwise arm a filechooser listener, activate the trigger element (ref or selector) via keyboard (focus + Enter) then a forced click as fallback, and call setFiles on the resulting chooser. Each path must be an absolute path that resolves inside the configured upload directory.\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId",
+                  "path"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "description": "Absolute path, or array of paths, that resolves within CAMOFOX_UPLOADS_DIR.",
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Trigger element ref (e.g. e36). Optional when an input[type=file] already exists."
+                  },
+                  "selector": {
+                    "type": "string",
+                    "description": "Trigger element CSS/Playwright selector. Optional when an input[type=file] already exists."
+                  },
+                  "timeout": {
+                    "type": "integer",
+                    "default": 12000,
+                    "description": "Overall budget in ms to wait for an upload UI (in-app panel input or native file chooser) to appear after the trigger is activated. Ignored values (non-numeric or <= 0) fall back to the default."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "File(s) attached."
+          },
+          "400": {
+            "description": "Bad request (missing path/userId; non-regular file; or a path that is missing or outside the configured upload directory)."
+          },
+          "404": {
+            "description": "Tab not found."
           }
         }
       }
@@ -1838,6 +1914,26 @@
           },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Page navigated while evaluating; caller should retry once the page settles.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Browser session expired; caller should retry to get a fresh session.",
             "content": {
               "application/json": {
                 "schema": {
