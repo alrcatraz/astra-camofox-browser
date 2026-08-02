@@ -5,7 +5,7 @@
 // that accidentally reach outside the published package.
 
 import { execFile as execFileCallback } from 'node:child_process';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +14,7 @@ import { promisify } from 'node:util';
 const execFile = promisify(execFileCallback);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MCP_DIR = join(ROOT, 'mcp');
-const testDir = await mkdtemp(join(tmpdir(), 'camofox-mcp-package-'));
+const testDir = await mkdtemp(join(tmpdir(), 'camofox-browser-mcp-package-'));
 let tarball;
 
 try {
@@ -27,6 +27,9 @@ try {
   await execFile('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', tarball], {
     cwd: installDir,
   });
+
+  const bin = join(installDir, 'node_modules', '.bin', 'camofox-browser-mcp');
+  await access(bin);
 
   const server = join(installDir, 'node_modules', '@askjo', 'camofox-browser-mcp', 'server.mjs');
   await execFile(process.execPath, [join(ROOT, 'scripts', 'test-mcp.mjs')], {
