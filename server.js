@@ -35,6 +35,7 @@ import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp
 import { coalesceInflight } from './lib/inflight.js';
 import { createPageWithSessionRecovery } from './lib/new-page-recovery.js';
 import { resolveUploadPaths } from './lib/upload-paths.js';
+import { acquirePageLease, hasActivePageLeases, isPageLeased, releasePageLease, setLeasedPage } from './lib/page-lease.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb, browserProcessNameRssMb } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
@@ -1300,7 +1301,7 @@ async function getSession(userId, { trace = false } = {}) {
         }
       }
 
-      const created = { context, tabGroups: new Map(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null, tracePath };
+      const created = { context, tabGroups: new Map(), pageLeases: new Set(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null, tracePath };
       sessions.set(key, created);
       await pluginEvents.emitAsync('session:created', { userId: key, context });
       log('info', 'session created', {
@@ -1314,6 +1315,25 @@ async function getSession(userId, { trace = false } = {}) {
   }
   session.lastAccess = Date.now();
   return session;
+}
+
+async function createLeasedPage(session) {
+  const lease = acquirePageLease(session);
+  try {
+    const page = setLeasedPage(lease, await session.context.newPage());
+    return { page, lease };
+  } catch (err) {
+    releasePageLease(session, lease);
+    throw err;
+  }
+}
+
+async function closeLeasedPage(session, page, lease) {
+  try {
+    await safePageClose(page);
+  } finally {
+    releasePageLease(session, lease);
+  }
 }
 
 async function createPageWithRecoveryForUser(userId, session, { trace = false } = {}) {
@@ -1755,7 +1775,7 @@ async function camofoxPressureCleanup(options = {}) {
       for (const [listItemId, group] of Array.from(session.tabGroups.entries())) {
         if (group.size === 0) session.tabGroups.delete(listItemId);
       }
-      if (closeEmptySessions && session.tabGroups.size === 0) {
+      if (closeEmptySessions && session.tabGroups.size === 0 && !hasActivePageLeases(session)) {
         session._closing = true;
         await closeSession(userId, session, { reason: 'pressure_cleanup_empty_session', clearDownloads: true, clearLocks: true });
         sessionsExpiredTotal.inc();
@@ -1804,12 +1824,13 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
   }
   const session = await getSession(userId);
   const group = getTabGroup(session, sessionKey);
-  const page = await session.context.newPage();
+  const { page, lease } = await createLeasedPage(session);
   const tabState = createTabState(page);
   tabState.googleRetryCount = (previousTabState.googleRetryCount || 0) + 1;
   tabState.lastRequestedUrl = previousTabState.lastRequestedUrl;
   attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
   group.set(tabId, tabState);
+  releasePageLease(session, lease);
   attachPopupHandler(page, userId, sessionKey);
   refreshActiveTabsGauge();
 
@@ -2749,12 +2770,14 @@ app.post('/tabs', async (req, res) => {
       const createdPage = await createPageWithRecoveryForUser(userId, session, { trace: !!trace });
       session = createdPage.session;
       const page = createdPage.page;
+      const lease = createdPage.lease;
       const group = getTabGroup(session, resolvedSessionKey);
 
       const tabId = fly.makeTabId();
       let tabState = createTabState(page);
       attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
       group.set(tabId, tabState);
+      releasePageLease(session, lease);
       attachPopupHandler(page, userId, resolvedSessionKey);
       refreshActiveTabsGauge();
       
@@ -2777,11 +2800,12 @@ app.post('/tabs', async (req, res) => {
             }
             session = await getSession(userId, { trace: !!trace });
             const retryGroup = getTabGroup(session, resolvedSessionKey);
-            const retryPage = await session.context.newPage();
+            const { page: retryPage, lease: retryLease } = await createLeasedPage(session);
             tabState = createTabState(retryPage);
             tabState.lastRequestedUrl = url;
             attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
             retryGroup.set(tabId, tabState);
+            releasePageLease(session, retryLease);
             attachPopupHandler(retryPage, userId, resolvedSessionKey);
             refreshActiveTabsGauge();
             await withPageLoadDuration('open_url', () => retryPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
@@ -2931,13 +2955,14 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
 
         const prewarmGoogleHome = async () => {
           if (!isGoogleSearch || tabState.visitedUrls.has('https://www.google.com/')) return;
-          const prewarmPage = await session.context.newPage();
+          const prewarm = await createLeasedPage(session);
+          const prewarmPage = prewarm.page;
           try {
             await withPageLoadDuration('navigate', () => prewarmPage.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }));
             tabState.visitedUrls.add('https://www.google.com/');
             await prewarmPage.waitForTimeout(1200);
           } finally {
-            await safePageClose(prewarmPage);
+            await closeLeasedPage(session, prewarmPage, prewarm.lease);
           }
         };
 
@@ -2953,11 +2978,12 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           }
           session = await getSession(userId);
           const group = getTabGroup(session, currentSessionKey);
-          const page = await session.context.newPage();
+          const { page, lease } = await createLeasedPage(session);
           tabState = createTabState(page);
           tabState.googleRetryCount = previousRetryCount + 1;
           attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
           group.set(tabId, tabState);
+          releasePageLease(session, lease);
           attachPopupHandler(page, userId, currentSessionKey);
           refreshActiveTabsGauge();
         };
@@ -5403,7 +5429,7 @@ if (FLY_MACHINE_ID) {
       let oldestKey = null;
       let oldestAccess = Infinity;
       for (const [key, session] of sessions) {
-        if (session._closing) continue;
+        if (session._closing || hasActivePageLeases(session)) continue;
         if (session.lastAccess < oldestAccess) {
           oldestAccess = session.lastAccess;
           oldestKey = key;
@@ -5464,7 +5490,7 @@ setInterval(() => {
       }
     }
     // Clean up sessions with zero tabs remaining -- free browser context memory
-    if (session.tabGroups.size === 0) {
+    if (session.tabGroups.size === 0 && !hasActivePageLeases(session)) {
       session._closing = true;
       log('info', 'session empty after tab reaper, closing', { userId });
       closeSession(userId, session, { reason: 'tab_reaper_empty_session', clearDownloads: true, clearLocks: true }).catch(() => {});
@@ -5492,7 +5518,7 @@ setInterval(() => {
       for (const tabState of group.values()) registered.add(tabState.page);
     }
     for (const page of contextPages) {
-      if (!registered.has(page)) {
+      if (!registered.has(page) && !isPageLeased(session, page)) {
         reaped++;
         page.removeAllListeners();
         page.close({ runBeforeUnload: false }).catch(() => {});
@@ -5721,11 +5747,12 @@ app.post('/tabs/open', async (req, res) => {
     
     let group = getTabGroup(session, listItemId);
     
-    let page = await session.context.newPage();
+    let { page, lease } = await createLeasedPage(session);
     const tabId = fly.makeTabId();
     let tabState = createTabState(page);
     attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
     group.set(tabId, tabState);
+    releasePageLease(session, lease);
     attachPopupHandler(page, userId, listItemId);
     refreshActiveTabsGauge();
     
@@ -5744,10 +5771,11 @@ app.post('/tabs/open', async (req, res) => {
         }
         session = await getSession(userId);
         group = getTabGroup(session, listItemId);
-        page = await session.context.newPage();
+        ({ page, lease } = await createLeasedPage(session));
         tabState = createTabState(page);
         attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
         group.set(tabId, tabState);
+        releasePageLease(session, lease);
         attachPopupHandler(page, userId, listItemId);
         refreshActiveTabsGauge();
         await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
@@ -6463,6 +6491,8 @@ const pluginCtx = {
   closeSession,
   withUserLimit,
   safePageClose,
+  createLeasedPage,
+  closeLeasedPage,
   normalizeUserId,
   validateUrl,
   safeError,
