@@ -22,6 +22,14 @@ jobs:
 
       - run: npm ci
 
+      - name: Verify standalone MCP package
+        run: npm run test:mcp
+
+      - name: Audit standalone MCP package
+        run: |
+          npm ci --prefix mcp --ignore-scripts
+          npm audit --prefix mcp --omit=dev
+
       - name: Unit + plugin tests (Jest)
         run: |
           npm install --no-save jest-junit
@@ -79,20 +87,25 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Verify tag matches package.json version
+      - name: Verify tag matches package versions
         run: |
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::Tag version ($TAG_VERSION) != package.json version ($PKG_VERSION)"
+          ROOT_VERSION=$(node -p "require('./package.json').version")
+          MCP_VERSION=$(node -p "require('./mcp/package.json').version")
+          if [ "$TAG_VERSION" != "$ROOT_VERSION" ] || [ "$TAG_VERSION" != "$MCP_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION), root package version ($ROOT_VERSION), and MCP package version ($MCP_VERSION) must match"
             exit 1
           fi
-          echo "✅ Publishing v${PKG_VERSION}"
+          echo "✅ Publishing both packages at v${TAG_VERSION}"
 
       - run: npm ci --ignore-scripts
 
       - name: Build plugin (TypeScript → JS)
         run: npm run build
 
-      - name: Publish with provenance
+      - name: Publish core package with provenance
+        run: npm publish --provenance --access public
+
+      - name: Publish standalone MCP package with provenance
+        working-directory: mcp
         run: npm publish --provenance --access public
