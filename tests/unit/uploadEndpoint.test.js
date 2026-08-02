@@ -9,7 +9,7 @@
  *      route. If this diverges, integration use will catch it.
  *   2. Source-contract assertions: read server.js and assert the route exists
  *      and preserves its load-bearing behaviors (two-strategy attach, container
- *      file-existence guard, no OS dialog dependency).
+ *      file containment guard, no OS dialog dependency).
  */
 import { describe, test, expect } from '@jest/globals';
 import { readFileSync } from 'fs';
@@ -24,17 +24,13 @@ const serverSrc = readFileSync(join(__dirname, '../../server.js'), 'utf8');
  * Kept in sync with the route -- if this diverges, integration tests will catch it.
  *
  * Returns { status, error } for an early validation failure, or null if the
- * request passes validation (assuming the files exist in the container).
+ * request provides userId and path. Individual path validation is performed by
+ * resolveUploadPaths(), which has direct unit coverage in uploadPaths.test.js.
  */
-function validateUploadRequest({ userId, path: filePath, ref, selector }, fileExists = () => true) {
+function validateUploadRequest({ userId, path: filePath }) {
   if (!userId) return { status: 400, error: 'userId required' };
   if (!filePath) return { status: 400, error: 'path required (container-side file path)' };
 
-  const paths = Array.isArray(filePath) ? filePath : [filePath];
-  for (const p of paths) {
-    if (typeof p !== 'string' || !p) return { status: 400, error: 'path entries must be non-empty strings' };
-    if (!fileExists(p)) return { status: 400, error: `file not found in container: ${p}`, code: 'file_not_found' };
-  }
   return null;
 }
 
@@ -61,28 +57,18 @@ describe('/upload request validation', () => {
     expect(r).toMatchObject({ status: 400, error: expect.stringContaining('path required') });
   });
 
-  test('accepts a single string path that exists', () => {
-    const r = validateUploadRequest({ userId: 'agent1', path: '/data/x.png' }, () => true);
+  test('accepts a single string path for upload-root validation', () => {
+    const r = validateUploadRequest({ userId: 'agent1', path: '/data/x.png' });
     expect(r).toBeNull();
   });
 
-  test('accepts an array of paths', () => {
-    const r = validateUploadRequest({ userId: 'agent1', path: ['/data/a.png', '/data/b.png'] }, () => true);
+  test('defers array and entry validation to resolveUploadPaths', () => {
+    const r = validateUploadRequest({ userId: 'agent1', path: ['/data/a.png', '/data/b.png'] });
     expect(r).toBeNull();
-  });
-
-  test('rejects a non-string path entry', () => {
-    const r = validateUploadRequest({ userId: 'agent1', path: [123] }, () => true);
-    expect(r).toMatchObject({ status: 400, error: expect.stringContaining('non-empty strings') });
-  });
-
-  test('rejects a path that is not present in the container', () => {
-    const r = validateUploadRequest({ userId: 'agent1', path: '/nope.png' }, () => false);
-    expect(r).toMatchObject({ status: 400, code: 'file_not_found' });
   });
 
   test('ref/selector are optional (an existing input[type=file] needs no trigger)', () => {
-    const r = validateUploadRequest({ userId: 'agent1', path: '/data/x.png' }, () => true);
+    const r = validateUploadRequest({ userId: 'agent1', path: '/data/x.png' });
     expect(r).toBeNull();
   });
 });
@@ -109,9 +95,9 @@ describe('/upload source contract', () => {
     expect(serverSrc).toMatch(/app\.post\(\s*['"]\/tabs\/:tabId\/upload['"]/);
   });
 
-  test('guards against files missing inside the container', () => {
-    expect(serverSrc).toMatch(/fs\.existsSync/);
-    expect(serverSrc).toMatch(/file_not_found/);
+  test('delegates path validation to the upload-root resolver', () => {
+    expect(serverSrc).toMatch(/import \{ resolveUploadPaths \} from '\.\/lib\/upload-paths\.js';/);
+    expect(serverSrc).toMatch(/resolveUploadPaths\(\{ uploadsDir: CONFIG\.uploadsDir, filePaths:/);
   });
 
   test('strategy 1 sets files directly on an existing input[type=file]', () => {
