@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(fileURLToPath(import.meta.url), "..", "..");
-const SERVER = resolve(ROOT, "mcp", "server.mjs");
+const SERVER = process.env.CAMOFOX_MCP_SERVER || resolve(ROOT, "mcp", "server.mjs");
 
 const EXPECTED_TOOLS = [
   "camofox_create_tab",

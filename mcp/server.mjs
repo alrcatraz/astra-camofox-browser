@@ -4,7 +4,7 @@
 // Standalone Model Context Protocol server that exposes the camofox-browser
 // REST API (default http://localhost:9377) as MCP tools. Tool names, schemas,
 // REST routes, request bodies, auth, and response shaping are imported from
-// lib/mcp-tool-contracts.mjs — the SAME source of truth the OpenClaw plugin
+// mcp/lib/tool-contracts.mjs — the SAME source of truth the OpenClaw plugin
 // (plugin.ts) uses — so behavior is identical whether an agent reaches camofox
 // via OpenClaw or MCP. Drift is structurally impossible.
 //
@@ -23,12 +23,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 
-import { loadConfig } from "../lib/config.js";
+import { loadMcpConfig } from "./lib/config.mjs";
 import {
   TOOL_DEFS,
   runTool,
   adaptResponse,
-} from "../lib/mcp-tool-contracts.mjs";
+} from "./lib/tool-contracts.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -39,9 +39,10 @@ const VERSION = JSON.parse(
   readFileSync(join(__dirname, "package.json"), "utf8")
 ).version;
 
-// Server config (apiKey / accessKey / cookiesDir / port). Loaded once; env wins
-// over loadConfig() for MCP-specific overrides via CAMOFOX_BASE_URL.
-const CONFIG = loadConfig();
+// Server config (apiKey / accessKey / cookiesDir / port). The standalone
+// package reads only its own environment settings; CAMOFOX_BASE_URL overrides
+// the derived local URL.
+const CONFIG = loadMcpConfig();
 const BASE_URL = process.env.CAMOFOX_BASE_URL || `http://localhost:${CONFIG.port}`;
 
 // Per-MCP-server userId so each host session gets an isolated camofox session
@@ -50,8 +51,8 @@ const USER_ID = process.env.CAMOFOX_USER_ID || `mcp-${randomUUID()}`;
 // sessionKey partitions tabs within a user (matches plugin.ts fallback "default").
 const SESSION_KEY = process.env.CAMOFOX_SESSION_KEY || "default";
 
-// MCP SDK is an optional dependency so the core camofox install stays light.
-// Surface a clear, actionable error if it is missing instead of a stack trace.
+// The standalone package declares the SDK directly. Surface a clear,
+// actionable error if an incomplete installation is missing it.
 let Server, StdioServerTransport, CallToolRequestSchema, ListToolsRequestSchema;
 try {
   const serverMod = await import("@modelcontextprotocol/sdk/server/index.js");
@@ -64,8 +65,8 @@ try {
 } catch {
   console.error(
     "[camofox-mcp] @modelcontextprotocol/sdk is not installed.\n" +
-      "Install it with:  npm install @modelcontextprotocol/sdk\n" +
-      "(It is an optionalDependency of this package — add it where you run the MCP server.)"
+      "Install the adapter dependencies with: npm install\n" +
+      "from the @askjo/camofox-mcp package directory."
   );
   process.exit(1);
 }
