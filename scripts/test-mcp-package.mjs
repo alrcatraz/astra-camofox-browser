@@ -28,7 +28,7 @@ try {
     cwd: installDir,
   });
 
-  const bin = join(installDir, 'node_modules', '.bin', 'camofox-browser-mcp');
+  const bin = join(installDir, 'node_modules', '.bin', 'camofox-mcp');
   await access(bin);
 
   const server = join(installDir, 'node_modules', '@askjo', 'camofox-browser-mcp', 'server.mjs');
