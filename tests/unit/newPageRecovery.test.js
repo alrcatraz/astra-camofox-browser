@@ -38,7 +38,8 @@ describe('createPageWithSessionRecovery', () => {
 
     expect(destroySession).toHaveBeenCalledWith('user-1', { reason: 'new_page_unresponsive' });
     expect(getSession).toHaveBeenCalledWith('user-1', { trace: false });
-    expect(result).toEqual({ session: replacement, page });
+    expect(result).toMatchObject({ session: replacement, page });
+    expect(result.lease).toMatchObject({ page, released: false });
   });
 
   test('does not destroy a session another request already replaced', async () => {
