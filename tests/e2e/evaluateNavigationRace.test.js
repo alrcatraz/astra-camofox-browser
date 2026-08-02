@@ -11,6 +11,21 @@ describe('Evaluate during navigation', () => {
     testSiteUrl = env.testSiteUrl;
   });
 
+  test('accepts an evaluate body above the global JSON limit', async () => {
+    const client = createClient(serverUrl);
+
+    try {
+      const { tabId } = await client.createTab(testSiteUrl);
+      const expression = `/*${'x'.repeat(150 * 1024)}*/ 1 + 1`;
+      const result = await client.evaluate(tabId, expression);
+
+      expect(result.ok).toBe(true);
+      expect(result.result).toBe(2);
+    } finally {
+      await client.cleanup();
+    }
+  });
+
   test('evaluate interrupted by a late redirect returns 409 navigation_race, then succeeds on retry', async () => {
     const client = createClient(serverUrl);
 
