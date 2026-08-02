@@ -99,6 +99,10 @@ class BrowserClient {
   async click(tabId, options) {
     return this.request('POST', `/tabs/${tabId}/click`, { userId: this.userId, ...options });
   }
+
+  async evaluate(tabId, expression) {
+    return this.request('POST', `/tabs/${tabId}/evaluate`, { userId: this.userId, expression });
+  }
   
   async type(tabId, options) {
     const { pressEnter, clear, ...typeOptions } = options;
@@ -130,6 +134,10 @@ class BrowserClient {
 
   async viewport(tabId, { width, height }) {
     return this.request('POST', `/tabs/${tabId}/viewport`, { userId: this.userId, width, height });
+  }
+
+  async upload(tabId, options) {
+    return this.request('POST', `/tabs/${tabId}/upload`, { userId: this.userId, ...options });
   }
 
   async back(tabId) {

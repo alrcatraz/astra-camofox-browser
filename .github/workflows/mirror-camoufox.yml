@@ -1,0 +1,139 @@
+name: Mirror Camoufox release
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    name: Mirror latest Camoufox browser release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_REPOSITORY: daijro/camoufox
+    steps:
+      - name: Fetch and verify latest upstream release metadata
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" > upstream-release.json
+
+          source_id=$(jq -er '.id | tostring' upstream-release.json)
+          source_tag=$(jq -er '.tag_name' upstream-release.json)
+          source_url=$(jq -er '.html_url' upstream-release.json)
+          mirror_tag="camoufox-backup-${source_id}"
+          asset_count=$(jq '[.assets[] | select(.name | test("^camoufox-[A-Za-z0-9._-]+\\.zip$"))] | length' upstream-release.json)
+          total_bytes=$(jq '[.assets[] | select(.name | test("^camoufox-[A-Za-z0-9._-]+\\.zip$")) | .size] | add // 0' upstream-release.json)
+
+          if [[ "$asset_count" -eq 0 ]]; then
+            echo "No Camoufox zip assets found in upstream release ${source_tag}." >&2
+            exit 1
+          fi
+
+          # Keep a malformed upstream release from exhausting the hosted runner.
+          if [[ "$total_bytes" -gt $((10 * 1024 * 1024 * 1024)) ]]; then
+            echo "Upstream assets total ${total_bytes} bytes, above the 10 GiB safety limit." >&2
+            exit 1
+          fi
+
+          echo "source_id=${source_id}" >> "$GITHUB_OUTPUT"
+          echo "source_tag=${source_tag}" >> "$GITHUB_OUTPUT"
+          echo "source_url=${source_url}" >> "$GITHUB_OUTPUT"
+          echo "mirror_tag=${mirror_tag}" >> "$GITHUB_OUTPUT"
+          echo "asset_count=${asset_count}" >> "$GITHUB_OUTPUT"
+          echo "total_bytes=${total_bytes}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip an already mirrored release
+        id: existing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "${{ steps.upstream.outputs.mirror_tag }}" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Camoufox release ${{ steps.upstream.outputs.source_tag }} is already mirrored."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download browser archives and create checksums
+        if: steps.existing.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          assets_dir=camoufox-assets
+          mkdir -p "$assets_dir"
+
+          while IFS=$'\t' read -r name url expected_size; do
+            if [[ ! "$name" =~ ^camoufox-[A-Za-z0-9._-]+\.zip$ ]]; then
+              echo "Unsafe or unexpected upstream asset name: $name" >&2
+              exit 1
+            fi
+
+            echo "Downloading $name"
+            curl --fail --location --retry 3 --retry-all-errors \
+              --proto '=https' --proto-redir '=https' \
+              --output "$assets_dir/$name" "$url"
+
+            actual_size=$(wc -c < "$assets_dir/$name" | tr -d '[:space:]')
+            if [[ "$actual_size" != "$expected_size" ]]; then
+              echo "Downloaded size mismatch for $name: expected $expected_size, got $actual_size." >&2
+              exit 1
+            fi
+          done < <(jq -r '.assets[] | select(.name | test("^camoufox-[A-Za-z0-9._-]+\\.zip$")) | [.name, .browser_download_url, .size] | @tsv' upstream-release.json)
+
+          (
+            cd "$assets_dir"
+            sha256sum ./*.zip > SHA256SUMS
+          )
+
+          jq \
+            --arg source_repository "$UPSTREAM_REPOSITORY" \
+            --arg mirrored_at "$(date --utc +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg mirror_tag "${{ steps.upstream.outputs.mirror_tag }}" \
+            '{
+              sourceRepository: $source_repository,
+              sourceRelease: {
+                id: .id,
+                tag: .tag_name,
+                name: .name,
+                url: .html_url,
+                publishedAt: .published_at
+              },
+              mirrorReleaseTag: $mirror_tag,
+              mirroredAt: $mirrored_at,
+              assets: [
+                .assets[]
+                | select(.name | test("^camoufox-[A-Za-z0-9._-]+\\.zip$"))
+                | {name, size, sourceUrl: .browser_download_url}
+              ]
+            }' upstream-release.json > "$assets_dir/manifest.json"
+
+          cat > release-notes.md <<EOF
+          Backup of [${{ steps.upstream.outputs.source_tag }}](${{ steps.upstream.outputs.source_url }}) from \`${UPSTREAM_REPOSITORY}\`.
+
+          This is an availability backup. Verify the archive against \`SHA256SUMS\` before use.
+
+          - Mirrored archives: ${{ steps.upstream.outputs.asset_count }}
+          - Total source size: ${{ steps.upstream.outputs.total_bytes }} bytes
+          EOF
+
+      - name: Publish backup release
+        if: steps.existing.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh release create "${{ steps.upstream.outputs.mirror_tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Camoufox backup ${{ steps.upstream.outputs.source_tag }}" \
+            --notes-file release-notes.md \
+            camoufox-assets/*

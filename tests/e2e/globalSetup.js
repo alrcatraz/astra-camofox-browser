@@ -31,6 +31,13 @@ export default async function globalSetup() {
   const serverPort = Math.floor(3100 + Math.random() * 900);
   const cfg = loadConfig();
   const pluginDir = path.resolve(__dirname, '../..');
+  const uploadsTempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'camofox-e2e-uploads-'));
+  const uploadsDir = path.join(uploadsTempDir, 'uploads');
+  const uploadFixture = path.join(uploadsDir, 'upload.txt');
+  const outsideUploadFixture = path.join(uploadsTempDir, 'outside.txt');
+  fs.mkdirSync(uploadsDir);
+  fs.writeFileSync(uploadFixture, 'upload fixture');
+  fs.writeFileSync(outsideUploadFixture, 'outside upload fixture');
 
   const log = {
     info: (msg) => console.log(msg),
@@ -40,7 +47,7 @@ export default async function globalSetup() {
   const serverProcess = launchServer({
     pluginDir,
     port: serverPort,
-    env: { ...cfg.serverEnv, DEBUG_RESPONSES: 'false', DISPLAY },
+    env: { ...cfg.serverEnv, CAMOFOX_UPLOADS_DIR: uploadsDir, DEBUG_RESPONSES: 'false', DISPLAY },
     log,
   });
 
@@ -62,7 +69,11 @@ export default async function globalSetup() {
     serverUrl: `http://localhost:${serverPort}`,
     testSiteUrl,
     serverPid: serverProcess.pid,
+    uploadFixture,
+    outsideUploadFixture,
   }));
+
+  globalThis.__CAMOFOX_UPLOADS_TEMP_DIR__ = uploadsTempDir;
 
   // Store for globalTeardown (same process, globalThis persists)
   globalThis.__CAMOFOX_SERVER_PROCESS__ = serverProcess;
