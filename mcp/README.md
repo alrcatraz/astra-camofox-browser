@@ -13,7 +13,7 @@ The MCP server is a thin stdio client over the camofox REST server. Two pieces:
 
 Registering the MCP server does **not** require being inside the camofox-browser checkout. The examples below work from any directory.
 
-`mcp/` is also an **independently installable package** (`@askjo/camofox-mcp`, its own `package.json`). It depends on nothing but `@modelcontextprotocol/sdk` — no `camoufox-js`, `playwright-core`, `express`, or the ~300MB browser binary download that the core server pulls in. Tool names, JSON-Schema parameters, REST routes, and response shaping are defined in `mcp/lib/tool-contracts.mjs`, which ships inside the standalone package. The OpenClaw plugin (`plugin.ts`) imports the same canonical module, so the two hosts cannot drift. See **Option D** below if you only want the MCP adapter (e.g. pointing `CAMOFOX_BASE_URL` at a REST server running elsewhere).
+`mcp/` is also an **independently installable package** (`@askjo/camofox-browser-mcp`, its own `package.json`). It depends on nothing but `@modelcontextprotocol/sdk` — no `camoufox-js`, `playwright-core`, `express`, or the ~300MB browser binary download that the core server pulls in. Tool names, JSON-Schema parameters, REST routes, and response shaping are defined in `mcp/lib/tool-contracts.mjs`, which ships inside the standalone package. The OpenClaw plugin (`plugin.ts`) imports the same canonical module, so the two hosts cannot drift. See **Option D** below if you only want the MCP adapter (e.g. pointing `CAMOFOX_BASE_URL` at a REST server running elsewhere).
 
 ## 1. Start the REST server
 
@@ -38,8 +38,9 @@ cd camofox-browser && npm link
 # Option B — global install (no source checkout needed)
 npm install -g @askjo/camofox-browser
 
-# Option C — npx (no install; pins to a published version)
-#   use `npx -y @askjo/camofox-browser mcp` wherever a command is expected below
+# Option C — npx (no install; runs the published standalone adapter)
+#   Use this wherever a command is expected below.
+npx -y @askjo/camofox-browser-mcp
 
 # Option D — MCP adapter only, no core server deps (lightest footprint)
 #   Skips camoufox-js/playwright-core/express and the browser binary download —
@@ -233,4 +234,4 @@ npm run test:mcp
 NODE_OPTIONS='--experimental-vm-modules' npx jest tests/unit/mcp-contracts.test.js
 ```
 
-The packed-tarball check installs the generated `@askjo/camofox-mcp` tarball in an empty directory before its handshake. It catches imports that reach outside the standalone package.
+The packed-tarball check installs the generated `@askjo/camofox-browser-mcp` tarball in an empty directory before its handshake. It catches imports that reach outside the standalone package.

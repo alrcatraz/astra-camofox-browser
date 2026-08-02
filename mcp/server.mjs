@@ -33,7 +33,7 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Version from this package's own package.json (single source — no hardcoded
-// duplicate). mcp/ is an independently installable package (@askjo/camofox-mcp)
+// duplicate). mcp/ is an independently installable package (@askjo/camofox-browser-mcp)
 // with its own manifest, so this reads locally rather than the parent repo's.
 const VERSION = JSON.parse(
   readFileSync(join(__dirname, "package.json"), "utf8")
@@ -66,7 +66,7 @@ try {
   console.error(
     "[camofox-mcp] @modelcontextprotocol/sdk is not installed.\n" +
       "Install the adapter dependencies with: npm install\n" +
-      "from the @askjo/camofox-mcp package directory."
+      "from the @askjo/camofox-browser-mcp package directory."
   );
   process.exit(1);
 }
