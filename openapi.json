@@ -918,7 +918,7 @@
           "Interaction"
         ],
         "summary": "Attach a file to an upload control",
-        "description": "Attaches a file to a file-upload control without going through the native OS file dialog. Two strategies are tried in order: (1) if an <input type=\"file\"> is already present, call Playwright setInputFiles on it directly (works for hidden inputs); (2) otherwise arm a filechooser listener, activate the trigger element (ref or selector) via keyboard (focus + Enter) then a forced click as fallback, and call setFiles on the resulting chooser. The path(s) MUST be visible inside the container (e.g. a bind-mounted directory).\n",
+        "description": "Attaches files from the configured upload directory without going through the native OS file dialog. Set CAMOFOX_UPLOADS_DIR to a directory that contains the files (default: ~/.camofox/uploads). Two strategies are tried in order: (1) if an <input type=\"file\"> is already present, call Playwright setInputFiles on it directly (works for hidden inputs); (2) otherwise arm a filechooser listener, activate the trigger element (ref or selector) via keyboard (focus + Enter) then a forced click as fallback, and call setFiles on the resulting chooser. Each path must be an absolute path that resolves inside the configured upload directory.\n",
         "parameters": [
           {
             "name": "tabId",
@@ -944,7 +944,7 @@
                     "type": "string"
                   },
                   "path": {
-                    "description": "Absolute container-side path, or array of paths.",
+                    "description": "Absolute path, or array of paths, that resolves within CAMOFOX_UPLOADS_DIR.",
                     "oneOf": [
                       {
                         "type": "string"
@@ -980,7 +980,7 @@
             "description": "File(s) attached."
           },
           "400": {
-            "description": "Bad request (missing path/userId or file not found in container)."
+            "description": "Bad request (missing path/userId; non-regular file; or a path that is missing or outside the configured upload directory)."
           },
           "404": {
             "description": "Tab not found."
