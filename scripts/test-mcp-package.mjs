@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Package-level regression test for @askjo/camofox-mcp.
+// Package-level regression test for @askjo/camofox-browser-mcp.
 // Packs mcp/, installs that tarball in an empty directory, then runs the same
 // MCP handshake smoke test against the installed server. This catches imports
 // that accidentally reach outside the published package.
@@ -28,7 +28,7 @@ try {
     cwd: installDir,
   });
 
-  const server = join(installDir, 'node_modules', '@askjo', 'camofox-mcp', 'server.mjs');
+  const server = join(installDir, 'node_modules', '@askjo', 'camofox-browser-mcp', 'server.mjs');
   await execFile(process.execPath, [join(ROOT, 'scripts', 'test-mcp.mjs')], {
     cwd: ROOT,
     env: {
@@ -40,7 +40,7 @@ try {
       CAMOFOX_MCP_SERVER: server,
     },
   });
-  console.log('packed @askjo/camofox-mcp smoke test passed');
+  console.log('packed @askjo/camofox-browser-mcp smoke test passed');
 } finally {
   if (tarball) await rm(tarball, { force: true });
   await rm(testDir, { recursive: true, force: true });
