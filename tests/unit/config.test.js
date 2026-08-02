@@ -42,6 +42,15 @@ describe('loadConfig', () => {
     expect(loadConfig().camoufoxExecutablePath).toBe('/legacy/camoufox');
   });
 
+  test('configures and forwards the upload directory', () => {
+    process.env.CAMOFOX_UPLOADS_DIR = '/mounted/uploads';
+
+    const config = loadConfig();
+
+    expect(config.uploadsDir).toBe('/mounted/uploads');
+    expect(config.serverEnv.CAMOFOX_UPLOADS_DIR).toBe('/mounted/uploads');
+  });
+
   test('configures browser RSS restart threshold', () => {
     delete process.env.BROWSER_RSS_RESTART_THRESHOLD_MB;
     expect(loadConfig().browserRssRestartThresholdMb).toBe(1500);

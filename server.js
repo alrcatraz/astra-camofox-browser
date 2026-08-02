@@ -34,6 +34,7 @@ import { actionFromReq, classifyError } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
 import { createPageWithSessionRecovery } from './lib/new-page-recovery.js';
+import { resolveUploadPaths } from './lib/upload-paths.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb, browserProcessNameRssMb } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
@@ -3588,14 +3589,16 @@ const UPLOAD_SETTLE_MS = 1500; // let the page process the upload / render a pre
  *     tags: [Interaction]
  *     summary: Attach a file to an upload control
  *     description: >
- *       Attaches a file to a file-upload control without going through the
- *       native OS file dialog. Two strategies are tried in order: (1) if an
+ *       Attaches files from the configured upload directory without going through
+ *       the native OS file dialog. Set CAMOFOX_UPLOADS_DIR to a directory that
+ *       contains the files (default: ~/.camofox/uploads). Two strategies are
+ *       tried in order: (1) if an
  *       <input type="file"> is already present, call Playwright setInputFiles
  *       on it directly (works for hidden inputs); (2) otherwise arm a
  *       filechooser listener, activate the trigger element (ref or selector)
  *       via keyboard (focus + Enter) then a forced click as fallback, and call
- *       setFiles on the resulting chooser. The path(s) MUST be visible inside
- *       the container (e.g. a bind-mounted directory).
+ *       setFiles on the resulting chooser. Each path must be an absolute path
+ *       that resolves inside the configured upload directory.
  *     parameters:
  *       - name: tabId
  *         in: path
@@ -3612,7 +3615,7 @@ const UPLOAD_SETTLE_MS = 1500; // let the page process the upload / render a pre
  *               userId:
  *                 type: string
  *               path:
- *                 description: "Absolute container-side path, or array of paths."
+ *                 description: "Absolute path, or array of paths, that resolves within CAMOFOX_UPLOADS_DIR."
  *                 oneOf:
  *                   - type: string
  *                   - type: array
@@ -3632,7 +3635,7 @@ const UPLOAD_SETTLE_MS = 1500; // let the page process the upload / render a pre
  *       200:
  *         description: "File(s) attached."
  *       400:
- *         description: "Bad request (missing path/userId or file not found in container)."
+ *         description: "Bad request (missing path/userId; non-regular file; or a path that is missing or outside the configured upload directory)."
  *       404:
  *         description: "Tab not found."
  */
@@ -3647,13 +3650,7 @@ app.post('/tabs/:tabId/upload', async (req, res) => {
     if (!userId) return res.status(400).json({ error: 'userId required' });
     if (!filePath) return res.status(400).json({ error: 'path required (container-side file path)' });
 
-    const paths = Array.isArray(filePath) ? filePath : [filePath];
-    for (const p of paths) {
-      if (typeof p !== 'string' || !p) return res.status(400).json({ error: 'path entries must be non-empty strings' });
-      if (!fs.existsSync(p)) {
-        return res.status(400).json({ error: `file not found in container: ${p}`, code: 'file_not_found' });
-      }
-    }
+    const paths = await resolveUploadPaths({ uploadsDir: CONFIG.uploadsDir, filePaths: Array.isArray(filePath) ? filePath : [filePath] });
 
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
