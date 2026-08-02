@@ -30,7 +30,7 @@
     "node": ">=22"
   },
   "bin": {
-    "camofox-mcp": "server.mjs"
+    "camofox-browser-mcp": "server.mjs"
   },
   "files": [
     "server.mjs",
