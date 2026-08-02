@@ -119,7 +119,13 @@ function log(level, msg, fields = {}) {
 }
 
 const app = express();
-app.use(express.json({ limit: '100kb' }));
+const globalJsonParser = express.json({ limit: '100kb' });
+app.use((req, res, next) => {
+  if (req.method === 'POST' && /^\/tabs\/[^/]+\/evaluate$/.test(req.path)) {
+    return next();
+  }
+  return globalJsonParser(req, res, next);
+});
 
 // Request logging + metrics middleware
 app.use((req, res, next) => {
@@ -4827,7 +4833,7 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, res) => {
+app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySize }), async (req, res) => {
   try {
     const { userId, expression } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
