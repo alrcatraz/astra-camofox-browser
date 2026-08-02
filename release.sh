@@ -8,7 +8,7 @@ set -euo pipefail
 # This script:
 #   1. Runs pre-flight checks (clean tree, on master, up to date)
 #   2. Runs tests locally
-#   3. Bumps version via npm version (which syncs openclaw.plugin.json)
+#   3. Bumps version via npm version (which syncs OpenClaw and MCP package metadata)
 #   4. Pushes commit + tag to origin
 #   5. GitHub Actions publishes to npm with provenance
 #
@@ -66,7 +66,7 @@ echo "📦 Bumping: $BUMP"
 echo ""
 
 # npm version bumps package.json, runs the "version" lifecycle script
-# (which syncs openclaw.plugin.json), creates a git commit and tag
+# (which syncs OpenClaw and MCP package metadata), creates a git commit and tag
 npm version "$BUMP" --message "v%s"
 
 NEW_VERSION=$(node -p "require('./package.json').version")
