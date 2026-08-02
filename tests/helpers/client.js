@@ -136,6 +136,10 @@ class BrowserClient {
     return this.request('POST', `/tabs/${tabId}/viewport`, { userId: this.userId, width, height });
   }
 
+  async upload(tabId, options) {
+    return this.request('POST', `/tabs/${tabId}/upload`, { userId: this.userId, ...options });
+  }
+
   async back(tabId) {
     return this.request('POST', `/tabs/${tabId}/back`, { userId: this.userId });
   }
