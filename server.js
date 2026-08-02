@@ -33,6 +33,9 @@ import {
 import { actionFromReq, classifyError } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
+import { createPageWithSessionRecovery } from './lib/new-page-recovery.js';
+import { resolveUploadPaths } from './lib/upload-paths.js';
+import { acquirePageLease, hasActivePageLeases, isPageLeased, releasePageLease, setLeasedPage } from './lib/page-lease.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb, browserProcessNameRssMb } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
@@ -116,7 +119,13 @@ function log(level, msg, fields = {}) {
 }
 
 const app = express();
-app.use(express.json({ limit: '100kb' }));
+const globalJsonParser = express.json({ limit: '100kb' });
+app.use((req, res, next) => {
+  if (req.method === 'POST' && /^\/tabs\/[^/]+\/evaluate$/.test(req.path)) {
+    return next();
+  }
+  return globalJsonParser(req, res, next);
+});
 
 // Request logging + metrics middleware
 app.use((req, res, next) => {
@@ -483,6 +492,7 @@ const MAX_SESSIONS = CONFIG.maxSessions;
 const MAX_TABS_PER_SESSION = CONFIG.maxTabsPerSession;
 const MAX_TABS_GLOBAL = CONFIG.maxTabsGlobal;
 const HANDLER_TIMEOUT_MS = CONFIG.handlerTimeoutMs;
+const NEW_PAGE_TIMEOUT_MS = CONFIG.newPageTimeoutMs;
 const MAX_CONCURRENT_PER_USER = CONFIG.maxConcurrentPerUser;
 const PAGE_CLOSE_TIMEOUT_MS = 5000;
 const NAVIGATE_TIMEOUT_MS = CONFIG.navigateTimeoutMs;
@@ -1297,7 +1307,7 @@ async function getSession(userId, { trace = false } = {}) {
         }
       }
 
-      const created = { context, tabGroups: new Map(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null, tracePath };
+      const created = { context, tabGroups: new Map(), pageLeases: new Set(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null, tracePath };
       sessions.set(key, created);
       await pluginEvents.emitAsync('session:created', { userId: key, context });
       log('info', 'session created', {
@@ -1311,6 +1321,42 @@ async function getSession(userId, { trace = false } = {}) {
   }
   session.lastAccess = Date.now();
   return session;
+}
+
+async function createLeasedPage(session) {
+  const lease = acquirePageLease(session);
+  try {
+    const page = setLeasedPage(lease, await session.context.newPage());
+    return { page, lease };
+  } catch (err) {
+    releasePageLease(session, lease);
+    throw err;
+  }
+}
+
+async function closeLeasedPage(session, page, lease) {
+  try {
+    await safePageClose(page);
+  } finally {
+    releasePageLease(session, lease);
+  }
+}
+
+async function createPageWithRecoveryForUser(userId, session, { trace = false } = {}) {
+  const key = normalizeUserId(userId);
+  return createPageWithSessionRecovery({
+    userId: key,
+    session,
+    trace,
+    timeoutMs: NEW_PAGE_TIMEOUT_MS,
+    withTimeout,
+    isTimeoutError,
+    isDeadContextError,
+    currentSession: () => sessions.get(key),
+    destroySession,
+    getSession,
+    log,
+  });
 }
 
 function getTabGroup(session, listItemId) {
@@ -1369,7 +1415,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
     return res.status(410).json({ error: 'Page crashed. Open a new tab.', code: 'page_crashed', retryable: true, recovery: 'create_new_tab', ...extraFields });
   }
   if (userId && isDeadContextError(err)) {
-    destroySession(userId);
+    destroySession(userId).catch(() => {});
   }
   // Proxy errors mean the session is dead -- rotate at context level.
   // Destroy the user's session so the next request gets a fresh context with a new proxy.
@@ -1378,7 +1424,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
       action, userId, error: err.message,
     });
     browserRestartsTotal.labels('proxy_error').inc();
-    destroySession(userId);
+    destroySession(userId).catch(() => {});
   }
   // Navigation-related timeouts can poison the proxy session (e.g., Cloudflare holding
   // the connection open for 30s). The browser context shares a single proxy session, so
@@ -1390,7 +1436,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
       action, userId, error: err.message,
     });
     browserRestartsTotal.labels('navigation_timeout').inc();
-    destroySession(userId);
+    destroySession(userId).catch(() => {});
   }
   // Track consecutive timeouts per tab and auto-destroy stuck tabs
   // (for non-navigation timeouts like type, scroll that don't poison the proxy)
@@ -1523,13 +1569,14 @@ async function recycleOldestTab(session, reqId, userId) {
   return { recycledTabId: oldestTabId, recycledFromGroup: oldestGroupKey };
 }
 
-function destroySession(userId) {
+async function destroySession(userId, { reason = 'destroy_session' } = {}) {
   const key = normalizeUserId(userId);
   const session = sessions.get(key);
-  if (!session) return;
-  log('warn', 'destroying dead session', { userId: key });
+  if (!session) return false;
+  log('warn', 'destroying session', { userId: key, reason });
   sessions.delete(key);
-  closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
+  await closeSession(key, session, { reason, clearDownloads: true, clearLocks: true });
+  return true;
 }
 
 function findTab(session, tabId) {
@@ -1734,7 +1781,7 @@ async function camofoxPressureCleanup(options = {}) {
       for (const [listItemId, group] of Array.from(session.tabGroups.entries())) {
         if (group.size === 0) session.tabGroups.delete(listItemId);
       }
-      if (closeEmptySessions && session.tabGroups.size === 0) {
+      if (closeEmptySessions && session.tabGroups.size === 0 && !hasActivePageLeases(session)) {
         session._closing = true;
         await closeSession(userId, session, { reason: 'pressure_cleanup_empty_session', clearDownloads: true, clearLocks: true });
         sessionsExpiredTotal.inc();
@@ -1783,12 +1830,13 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
   }
   const session = await getSession(userId);
   const group = getTabGroup(session, sessionKey);
-  const page = await session.context.newPage();
+  const { page, lease } = await createLeasedPage(session);
   const tabState = createTabState(page);
   tabState.googleRetryCount = (previousTabState.googleRetryCount || 0) + 1;
   tabState.lastRequestedUrl = previousTabState.lastRequestedUrl;
   attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
   group.set(tabId, tabState);
+  releasePageLease(session, lease);
   attachPopupHandler(page, userId, sessionKey);
   refreshActiveTabsGauge();
 
@@ -2725,13 +2773,17 @@ app.post('/tabs', async (req, res) => {
         }
       }
       
+      const createdPage = await createPageWithRecoveryForUser(userId, session, { trace: !!trace });
+      session = createdPage.session;
+      const page = createdPage.page;
+      const lease = createdPage.lease;
       const group = getTabGroup(session, resolvedSessionKey);
-      
-      const page = await session.context.newPage();
+
       const tabId = fly.makeTabId();
       let tabState = createTabState(page);
       attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
       group.set(tabId, tabState);
+      releasePageLease(session, lease);
       attachPopupHandler(page, userId, resolvedSessionKey);
       refreshActiveTabsGauge();
       
@@ -2754,11 +2806,12 @@ app.post('/tabs', async (req, res) => {
             }
             session = await getSession(userId, { trace: !!trace });
             const retryGroup = getTabGroup(session, resolvedSessionKey);
-            const retryPage = await session.context.newPage();
+            const { page: retryPage, lease: retryLease } = await createLeasedPage(session);
             tabState = createTabState(retryPage);
             tabState.lastRequestedUrl = url;
             attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
             retryGroup.set(tabId, tabState);
+            releasePageLease(session, retryLease);
             attachPopupHandler(retryPage, userId, resolvedSessionKey);
             refreshActiveTabsGauge();
             await withPageLoadDuration('open_url', () => retryPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
@@ -2908,13 +2961,14 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
 
         const prewarmGoogleHome = async () => {
           if (!isGoogleSearch || tabState.visitedUrls.has('https://www.google.com/')) return;
-          const prewarmPage = await session.context.newPage();
+          const prewarm = await createLeasedPage(session);
+          const prewarmPage = prewarm.page;
           try {
             await withPageLoadDuration('navigate', () => prewarmPage.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }));
             tabState.visitedUrls.add('https://www.google.com/');
             await prewarmPage.waitForTimeout(1200);
           } finally {
-            await safePageClose(prewarmPage);
+            await closeLeasedPage(session, prewarmPage, prewarm.lease);
           }
         };
 
@@ -2930,11 +2984,12 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           }
           session = await getSession(userId);
           const group = getTabGroup(session, currentSessionKey);
-          const page = await session.context.newPage();
+          const { page, lease } = await createLeasedPage(session);
           tabState = createTabState(page);
           tabState.googleRetryCount = previousRetryCount + 1;
           attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
           group.set(tabId, tabState);
+          releasePageLease(session, lease);
           attachPopupHandler(page, userId, currentSessionKey);
           refreshActiveTabsGauge();
         };
@@ -3538,6 +3593,225 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         log('warn', 'post-timeout refresh failed', { error: refreshErr.message });
       }
     }
+    handleRouteError(err, req, res);
+  }
+});
+
+// --- /tabs/:tabId/upload timeouts (ms) ---
+// UPLOAD_UI_TIMEOUT_MS is the default for the request's optional `timeout`: the
+// overall budget to wait for an upload UI to appear after the trigger is
+// activated -- either an in-app panel <input type=file> (preferred) or the
+// native file chooser. The panel-poll window sits UPLOAD_PANEL_MARGIN_MS inside
+// that budget so a native chooser that fires late is still caught after polling
+// stops. The remaining constants bound the individual Playwright calls.
+const UPLOAD_UI_TIMEOUT_MS = 12000;
+const UPLOAD_PANEL_MARGIN_MS = 2000;
+const UPLOAD_INPUT_TIMEOUT_MS = 4000; // setInputFiles() on an <input type=file>
+const UPLOAD_FOCUS_TIMEOUT_MS = 3000; // focus() the trigger before pressing Enter
+const UPLOAD_CLICK_TIMEOUT_MS = 4000; // forced click() fallback on the trigger
+const UPLOAD_PANEL_POLL_MS = 500; // interval between panel-input polls
+const UPLOAD_REFS_TIMEOUT_MS = 4000; // refreshTabRefs() before/after the upload
+const UPLOAD_SETTLE_MS = 1500; // let the page process the upload / render a preview
+
+// Upload (file attach via filechooser / setInputFiles)
+/**
+ * @openapi
+ * /tabs/{tabId}/upload:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Attach a file to an upload control
+ *     description: >
+ *       Attaches files from the configured upload directory without going through
+ *       the native OS file dialog. Set CAMOFOX_UPLOADS_DIR to a directory that
+ *       contains the files (default: ~/.camofox/uploads). Two strategies are
+ *       tried in order: (1) if an
+ *       <input type="file"> is already present, call Playwright setInputFiles
+ *       on it directly (works for hidden inputs); (2) otherwise arm a
+ *       filechooser listener, activate the trigger element (ref or selector)
+ *       via keyboard (focus + Enter) then a forced click as fallback, and call
+ *       setFiles on the resulting chooser. Each path must be an absolute path
+ *       that resolves inside the configured upload directory.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, path]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               path:
+ *                 description: "Absolute path, or array of paths, that resolves within CAMOFOX_UPLOADS_DIR."
+ *                 oneOf:
+ *                   - type: string
+ *                   - type: array
+ *                     items:
+ *                       type: string
+ *               ref:
+ *                 type: string
+ *                 description: "Trigger element ref (e.g. e36). Optional when an input[type=file] already exists."
+ *               selector:
+ *                 type: string
+ *                 description: "Trigger element CSS/Playwright selector. Optional when an input[type=file] already exists."
+ *               timeout:
+ *                 type: integer
+ *                 default: 12000
+ *                 description: "Overall budget in ms to wait for an upload UI (in-app panel input or native file chooser) to appear after the trigger is activated. Ignored values (non-numeric or <= 0) fall back to the default."
+ *     responses:
+ *       200:
+ *         description: "File(s) attached."
+ *       400:
+ *         description: "Bad request (missing path/userId; non-regular file; or a path that is missing or outside the configured upload directory)."
+ *       404:
+ *         description: "Tab not found."
+ */
+app.post('/tabs/:tabId/upload', async (req, res) => {
+  const tabId = req.params.tabId;
+  try {
+    const { userId, ref, selector } = req.body;
+    const { path: filePath } = req.body;
+    const uploadTimeout = Number.isFinite(req.body.timeout) && req.body.timeout > 0
+      ? req.body.timeout
+      : UPLOAD_UI_TIMEOUT_MS;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    if (!filePath) return res.status(400).json({ error: 'path required (container-side file path)' });
+
+    const paths = await resolveUploadPaths({ uploadsDir: CONFIG.uploadsDir, filePaths: Array.isArray(filePath) ? filePath : [filePath] });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    const result = await withUserLimit(userId, () => withTabLock(tabId, async () => {
+      const directInput = tabState.page.locator('input[type="file"]').first();
+      let attachedVia = null;
+
+      const trySetExistingInput = async () => {
+        try {
+          if (await directInput.count() > 0) {
+            await directInput.setInputFiles(paths, { timeout: UPLOAD_INPUT_TIMEOUT_MS });
+            return true;
+          }
+        } catch (e) {
+          log('info', 'upload: setInputFiles on existing input failed', { error: e.message });
+        }
+        return false;
+      };
+
+      // Strategy 1: an <input type=file> already exists right now (an upload
+      // panel was opened before this call) -> set files directly. setInputFiles
+      // works on hidden inputs and skips the OS dialog entirely.
+      if (await trySetExistingInput()) {
+        attachedVia = 'direct_input';
+      }
+
+      // Strategy 2: activate the trigger element, then handle EITHER UI path:
+      //   (a) the trigger opens the OS file chooser  -> answer the filechooser;
+      //   (b) the trigger opens an in-app upload panel that mounts a hidden
+      //       <input type=file> a beat later          -> setInputFiles on it.
+      // LinkedIn A/B-tests both behaviors for the same "Photo" control, so we
+      // arm the filechooser listener BEFORE clicking and then race it against
+      // polling for a freshly-mounted input. Whichever resolves first wins.
+      if (!attachedVia) {
+        let locator;
+        if (ref) {
+          locator = refToLocator(tabState.page, ref, tabState.refs);
+          if (!locator) {
+            try {
+              tabState.refs = await refreshTabRefs(tabState, { reason: 'pre_upload', timeoutMs: UPLOAD_REFS_TIMEOUT_MS });
+            } catch (e) { /* proceed without refresh */ }
+            locator = refToLocator(tabState.page, ref, tabState.refs);
+          }
+          if (!locator) {
+            const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none';
+            throw new StaleRefsError(ref, maxRef, tabState.refs.size);
+          }
+        } else if (selector) {
+          locator = tabState.page.locator(selector);
+        } else {
+          const err = new Error('No input[type=file] present and no ref/selector trigger provided.');
+          err.statusCode = 400;
+          throw err;
+        }
+
+        // Arm the filechooser listener FIRST (catch a no-quotes rejection so an
+        // unfired listener never crashes the handler), then activate the trigger.
+        const fcPromise = tabState.page
+          .waitForEvent('filechooser', { timeout: uploadTimeout })
+          .catch(() => null);
+        try {
+          await locator.focus({ timeout: UPLOAD_FOCUS_TIMEOUT_MS });
+          await tabState.page.keyboard.press('Enter');
+        } catch (e) {
+          try { await locator.click({ timeout: UPLOAD_CLICK_TIMEOUT_MS, force: true }); } catch (e2) { /* chooser/panel may still appear */ }
+        }
+
+        // The trigger may surface EITHER UI path (LinkedIn A/B-tests both, and
+        // its "Add media" control opens a native chooser AND mounts a hidden
+        // panel <input>). We must attach the file EXACTLY ONCE — attaching via
+        // both paths produces a duplicate ("1 of 2") image. So this is a
+        // PREFERENCE order, not a race:
+        //   1. Poll for an in-app <input type=file> and setInputFiles on it
+        //      (the reliable LinkedIn path -> via: panel_input).
+        //   2. Only if no panel input ever mounts, fall back to the native
+        //      chooser if it fired -> via: filechooser.
+        const panelWindow = Math.max(UPLOAD_PANEL_POLL_MS, uploadTimeout - UPLOAD_PANEL_MARGIN_MS);
+        const deadline = Date.now() + panelWindow;
+        while (!attachedVia && Date.now() < deadline) {
+          if (await trySetExistingInput()) { attachedVia = 'panel_input'; break; }
+          await tabState.page.waitForTimeout(UPLOAD_PANEL_POLL_MS);
+        }
+        if (!attachedVia) {
+          const fc = await fcPromise;
+          if (fc) {
+            try {
+              await fc.setFiles(paths);
+              attachedVia = 'filechooser';
+            } catch (e) {
+              log('info', 'upload: setFiles on filechooser failed', { error: e.message });
+            }
+          }
+        }
+        // If the panel path won, a native chooser may still have fired and be
+        // sitting on fcPromise. fcPromise is already .catch()'d to null so it
+        // can never reject; Playwright intercepts file choosers (no real OS
+        // dialog is left open), so an un-actioned chooser is harmless and needs
+        // no cancel() — which FileChooser doesn't expose in this PW version
+        // anyway. Nothing to do here; documented so nobody re-adds a second
+        // setFiles (that was the source of the duplicate-image bug).
+
+        if (!attachedVia) {
+          const err = new Error('Upload trigger did not open a file chooser or mount a file input.');
+          err.statusCode = 422;
+          throw err;
+        }
+      }
+
+      // Allow the page to process the upload / render a preview.
+      await tabState.page.waitForTimeout(UPLOAD_SETTLE_MS);
+
+      // Refresh refs so the caller's next snapshot reflects the post-upload UI.
+      try {
+        tabState.refs = await refreshTabRefs(tabState, { reason: 'post_upload', timeoutMs: UPLOAD_REFS_TIMEOUT_MS });
+      } catch (e) { tabState.refs = new Map(); }
+
+      return { ok: true, attached: paths, via: attachedVia, refsAvailable: tabState.refs.size > 0 };
+    }));
+
+    log('info', 'uploaded', { reqId: req.reqId, tabId, attached: paths, via: result.via });
+    pluginEvents.emit('tab:upload', { userId, tabId, paths });
+    res.json(result);
+  } catch (err) {
+    log('error', 'upload failed', { reqId: req.reqId, tabId, error: err.message });
     handleRouteError(err, req, res);
   }
 });
@@ -4546,8 +4820,20 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: Page navigated while evaluating; caller should retry once the page settles.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       503:
+ *         description: Browser session expired; caller should retry to get a fresh session.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
-app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, res) => {
+app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySize }), async (req, res) => {
   try {
     const { userId, expression } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
@@ -4567,9 +4853,8 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, re
     log('info', 'evaluate', { reqId: req.reqId, tabId: req.params.tabId, userId, resultType: typeof result });
     res.json({ ok: true, result });
   } catch (err) {
-    failuresTotal.labels(classifyError(err), 'evaluate').inc();
-    log('error', 'evaluate failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    log('error', 'evaluate failed', { reqId: req.reqId, tabId: req.params.tabId, error: err.message });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -5150,7 +5435,7 @@ if (FLY_MACHINE_ID) {
       let oldestKey = null;
       let oldestAccess = Infinity;
       for (const [key, session] of sessions) {
-        if (session._closing) continue;
+        if (session._closing || hasActivePageLeases(session)) continue;
         if (session.lastAccess < oldestAccess) {
           oldestAccess = session.lastAccess;
           oldestKey = key;
@@ -5211,7 +5496,7 @@ setInterval(() => {
       }
     }
     // Clean up sessions with zero tabs remaining -- free browser context memory
-    if (session.tabGroups.size === 0) {
+    if (session.tabGroups.size === 0 && !hasActivePageLeases(session)) {
       session._closing = true;
       log('info', 'session empty after tab reaper, closing', { userId });
       closeSession(userId, session, { reason: 'tab_reaper_empty_session', clearDownloads: true, clearLocks: true }).catch(() => {});
@@ -5239,7 +5524,7 @@ setInterval(() => {
       for (const tabState of group.values()) registered.add(tabState.page);
     }
     for (const page of contextPages) {
-      if (!registered.has(page)) {
+      if (!registered.has(page) && !isPageLeased(session, page)) {
         reaped++;
         page.removeAllListeners();
         page.close({ runBeforeUnload: false }).catch(() => {});
@@ -5468,11 +5753,12 @@ app.post('/tabs/open', async (req, res) => {
     
     let group = getTabGroup(session, listItemId);
     
-    let page = await session.context.newPage();
+    let { page, lease } = await createLeasedPage(session);
     const tabId = fly.makeTabId();
     let tabState = createTabState(page);
     attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
     group.set(tabId, tabState);
+    releasePageLease(session, lease);
     attachPopupHandler(page, userId, listItemId);
     refreshActiveTabsGauge();
     
@@ -5491,10 +5777,11 @@ app.post('/tabs/open', async (req, res) => {
         }
         session = await getSession(userId);
         group = getTabGroup(session, listItemId);
-        page = await session.context.newPage();
+        ({ page, lease } = await createLeasedPage(session));
         tabState = createTabState(page);
         attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
         group.set(tabId, tabState);
+        releasePageLease(session, lease);
         attachPopupHandler(page, userId, listItemId);
         refreshActiveTabsGauge();
         await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
@@ -6210,6 +6497,8 @@ const pluginCtx = {
   closeSession,
   withUserLimit,
   safePageClose,
+  createLeasedPage,
+  closeLeasedPage,
   normalizeUserId,
   validateUrl,
   safeError,
@@ -6231,15 +6520,17 @@ mountDocs(app);
 // --- Sentry Express error handler (after all routes, before app.listen) ---
 setupSentryErrorHandler(app);
 
-const server = app.listen(PORT, async () => {
+const server = app.listen(PORT, CONFIG.bindHost || undefined, async () => {
   startMemoryReporter();
   refreshActiveTabsGauge();
   refreshTabLockQueueDepth();
-  pluginEvents.emit('server:started', { port: PORT, pid: process.pid, plugins: loadedPlugins });
+  const address = server.address();
+  const bindHost = typeof address === 'object' && address ? address.address : CONFIG.bindHost;
+  pluginEvents.emit('server:started', { port: PORT, host: bindHost, pid: process.pid, plugins: loadedPlugins });
   if (FLY_MACHINE_ID) {
-    log('info', 'server started (fly)', { port: PORT, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
+    log('info', 'server started (fly)', { port: PORT, host: bindHost, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
   } else {
-    log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
+    log('info', 'server started', { port: PORT, host: bindHost, pid: process.pid, nodeVersion: process.version });
   }
   const tmpCleanup = cleanupOrphanedTempFiles({ tmpDir: os.tmpdir() });
   if (tmpCleanup.removed > 0) {

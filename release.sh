@@ -51,7 +51,7 @@ fi
 # --- Tests ---
 echo ""
 echo "🧪 Running tests..."
-JEST_OUTPUT=$(NODE_OPTIONS='--experimental-vm-modules' npx jest --runInBand --forceExit --testPathPattern='tests/unit' 2>&1)
+JEST_OUTPUT=$(NODE_OPTIONS='--experimental-vm-modules' npx jest --runInBand --forceExit --testPathPatterns='tests/unit' 2>&1)
 echo "$JEST_OUTPUT" | tail -5
 if echo "$JEST_OUTPUT" | grep -q 'Tests:.*failed'; then
   echo "❌ Tests failed"

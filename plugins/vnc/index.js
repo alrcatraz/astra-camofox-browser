@@ -130,7 +130,7 @@ export async function register(app, ctx, pluginConfig = {}) {
         return res.status(404).json({ error: `No active session for userId="${userId}"` });
       }
 
-      const state = await session.context.storageState();
+      const state = await session.context.storageState(ctx.persistenceStorageStateOptions);
 
       log('info', 'storage_state exported', {
         reqId: req.reqId,
@@ -145,7 +145,10 @@ export async function register(app, ctx, pluginConfig = {}) {
         origins: state.origins?.length || 0,
       });
 
-      events.emit('session:storage:export', { userId: String(userId) });
+      await events.emitAsync('session:storage:export', {
+        userId: String(userId),
+        storageState: state,
+      });
 
       res.json(state);
     } catch (err) {
