@@ -64,7 +64,7 @@ try {
   ListToolsRequestSchema = typesMod.ListToolsRequestSchema;
 } catch {
   console.error(
-    "[camofox-browser-mcp] @modelcontextprotocol/sdk is not installed.\n" +
+    "[camofox-mcp] @modelcontextprotocol/sdk is not installed.\n" +
       "Install the adapter dependencies with: npm install\n" +
       "from the @askjo/camofox-browser-mcp package directory."
   );
@@ -114,5 +114,5 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error(
-  `[camofox-browser-mcp] v${VERSION} connected → ${BASE_URL} (user=${USER_ID})`
+  `[camofox-mcp] v${VERSION} connected → ${BASE_URL} (user=${USER_ID})`
 );

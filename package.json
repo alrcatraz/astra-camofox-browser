@@ -169,6 +169,6 @@
   },
   "bin": {
     "camofox-browser": "./bin/camofox-browser.js",
-    "camofox-browser-mcp": "./mcp/server.mjs"
+    "camofox-mcp": "./mcp/server.mjs"
   }
 }
