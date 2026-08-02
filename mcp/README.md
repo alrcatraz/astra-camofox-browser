@@ -13,7 +13,7 @@ The MCP server is a thin stdio client over the camofox REST server. Two pieces:
 
 Registering the MCP server does **not** require being inside the camofox-browser checkout. The examples below work from any directory.
 
-`mcp/` is also an **independently installable package** (`@askjo/camofox-mcp`, its own `package.json`). It depends on nothing but `@modelcontextprotocol/sdk` — no `camoufox-js`, `playwright-core`, `express`, or the ~300MB browser binary download that the core server pulls in. Tool names, JSON-Schema parameters, REST routes, and response shaping are imported from `../lib/mcp-tool-contracts.mjs`, the same canonical module the OpenClaw plugin (`plugin.ts`) uses, so the two hosts cannot drift. See **Option D** below if you only want the MCP adapter (e.g. pointing `CAMOFOX_BASE_URL` at a REST server running elsewhere).
+`mcp/` is also an **independently installable package** (`@askjo/camofox-mcp`, its own `package.json`). It depends on nothing but `@modelcontextprotocol/sdk` — no `camoufox-js`, `playwright-core`, `express`, or the ~300MB browser binary download that the core server pulls in. Tool names, JSON-Schema parameters, REST routes, and response shaping are defined in `mcp/lib/tool-contracts.mjs`, which ships inside the standalone package. The OpenClaw plugin (`plugin.ts`) imports the same canonical module, so the two hosts cannot drift. See **Option D** below if you only want the MCP adapter (e.g. pointing `CAMOFOX_BASE_URL` at a REST server running elsewhere).
 
 ## 1. Start the REST server
 
@@ -220,9 +220,8 @@ Element refs are unambiguous and preferred over CSS selectors — a selector tha
 Two layers, covering different things:
 
 ```bash
-# 1. Handshake + schema smoke test — spawns the real stdio server, checks
-#    initialize/tools/list return all 11 tools with the right shape.
-#    No REST server required.
+# 1. In-repository handshake + schema smoke test, then a packed-tarball
+#    install and handshake test. Neither needs a REST server.
 npm run test:mcp
 
 # 2. Mock-HTTP contract tests — verifies the actual REST traffic each tool
@@ -234,4 +233,4 @@ npm run test:mcp
 NODE_OPTIONS='--experimental-vm-modules' npx jest tests/unit/mcp-contracts.test.js
 ```
 
-Both hosts (this MCP server and the OpenClaw plugin, `plugin.ts`) share one contract module, [`lib/mcp-tool-contracts.mjs`](../lib/mcp-tool-contracts.mjs) — tool schemas, REST routes, auth, and response shaping are defined once and imported by both, so they cannot drift out of sync.
+The packed-tarball check installs the generated `@askjo/camofox-mcp` tarball in an empty directory before its handshake. It catches imports that reach outside the standalone package.

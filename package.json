@@ -121,7 +121,7 @@
     "prepublishOnly": "npm run build",
     "start": "node server.js",
     "mcp": "node mcp/server.mjs",
-    "test:mcp": "node scripts/test-mcp.mjs",
+    "test:mcp": "node scripts/test-mcp.mjs && node scripts/test-mcp-package.mjs",
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit",
     "test:e2e": "NODE_OPTIONS='--experimental-vm-modules' jest --config jest.config.e2e.cjs --runInBand --forceExit",
     "test:plugins": "NODE_OPTIONS='--experimental-vm-modules' jest --forceExit plugins/",
@@ -142,7 +142,7 @@
     "swagger-jsdoc": "^6.2.8"
   },
   "optionalDependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
