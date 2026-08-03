@@ -75,8 +75,11 @@ x11vnc_alive() {
 
 # PID currently listening on $VNC_PORT ("" if none). From the SOCKET table
 # (netstat -tlnp), so the PID can never be a zombie -- zombies hold no socket.
+# NOTE: $4 is the Local Address FIELD ("0.0.0.0:5900") -- the anchor must be
+# "$", not a trailing space (grep-on-whole-line style) which never matches a
+# field value. Pattern ":5900$" also covers the tcp6 ":::5900" form.
 port_pid() {
-  netstat -tlnp 2>/dev/null | awk -v p=":$VNC_PORT " '$4 ~ p { n=split($NF, a, "/"); print a[1]; exit }'
+  netstat -tlnp 2>/dev/null | awk -v p=":$VNC_PORT" '$4 ~ (p "$") { n=split($NF, a, "/"); print a[1]; exit }'
 }
 
 # Display served by PID $1, but ONLY if $1 is an x11vnc ("" otherwise).
