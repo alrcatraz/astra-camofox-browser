@@ -707,7 +707,7 @@ async function probeGoogleSearch(candidateBrowser) {
   let context = null;
   try {
     context = await candidateBrowser.newContext({
-      viewport: { width: 1280, height: 720 },
+      viewport: { width: 1920, height: 1080 },
       permissions: ['geolocation'],
     });
     const page = await context.newPage();
@@ -1177,7 +1177,7 @@ async function getSession(userId, { trace = false } = {}) {
       }
       const b = await ensureBrowser();
       const contextOptions = {
-        viewport: { width: 1280, height: 720 },
+        viewport: { width: 1920, height: 1080 },
         permissions: ['geolocation'],
       };
       // When geoip is active (proxy configured), camoufox auto-configures
