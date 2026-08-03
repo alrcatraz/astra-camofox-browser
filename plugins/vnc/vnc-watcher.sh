@@ -19,6 +19,12 @@
 #   return), confirm it is an x11vnc, and compare the display it serves with
 #   the target. Mismatch -> graceful kill of the stale holder, wait for the
 #   port to free (<=5s), then attach the new display.
+# v2.3.1 change: port_pid awk anchor fixed ("$" not trailing space — a field
+#   value never ends with a space, so the old pattern matched nothing).
+# v2.3.2 change: socket staleness judged by socket OWNER (netstat -xlp), not
+#   ps cmdline — displayfd-mode Xvfb ("-displayfd 3") never shows its display
+#   number in cmdline, so cmdline matching deleted the browser's live socket
+#   and the watcher flapped between browser display and fallback.
 #
 # Called by the VNC plugin via child_process.spawn. Not meant to run standalone.
 #
@@ -161,17 +167,24 @@ start_x11vnc() {
   x11vnc_serving "$CURRENT_DISPLAY" && log "x11vnc serving :$VNC_PORT on DISPLAY=$CURRENT_DISPLAY" || log "WARNING: :$VNC_PORT not serving $CURRENT_DISPLAY after attach attempt"
 }
 
+# PID of the Xvfb listening on /tmp/.X11-unix/X$1 ("" if none/stale).
+# displayfd-mode Xvfb cmdlines carry NO explicit :N ("Xvfb -displayfd 3"),
+# so ps-cmdline matching fails for them -- reverse-lookup the socket owner
+# instead. $NF is the socket path, $(NF-1) the "PID/name" column.
+socket_owner() {
+  netstat -xlp 2>/dev/null | awk -v s="/tmp/.X11-unix/X$1" '$NF == s { n=split($(NF-1), a, "/"); print a[1]; exit }'
+}
+
 clean_stale_sockets() {
   for sock in /tmp/.X11-unix/X*; do
     [ -e "$sock" ] || continue
     num="${sock#/tmp/.X11-unix/X}"
     # skip fallback socket (managed by ensure_fallback_xvfb)
     [ "$num" = "${FALLBACK_DISPLAY#:}" ] && continue
-    # if no live Xvfb is bound to this display number, the socket+lock are stale
-    if ! ps_clean | awk -v n=":$num" '
-        /Xvfb/ && $1 !~ /Z/ && index($0, n) > 0 { found=1 }
-        END { exit !found }
-      '; then
+    # v2.3.2: judge staleness by socket OWNER (netstat -xlp), not by ps
+    # cmdline -- displayfd Xvfb never shows its display number in cmdline,
+    # so a cmdline match would delete the browser's live socket (flapping)
+    if [ -z "$(socket_owner "$num")" ]; then
       log "cleaning stale X socket/lock for :$num"
       rm -f "$sock" "/tmp/.X${num}-lock" 2>/dev/null || true
     fi

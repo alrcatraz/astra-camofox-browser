@@ -1,8 +1,9 @@
 # Thin override layer — based on existing VNC image
 FROM localhost/camofox-browser:135.0.1-x86_64-vnc
 
-# Copy patched vnc-watcher.sh (v2.2: fallback Xvfb :99 + port-based liveness
-# + ps|awk self-exclusion — VNC always reachable, survives zombie states)
+# Copy patched vnc-watcher.sh (v2.3: fallback Xvfb :99 + port-based liveness
+# + ps|awk self-exclusion + display-aware attach — VNC always reachable AND
+# serves the browser's actual display, survives zombie states + port theft)
 COPY plugins/vnc/vnc-watcher.sh /app/plugins/vnc/vnc-watcher.sh
 
 # Override CMD: remove xvfb-run (VNC plugin manages its own display)
