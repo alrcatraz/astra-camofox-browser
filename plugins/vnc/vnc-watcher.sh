@@ -1,5 +1,5 @@
 #!/bin/sh
-# VNC watcher v2.2: keeps VNC servable even when no browser session is running.
+# VNC watcher v2.3: keeps VNC servable even when no browser session is running.
 # - Maintains a fallback Xvfb (:99) so port 5900 is ALWAYS reachable.
 # - Re-attaches x11vnc when the target display changes OR x11vnc dies.
 # - Cleans stale X sockets + lock files left by dead Xvfb processes.
@@ -10,6 +10,15 @@
 # v2.2 change: ps|awk self-exclusion. Our own awk process shows up in ps output
 #   and its cmdline contains "Xvfb"/display/resolution tokens, which made the
 #   matcher "find" a phantom Xvfb and skip socket cleanup (recurring 104).
+# v2.3 change: display-aware liveness. A listening :5900 alone is not proof the
+#   right display is served: a stale x11vnc (e.g. on fallback :99) keeps the
+#   port, fresh attaches fail with "could not obtain listening port", and the
+#   old port-only check then misreports success forever (black-screen bug).
+#   Now we identify the socket holder via netstat -tlnp (its PID can never be a
+#   zombie -- zombies hold no sockets, so the v1 pgrep/kill -0 trap does not
+#   return), confirm it is an x11vnc, and compare the display it serves with
+#   the target. Mismatch -> graceful kill of the stale holder, wait for the
+#   port to free (<=5s), then attach the new display.
 #
 # Called by the VNC plugin via child_process.spawn. Not meant to run standalone.
 #
@@ -61,8 +70,33 @@ websockify --web "$NOVNC_DIR" "$VNC_BIND:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/va
 # Real liveness proof: a listening port. Zombie processes pass kill -0 but
 # cannot hold a socket, so port check is the only reliable signal.
 x11vnc_alive() {
-  ss -tln 2>/dev/null | grep -q ":$VNC_PORT " || \
-    netstat -tln 2>/dev/null | grep -q ":$VNC_PORT "
+  netstat -tln 2>/dev/null | grep -q ":$VNC_PORT "
+}
+
+# PID currently listening on $VNC_PORT ("" if none). From the SOCKET table
+# (netstat -tlnp), so the PID can never be a zombie -- zombies hold no socket.
+port_pid() {
+  netstat -tlnp 2>/dev/null | awk -v p=":$VNC_PORT " '$4 ~ p { n=split($NF, a, "/"); print a[1]; exit }'
+}
+
+# Display served by PID $1, but ONLY if $1 is an x11vnc ("" otherwise).
+# /proc/<pid>/cmdline is a snapshot taken right before use; the kill path is
+# guarded by the x11vnc check so a reused PID can never be killed blindly.
+x11vnc_display_of() {
+  local pid="$1" args
+  [ -n "$pid" ] || return 0
+  args=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null) || return 0
+  echo "$args" | grep -q 'x11vnc' || return 0
+  echo "$args" | grep -o -- '-display [^ ]*' | awk '{print $2}'
+}
+
+# True iff an x11vnc serving exactly $1 is listening on $VNC_PORT
+x11vnc_serving() {
+  local pid cur
+  pid=$(port_pid)
+  [ -n "$pid" ] || return 1
+  cur=$(x11vnc_display_of "$pid")
+  [ -n "$cur" ] && [ "$cur" = "$1" ]
 }
 
 xvfb_running() {
@@ -91,9 +125,24 @@ ensure_fallback_xvfb() {
 }
 
 start_x11vnc() {
-  local disp="$1"
+  local disp="$1" pid cur i
   CURRENT_DISPLAY="$disp"
   log "Attaching x11vnc to DISPLAY=$CURRENT_DISPLAY"
+
+  # v2.3: if :$VNC_PORT is held by an x11vnc serving a DIFFERENT display,
+  # the fresh instance cannot bind ("could not obtain listening port").
+  # Gracefully kill the stale holder, then wait for the port to free (<=5s).
+  pid=$(port_pid)
+  if [ -n "$pid" ]; then
+    cur=$(x11vnc_display_of "$pid")
+    if [ -n "$cur" ] && [ "$cur" != "$disp" ]; then
+      log "port :$VNC_PORT held by x11vnc on $cur — killing pid $pid to re-attach $disp"
+      kill "$pid" 2>/dev/null || true
+      i=0
+      while [ $i -lt 10 ] && [ -n "$(port_pid)" ]; do sleep 0.5; i=$((i+1)); done
+      [ $i -ge 10 ] && log "WARNING: :$VNC_PORT still held 5s after kill"
+    fi
+  fi
 
   X11VNC_ARGS="-display $CURRENT_DISPLAY -forever -shared -rfbport $VNC_PORT -noxdamage -quiet -bg -o /var/log/x11vnc.log"
   [ "${VIEW_ONLY:-0}" = "1" ] && X11VNC_ARGS="$X11VNC_ARGS -viewonly"
@@ -106,7 +155,7 @@ start_x11vnc() {
   # shellcheck disable=SC2086
   x11vnc $X11VNC_ARGS || log "x11vnc attach failed on $CURRENT_DISPLAY (will retry)"
   sleep 1
-  x11vnc_alive && log "x11vnc listening on :$VNC_PORT (DISPLAY=$CURRENT_DISPLAY)" || log "WARNING: :$VNC_PORT not listening after attach attempt"
+  x11vnc_serving "$CURRENT_DISPLAY" && log "x11vnc serving :$VNC_PORT on DISPLAY=$CURRENT_DISPLAY" || log "WARNING: :$VNC_PORT not serving $CURRENT_DISPLAY after attach attempt"
 }
 
 clean_stale_sockets() {
@@ -126,7 +175,7 @@ clean_stale_sockets() {
   done
 }
 
-log "VNC watcher v2.2 started -- maintaining VNC on :$VNC_PORT always"
+log "VNC watcher v2.3 started -- maintaining VNC on :$VNC_PORT always"
 
 # Boot: fallback display up immediately so port 5900 is servable right away
 ensure_fallback_xvfb
@@ -161,13 +210,13 @@ while true; do
 
   if [ -n "$FOUND" ] && [ "$FOUND" != "xvfb_running" ]; then
     # Browser display exists -> make sure x11vnc serves it
-    if [ "$FOUND" != "$CURRENT_DISPLAY" ] || ! x11vnc_alive; then
+    if [ "$FOUND" != "$CURRENT_DISPLAY" ] || ! x11vnc_serving "$FOUND"; then
       start_x11vnc "$FOUND"
     fi
   else
     # No browser Xvfb right now -> fall back to the always-on display
     ensure_fallback_xvfb
-    if [ "$CURRENT_DISPLAY" != "$FALLBACK_DISPLAY" ] || ! x11vnc_alive; then
+    if [ "$CURRENT_DISPLAY" != "$FALLBACK_DISPLAY" ] || ! x11vnc_serving "$FALLBACK_DISPLAY"; then
       start_x11vnc "$FALLBACK_DISPLAY"
     fi
   fi
