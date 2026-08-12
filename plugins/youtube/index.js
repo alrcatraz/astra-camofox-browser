@@ -10,7 +10,7 @@ import { classifyError } from '../../lib/request-utils.js';
 
 export async function register(app, ctx, pluginConfig = {}) {
   const { log, config, sessions, ensureBrowser, getSession,
-          withUserLimit, safePageClose, normalizeUserId,
+          withUserLimit, createLeasedPage, closeLeasedPage, normalizeUserId,
           validateUrl, safeError, buildProxyUrl, proxyPool,
           failuresTotal } = ctx;
 
@@ -78,7 +78,7 @@ export async function register(app, ctx, pluginConfig = {}) {
     return await withUserLimit('__yt_transcript__', async () => {
       await ensureBrowser();
       const session = await getSession('__yt_transcript__');
-      const page = await session.context.newPage();
+      const { page, lease } = await createLeasedPage(session);
 
       try {
         await page.addInitScript(() => {
@@ -184,14 +184,14 @@ export async function register(app, ctx, pluginConfig = {}) {
           available_languages: meta.languages,
         };
       } finally {
-        await safePageClose(page);
+        await closeLeasedPage(session, page, lease);
         // Clean up transcript session if no live pages remain
         const ytKey = normalizeUserId('__yt_transcript__');
         const ytSession = sessions.get(ytKey);
         if (ytSession && !ytSession._closing) {
           try {
             const remainingPages = ytSession.context.pages();
-            if (remainingPages.length === 0) {
+            if (remainingPages.length === 0 && !ytSession.pageLeases?.size) {
               ytSession._closing = true;
               ytSession.context.close().catch(() => {});
               sessions.delete(ytKey);

@@ -1,17 +1,40 @@
-# Thin override layer — based on existing VNC image
+# Astra thin-layer build — base on the existing VNC-capable image to skip the
+# GFW-hostile apt / npm / Camoufox downloads entirely.
+#
+# Why: the canonical Dockerfile (upstream v1.13.1) does `RUN apt-get install`
+# (109 deb packages) + `RUN npm ci` (needs node-gyp for better-sqlite3) + curl
+# downloads. Rootless podman behind the GFW stalls on deb.debian.org big-file
+# downloads and registry.npmjs.org. This thin layer reuses the already-built
+# `135.0.1-x86_64-vnc` image (which has x11vnc, websockify, the Camoufox
+# 135.0.1 binary, and a working toolchain) and only overlays the NEW code.
+#
+# Trade-off: image tag is a layer on an unreproducible base — not a standalone
+# build. Use the canonical Dockerfile when a network-clean build machine exists.
 FROM localhost/camofox-browser:135.0.1-x86_64-vnc
 
-# Copy patched vnc-watcher.sh (v2.3: fallback Xvfb :99 + port-based liveness
-# + ps|awk self-exclusion + display-aware attach — VNC always reachable AND
-# serves the browser's actual display, survives zombie states + port theft)
-COPY plugins/vnc/vnc-watcher.sh /app/plugins/vnc/vnc-watcher.sh
+# Overlay the merged v1.13.1 + astra-fork code.
+# node_modules is host-preinstalled (has all prod + dev deps incl. the prebuilt
+# better-sqlite3 binary) so we skip container `npm ci` entirely.
+COPY package.json package-lock.json ./
+COPY node_modules ./node_modules
+COPY server.js ./
+COPY camofox.config.json ./
+COPY lib/ ./lib/
+COPY plugins/ ./plugins/
+COPY scripts/ ./scripts/
 
-# Override CMD: remove xvfb-run (VNC plugin manages its own display)
-# exec: PID 1 = node so SIGTERM reaches gracefulShutdown (podman stop 0.8s,
-# not 15s+SIGKILL). VNC watcher spawns x11vnc itself; no background x11vnc here.
+# Astra fork runtime env (baked mirror of the upstream Dockerfile values).
+ENV NODE_ENV=production
+ENV CAMOFOX_PORT=9377
 ENV ENABLE_VNC=1
 ENV BROWSER_IDLE_TIMEOUT_MS=0
 
+EXPOSE 9377
 EXPOSE 5900
 
-CMD ["sh", "-c", "exec node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
+# PID 1 must be node, NOT sh: `sh -c node` swallows SIGTERM (shell buffers it,
+# node never sees it) → podman stop hits the 10s timeout and SIGKILLs the
+# container. With node as PID 1, server.js's gracefulShutdown runs and the
+# container exits cleanly in <1s. MAX_OLD_SPACE_SIZE is fixed at 128 to keep
+# the CMD exec-form; override at build time via --change if ever needed.
+CMD ["node", "--max-old-space-size=128", "server.js"]

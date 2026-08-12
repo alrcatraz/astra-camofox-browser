@@ -19,9 +19,10 @@ export default async function globalTeardown() {
     await new Promise((resolve) => {
       proc.on('close', resolve);
       proc.kill('SIGTERM');
-      setTimeout(() => {
+      const forceKillTimeout = setTimeout(() => {
         if (!proc.killed) proc.kill('SIGKILL');
       }, 5000);
+      forceKillTimeout.unref();
     });
   }
 
@@ -29,6 +30,11 @@ export default async function globalTeardown() {
   const envFile = globalThis.__CAMOFOX_ENV_FILE__;
   if (envFile) {
     try { fs.unlinkSync(envFile); } catch (e) { /* ignore */ }
+  }
+
+  const uploadsTempDir = globalThis.__CAMOFOX_UPLOADS_TEMP_DIR__;
+  if (uploadsTempDir) {
+    try { fs.rmSync(uploadsTempDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
   }
 
   console.log('[globalTeardown] done');

@@ -40,8 +40,15 @@ VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 VNC_RESOLUTION="${VNC_RESOLUTION:-1920x1080x24}"
 FALLBACK_DISPLAY="${FALLBACK_DISPLAY:-:99}"
+VNC_STATUS_FILE="${VNC_STATUS_FILE:-}"
 
 log() { printf '[vnc-watcher] %s\n' "$*" >&2; }
+clear_status() { [ -z "$VNC_STATUS_FILE" ] || rm -f "$VNC_STATUS_FILE"; }
+write_status() {
+  [ -z "$VNC_STATUS_FILE" ] && return 0
+  printf '%s %s\n' "$CURRENT_DISPLAY" "$(port_pid)" > "$VNC_STATUS_FILE"
+}
+trap clear_status EXIT
 
 CURRENT_DISPLAY=""
 
@@ -164,7 +171,13 @@ start_x11vnc() {
   # shellcheck disable=SC2086
   x11vnc $X11VNC_ARGS || log "x11vnc attach failed on $CURRENT_DISPLAY (will retry)"
   sleep 1
-  x11vnc_serving "$CURRENT_DISPLAY" && log "x11vnc serving :$VNC_PORT on DISPLAY=$CURRENT_DISPLAY" || log "WARNING: :$VNC_PORT not serving $CURRENT_DISPLAY after attach attempt"
+  if x11vnc_serving "$CURRENT_DISPLAY"; then
+    log "x11vnc serving :$VNC_PORT on DISPLAY=$CURRENT_DISPLAY"
+    write_status
+  else
+    log "WARNING: :$VNC_PORT not serving $CURRENT_DISPLAY after attach attempt"
+    clear_status
+  fi
 }
 
 # PID of the Xvfb listening on /tmp/.X11-unix/X$1 ("" if none/stale).

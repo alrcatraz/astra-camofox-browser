@@ -33,10 +33,21 @@ import {
 import { actionFromReq, classifyError } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
-import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb } from './lib/reporter.js';
+import { createPageWithSessionRecovery } from './lib/new-page-recovery.js';
+import { resolveUploadPaths } from './lib/upload-paths.js';
+import { acquirePageLease, hasActivePageLeases, isPageLeased, releasePageLease, setLeasedPage } from './lib/page-lease.js';
+import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb, browserProcessNameRssMb } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
+import { killProcessIds } from './lib/browser-processes.js';
+import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses } from './lib/process-ownership.js';
+import {
+  safePageUrl, urlDomain, hashIdentifier,
+  isDeadContextError, isPageCrashedError, isTimeoutError,
+  isTabLockQueueTimeout, isTabDestroyedError,
+  browserErrorStatus, browserErrorCode, browserErrorRecovery, isRetryableBrowserError,
+} from './lib/browser-errors.js';
 
 const CONFIG = loadConfig();
 
@@ -108,7 +119,13 @@ function log(level, msg, fields = {}) {
 }
 
 const app = express();
-app.use(express.json({ limit: '100kb' }));
+const globalJsonParser = express.json({ limit: '100kb' });
+app.use((req, res, next) => {
+  if (req.method === 'POST' && /^\/tabs\/[^/]+\/evaluate$/.test(req.path)) {
+    return next();
+  }
+  return globalJsonParser(req, res, next);
+});
 
 // Request logging + metrics middleware
 app.use((req, res, next) => {
@@ -175,6 +192,14 @@ const IFRAME_SKIP_PATTERNS = [
   /web-pixel/i, /analytics/i, /tracking/i, /gtm/i, /facebook/i,
   /doubleclick/i, /google.*tag/i, /hotjar/i, /segment/i, /sentry/i,
   /recaptcha/i, /gstatic/i, /app-bridge/i, /extensions\.shopifycdn/i,
+  // Bot-detection / anti-automation frames. These are short-lived and frequently
+  // DETACH mid-ariaSnapshot, which hangs buildRefs until the handler timeout (30s)
+  // and surfaces as a spurious 500 on the click/snapshot that triggered the rebuild.
+  // e.g. LinkedIn injects PerimeterX (px-iframe-*/px-captcha) on authenticated
+  // actions such as the connection-invite modal, so skipping these is required for
+  // those write flows to work.
+  /px-iframe/i, /px-captcha/i, /perimeterx/i, /\bcaptcha\b/i, /hcaptcha/i,
+  /arkose/i, /funcaptcha/i, /datadome/i,
 ];
 const MAX_IFRAMES_TO_PROCESS = 8;
 const IFRAME_SNAPSHOT_TIMEOUT_MS = 3000;
@@ -193,6 +218,60 @@ class StaleRefsError extends Error {
   }
 }
 
+function selectorValidationError(selector) {
+  if (selector === undefined || selector === null) return null;
+  if (typeof selector !== 'string' || selector.trim() === '') return 'selector must be a non-empty string';
+  if (/^text\s*\(/i.test(selector)) return 'Invalid text selector syntax. Use text=... or a valid CSS selector.';
+  const stack = [];
+  let quote = null;
+  let escaped = false;
+  const pairs = { ')': '(', ']': '[', '}': '{' };
+  for (const ch of selector) {
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\') { escaped = true; continue; }
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') stack.push(ch);
+    if (ch === ')' || ch === ']' || ch === '}') {
+      if (stack.pop() !== pairs[ch]) return `Invalid selector syntax: ${selector}`;
+    }
+  }
+  if (quote || stack.length) return `Invalid selector syntax: ${selector}`;
+  return null;
+}
+
+function invalidSelectorError(message) {
+  return Object.assign(new Error(message), { code: 'invalid_selector', statusCode: 400 });
+}
+
+const NON_FILLABLE_INPUT_TYPES = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit']);
+
+async function assertLocatorFillable(locator) {
+  const info = await locator.evaluate((el) => {
+    const tagName = el.tagName?.toLowerCase?.() || '';
+    const type = tagName === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : '';
+    const role = el.getAttribute?.('role') || '';
+    const contentEditable = el.isContentEditable;
+    return { tagName, type, role, contentEditable };
+  });
+  if (info.contentEditable || info.tagName === 'textarea') return;
+  if (info.tagName === 'input' && !NON_FILLABLE_INPUT_TYPES.has(info.type)) return;
+  if (info.role === 'textbox' || info.role === 'searchbox') return;
+  const target = info.type ? `${info.tagName}[type=${info.type}]` : (info.role ? `${info.tagName}[role=${info.role}]` : info.tagName || 'element');
+  throw Object.assign(new Error(`Element ${target} is not fillable. Use click for buttons and other controls.`), {
+    code: 'element_not_actionable',
+    statusCode: 422,
+  });
+}
+
+async function fillLocator(locator, text) {
+  await assertLocatorFillable(locator);
+  await locator.fill(text, { timeout: 10000 });
+}
+
 function safeError(err) {
   if (CONFIG.nodeEnv === 'production') {
     log('error', 'internal error', { error: err.message, stack: err.stack });
@@ -201,21 +280,28 @@ function safeError(err) {
   return err.message;
 }
 
-// Send error response with appropriate status code (422 for stale refs, 500 otherwise)
 function sendError(res, err, extraFields = {}) {
-  const status = err instanceof StaleRefsError ? 422 : (err.statusCode || 500);
-  const body = { error: safeError(err), ...extraFields };
-  if (err instanceof StaleRefsError) {
-    body.code = 'stale_refs';
-    body.ref = err.ref;
-  }
-  // Report unexpected 500s to Sentry (skip intentional admission-control 503s)
-  if (status >= 500 && !err.statusCode) {
+  const status = browserErrorStatus(err) || 500;
+  const code = browserErrorCode(err);
+  const recovery = browserErrorRecovery(err);
+  const body = {
+    error: safeError(err),
+    retryable: isRetryableBrowserError(err),
+    ...extraFields,
+  };
+  if (code) body.code = code;
+  if (recovery) body.recovery = recovery;
+  if (err instanceof StaleRefsError) body.ref = err.ref;
+  if (status >= 500 && !err.statusCode && !recovery) {
+    const req = res.req;
+    const userId = req?.query?.userId || req?.body?.userId;
     sentryCaptureException(err, {
-      path: res.req?.originalUrl,
-      method: res.req?.method,
-      userId: res.req?.query?.userId || res.req?.body?.userId,
-      reqId: res.req?.reqId,
+      path: req?.originalUrl,
+      route: req?.route?.path,
+      method: req?.method,
+      action: req ? actionFromReq(req) : undefined,
+      userIdHash: hashIdentifier(userId),
+      reqId: req?.reqId,
     });
   }
   res.status(status).json(body);
@@ -315,8 +401,26 @@ function validateUrl(url) {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.post('/sessions/:userId/cookies', authMiddleware(), express.json({ limit: '512kb' }), async (req, res) => {
+app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (req, res) => {
   try {
+    if (CONFIG.apiKey) {
+      const apiKey = CONFIG.apiKey;
+      const auth = String(req.headers['authorization'] || '');
+      const match = auth.match(/^Bearer\s+(.+)$/i);
+      if (!match || !timingSafeCompare(match[1], apiKey)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    } else {
+      const remoteAddress = req.socket?.remoteAddress || '';
+      const allowUnauthedLocal = CONFIG.nodeEnv !== 'production' && isLoopbackAddress(remoteAddress);
+      if (!allowUnauthedLocal) {
+        return res.status(403).json({
+          error:
+            'Cookie import is disabled without CAMOFOX_API_KEY except for loopback requests in non-production environments.',
+        });
+      }
+    }
+
     const userId = req.params.userId;
     if (!req.body || !('cookies' in req.body)) {
       return res.status(400).json({ error: 'Missing "cookies" field in request body' });
@@ -388,6 +492,7 @@ const MAX_SESSIONS = CONFIG.maxSessions;
 const MAX_TABS_PER_SESSION = CONFIG.maxTabsPerSession;
 const MAX_TABS_GLOBAL = CONFIG.maxTabsGlobal;
 const HANDLER_TIMEOUT_MS = CONFIG.handlerTimeoutMs;
+const NEW_PAGE_TIMEOUT_MS = CONFIG.newPageTimeoutMs;
 const MAX_CONCURRENT_PER_USER = CONFIG.maxConcurrentPerUser;
 const PAGE_CLOSE_TIMEOUT_MS = 5000;
 const NAVIGATE_TIMEOUT_MS = CONFIG.navigateTimeoutMs;
@@ -561,12 +666,12 @@ let browserIdleTimer = null;
 let browserLaunchPromise = null;
 let browserWarmRetryTimer = null;
 
-if (BROWSER_IDLE_TIMEOUT_MS <= 0) {
-  log('info', 'browser idle shutdown disabled (BROWSER_IDLE_TIMEOUT_MS=0)');
-}
+// Tracks why the browser was last stopped. Intentional reasons (idle_shutdown, admin_stop)
+// keep /health returning 200. Unexpected reasons trigger 503 + warm retry.
+let _lastBrowserStopReason = null;
+const INTENTIONAL_STOP_REASONS = new Set(['idle_shutdown', 'admin_stop']);
 
 function scheduleBrowserIdleShutdown() {
-  if (BROWSER_IDLE_TIMEOUT_MS <= 0) return;
   if (browserIdleTimer || sessions.size > 0 || !browser) return;
   browserIdleTimer = setTimeout(async () => {
     browserIdleTimer = null;
@@ -685,6 +790,25 @@ function getTotalTabCount() {
 // Virtual display for WebGL support and anti-detection.
 // Xvfb gives Firefox a real X display with GLX, enabling software-rendered WebGL
 // via Mesa llvmpipe. Without this, WebGL returns "no context" -- a massive bot signal.
+// Astra fork: keep the virtual display at 1920x1080x24 so a null-free browser
+// viewport (also 1920x1080, see the two `newContext({ viewport: { … 1920, 1080 } })`
+// call sites) matches the baked VNC screen (VNC_RESOLUTION=1920x1080x24). Upstream
+// defaults to 1280x720x24, which leaves letterboxing on the 1080p VNC display.
+const DEFAULT_VIRTUAL_DISPLAY_RESOLUTION = '1920x1080x24';
+
+class DefaultVirtualDisplay extends VirtualDisplay {
+  get xvfb_args() {
+    const args = super.xvfb_args;
+    const idx = args.indexOf('0');
+    if (idx > 0 && args[idx - 1] === '-screen') {
+      const patched = [...args];
+      patched[idx + 1] = DEFAULT_VIRTUAL_DISPLAY_RESOLUTION;
+      return patched;
+    }
+    return args;
+  }
+}
+
 let virtualDisplay = null;
 let browserLaunchProxy = null;
 let externalCamoufoxLaunch = null;
@@ -763,10 +887,17 @@ async function _closeBrowserFullyImpl(reason) {
   if (!b) return;
   clearBrowserIdleTimer();
 
-  // Capture PID before nulling browser ref -- we need it for force-kill
+  // Capture PID/process snapshot before nulling browser ref.
   const pid = _lastBrowserPid;
+  // Capture ownership before Playwright closes and reparents its children.
+  // Multiple scoped servers may share a host, so a later /proc name scan must
+  // never treat another server's browser as one of our survivors.
+  const ownedBrowserProcesses = snapshotOwnedBrowserProcesses(process.pid);
   const preCloseFds = _countOpenFds();
   const preCloseHandles = _countActiveHandles();
+
+  // Track stop reason for health semantics
+  _lastBrowserStopReason = reason;
 
   // Null the ref so new requests don't use a dying browser
   browser = null;
@@ -785,12 +916,11 @@ async function _closeBrowserFullyImpl(reason) {
     clearTimeout(closeTimer);
   }
 
-  // Force-kill browser survivors. Playwright's Firefox launcher can return no
-  // process PID, so fall back to scanning the container for Camoufox/Xvfb.
+  // Force-kill only survivors captured before this close began.
   if (pid) {
     await _forceKillProcessTree(pid, reason);
   }
-  await _forceKillBrowserProcesses(reason, pid);
+  await _forceKillBrowserProcesses(reason, ownedBrowserProcesses);
 
   // Clean up stale Firefox temp profiles (enable_cache: true accumulates data)
   try {
@@ -824,7 +954,8 @@ async function _closeBrowserFullyImpl(reason) {
 
 /**
  * Force-kill a browser process tree by PID. On Linux, kills the process group
- * (SIGKILL -pid) then scans /proc for any orphaned children.
+ * (SIGKILL -pid). Orphan cleanup is deliberately left to the ownership
+ * snapshot captured before browser.close(), below.
  */
 async function _forceKillProcessTree(pid, reason) {
   if (!pid || pid <= 1) return;
@@ -847,68 +978,19 @@ async function _forceKillProcessTree(pid, reason) {
     // ESRCH = group doesn't exist (browser wasn't a group leader), which is fine
   }
 
-  // Wait for kernel to reparent children to PID 1 before scanning
+  // Give the group kill time to complete. Any descendants that escaped it are
+  // selected later only from the pre-close, starttime-safe ownership snapshot.
   await new Promise(r => setTimeout(r, 200));
-
-  // On Linux: scan /proc for orphaned children that escaped the process group
-  // (reparented to PID 1 by init/systemd, common with Firefox content processes).
-  // Also checks PPid === Node PID for containerized environments without init.
-  if (process.platform === 'linux') {
-    const myPid = process.pid;
-    // Snapshot the current browser PID to avoid killing a newly launched browser
-    const currentBrowserPid = _lastBrowserPid;
-    try {
-      const procDirs = fs.readdirSync('/proc').filter(d => /^\d+$/.test(d));
-      const orphans = [];
-      for (const procPid of procDirs) {
-        const numPid = parseInt(procPid);
-        // Never kill ourselves, the old PID (already killed), or the new browser
-        if (numPid === myPid || numPid === pid || numPid === currentBrowserPid) continue;
-        try {
-          const status = fs.readFileSync(`/proc/${procPid}/status`, 'utf8');
-          const ppidMatch = status.match(/PPid:\s+(\d+)/);
-          const ppid = ppidMatch ? parseInt(ppidMatch[1]) : -1;
-          // Orphaned to init (PID 1) or reparented to us (Node is PID 1 in containers)
-          if (ppid === 1 || ppid === myPid) {
-            const cmdline = fs.readFileSync(`/proc/${procPid}/cmdline`, 'utf8');
-            // Firefox-specific: binary name or Gecko child process marker
-            if (/firefox-esr|firefox|camoufox|libxul\.so|GeckoChildProcess/i.test(cmdline)) {
-              orphans.push(numPid);
-            }
-          }
-        } catch { /* process vanished or permission denied */ }
-      }
-      if (orphans.length > 0) {
-        log('warn', 'killing orphaned browser child processes', { orphans, reason });
-        for (const orphanPid of orphans) {
-          try { process.kill(orphanPid, 'SIGKILL'); } catch { /* already dead */ }
-        }
-      }
-    } catch (err) {
-      log('warn', 'failed to scan for orphaned browser processes', { error: err.message });
-    }
-  }
 
   // Give the OS a moment to reclaim resources
   await new Promise(r => setTimeout(r, 300));
 }
 
-async function _forceKillBrowserProcesses(reason, excludePid = null) {
+async function _forceKillBrowserProcesses(reason, ownedBrowserProcesses = []) {
   if (process.platform !== 'linux') return;
-  const myPid = process.pid;
-  const victims = [];
+  let victims = [];
   try {
-    const procDirs = fs.readdirSync('/proc').filter(d => /^\d+$/.test(d));
-    for (const procPid of procDirs) {
-      const numPid = parseInt(procPid);
-      if (numPid === myPid || numPid === excludePid) continue;
-      try {
-        const cmdline = fs.readFileSync(`/proc/${procPid}/cmdline`, 'utf8');
-        if (/camoufox-bin|\/usr\/bin\/Xvfb\b/.test(cmdline)) {
-          victims.push(numPid);
-        }
-      } catch { /* process vanished or permission denied */ }
-    }
+    victims = survivingOwnedBrowserProcesses(ownedBrowserProcesses).map(proc => proc.pid);
   } catch (err) {
     log('warn', 'failed to scan for browser survivor processes', { reason, error: err.message });
     return;
@@ -916,10 +998,7 @@ async function _forceKillBrowserProcesses(reason, excludePid = null) {
 
   if (victims.length > 0) {
     log('warn', 'killing browser survivor processes', { reason, victims });
-    for (const victimPid of victims) {
-      try { process.kill(victimPid, 'SIGKILL'); } catch { /* already dead */ }
-    }
-    await new Promise(r => setTimeout(r, 300));
+    await killProcessIds(victims, { signal: 'SIGKILL', delayMs: 300 });
   }
 }
 
@@ -974,6 +1053,11 @@ async function launchBrowserInstance() {
     });
 
     try {
+      if (CONFIG.disableDefaultAddons) {
+        log('info', 'excluding default UBO addon from launch', {
+          excludeAddons: ['UBO'],
+        });
+      }
       const options = await launchOptions({
         executable_path: externalCamoufox?.executablePath,
         headless: useVirtualDisplay ? false : true,
@@ -983,8 +1067,18 @@ async function launchBrowserInstance() {
         proxy: launchProxy,
         geoip: !!launchProxy,
         virtual_display: vdDisplay,
+        exclude_addons: CONFIG.disableDefaultAddons ? ['UBO'] : undefined,
       });
       options.proxy = normalizePlaywrightProxy(options.proxy);
+      // Playwright's launcher defaults handleSIGTERM/SIGINT/SIGHUP to true,
+      // registering its own process signal handlers that send Browser.close
+      // straight to Firefox over its debug transport the instant a signal
+      // arrives -- independent of and racing ahead of our own gracefulShutdown()
+      // sequencing (including the persistence plugin's shutdown checkpoint).
+      // Disable them so gracefulShutdown() is the sole authority over shutdown.
+      options.handleSIGTERM = false;
+      options.handleSIGINT = false;
+      options.handleSIGHUP = false;
       await pluginEvents.emitAsync('browser:launching', { options });
 
       candidateBrowser = await firefox.launch(options);
@@ -1016,6 +1110,7 @@ async function launchBrowserInstance() {
       browserLaunchProxy = launchProxy;
       _lastBrowserPid = candidateBrowser.process?.()?.pid ?? null;
       browser = candidateBrowser; // publish AFTER PID is captured
+      _lastBrowserStopReason = null; // clear — browser is healthy
       _lastBrowserRestartAt = Date.now();
       attachBrowserCleanup(browser, localVirtualDisplay);
       pluginEvents.emit('browser:launched', { browser, display: vdDisplay });
@@ -1047,6 +1142,9 @@ async function launchBrowserInstance() {
 
 async function ensureBrowser() {
   clearBrowserIdleTimer();
+  if (_browserClosePromise) {
+    await _browserClosePromise;
+  }
   if (browser && !browser.isConnected()) {
     failuresTotal.labels('browser_disconnected', 'internal').inc();
     log('warn', 'browser disconnected, clearing dead sessions and relaunching', {
@@ -1213,7 +1311,7 @@ async function getSession(userId, { trace = false } = {}) {
         }
       }
 
-      const created = { context, tabGroups: new Map(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null, tracePath };
+      const created = { context, tabGroups: new Map(), pageLeases: new Set(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null, tracePath };
       sessions.set(key, created);
       await pluginEvents.emitAsync('session:created', { userId: key, context });
       log('info', 'session created', {
@@ -1229,6 +1327,42 @@ async function getSession(userId, { trace = false } = {}) {
   return session;
 }
 
+async function createLeasedPage(session) {
+  const lease = acquirePageLease(session);
+  try {
+    const page = setLeasedPage(lease, await session.context.newPage());
+    return { page, lease };
+  } catch (err) {
+    releasePageLease(session, lease);
+    throw err;
+  }
+}
+
+async function closeLeasedPage(session, page, lease) {
+  try {
+    await safePageClose(page);
+  } finally {
+    releasePageLease(session, lease);
+  }
+}
+
+async function createPageWithRecoveryForUser(userId, session, { trace = false } = {}) {
+  const key = normalizeUserId(userId);
+  return createPageWithSessionRecovery({
+    userId: key,
+    session,
+    trace,
+    timeoutMs: NEW_PAGE_TIMEOUT_MS,
+    withTimeout,
+    isTimeoutError,
+    isDeadContextError,
+    currentSession: () => sessions.get(key),
+    destroySession,
+    getSession,
+    log,
+  });
+}
+
 function getTabGroup(session, listItemId) {
   let group = session.tabGroups.get(listItemId);
   if (!group) {
@@ -1236,28 +1370,6 @@ function getTabGroup(session, listItemId) {
     session.tabGroups.set(listItemId, group);
   }
   return group;
-}
-
-function isDeadContextError(err) {
-  const msg = err && err.message || '';
-  return msg.includes('Target page, context or browser has been closed') ||
-         msg.includes('browser has been closed') ||
-         msg.includes('Context closed') ||
-         msg.includes('Browser closed');
-}
-
-function isTimeoutError(err) {
-  const msg = err && err.message || '';
-  return msg.includes('timed out after') ||
-         (msg.includes('Timeout') && msg.includes('exceeded'));
-}
-
-function isTabLockQueueTimeout(err) {
-  return err && err.message === 'Tab lock queue timeout';
-}
-
-function isTabDestroyedError(err) {
-  return err && err.message === 'Tab destroyed';
 }
 
 // Centralized error handler for route catch blocks.
@@ -1275,11 +1387,39 @@ function handleRouteError(err, req, res, extraFields = {}) {
 
   const userId = req.body?.userId || req.query?.userId;
   const tabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
+  let foundForContext = null;
+  if (userId && tabId) {
+    const session = sessions.get(normalizeUserId(userId));
+    foundForContext = session && findTab(session, tabId);
+  }
+  const pageUrl = safePageUrl(foundForContext?.tabState?.page);
+  const sentryContext = {
+    route: req.route?.path,
+    path: req.originalUrl,
+    method: req.method,
+    action,
+    reqId: req.reqId,
+    tabId,
+    userIdHash: hashIdentifier(userId),
+    urlDomain: urlDomain(pageUrl),
+    browserHealth: {
+      sessions: sessions.size,
+      tabs: _countTabs(),
+      browserPid: _browserPid(),
+      pageClosed: Boolean(foundForContext?.tabState?.page?.isClosed?.()),
+      pageCrashed: Boolean(foundForContext?.tabState?.crashed),
+    },
+    tabHealth: foundForContext?.tabState?.healthTracker?.snapshot?.(),
+  };
   if (tabId) {
-    pluginEvents.emit('tab:error', { userId, tabId, error: err });
+    pluginEvents.emit('tab:error', { userId, tabId, error: err, ...sentryContext });
+  }
+  if (isPageCrashedError(err)) {
+    if (foundForContext) destroyTab(sessions.get(normalizeUserId(userId)), tabId, 'page_crashed', userId);
+    return res.status(410).json({ error: 'Page crashed. Open a new tab.', code: 'page_crashed', retryable: true, recovery: 'create_new_tab', ...extraFields });
   }
   if (userId && isDeadContextError(err)) {
-    destroySession(userId);
+    destroySession(userId).catch(() => {});
   }
   // Proxy errors mean the session is dead -- rotate at context level.
   // Destroy the user's session so the next request gets a fresh context with a new proxy.
@@ -1288,7 +1428,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
       action, userId, error: err.message,
     });
     browserRestartsTotal.labels('proxy_error').inc();
-    destroySession(userId);
+    destroySession(userId).catch(() => {});
   }
   // Navigation-related timeouts can poison the proxy session (e.g., Cloudflare holding
   // the connection open for 30s). The browser context shares a single proxy session, so
@@ -1300,7 +1440,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
       action, userId, error: err.message,
     });
     browserRestartsTotal.labels('navigation_timeout').inc();
-    destroySession(userId);
+    destroySession(userId).catch(() => {});
   }
   // Track consecutive timeouts per tab and auto-destroy stuck tabs
   // (for non-navigation timeouts like type, scroll that don't poison the proxy)
@@ -1324,17 +1464,17 @@ function handleRouteError(err, req, res, extraFields = {}) {
     if (session && tabId) {
       destroyTab(session, tabId, 'lock_queue', userId);
     }
-    return res.status(503).json({ error: 'Tab unresponsive and has been destroyed. Open a new tab.', code: 'tab_destroyed', ...extraFields });
+    return res.status(503).json({ error: 'Tab unresponsive and has been destroyed. Open a new tab.', code: 'tab_unresponsive', retryable: true, recovery: 'create_new_tab', ...extraFields });
   }
   // Tab was destroyed while this request was queued in the lock
   if (isTabDestroyedError(err)) {
-    return res.status(410).json({ error: 'Tab was destroyed. Open a new tab.', ...extraFields });
+    return res.status(410).json({ error: 'Tab was destroyed. Open a new tab.', code: 'tab_destroyed', retryable: true, recovery: 'create_new_tab', ...extraFields });
   }
   // Dead context = session torn down (by proxy error, timeout, or reaper) while this op
   // was in flight. The ROOT CAUSE was already reported — this is a cascade error.
   // Return 503 (retriable) so the client retries with a fresh session.
   if (isDeadContextError(err)) {
-    return res.status(503).json({ error: 'Browser session expired. Retry to get a fresh session.', code: 'session_expired', ...extraFields });
+    return res.status(503).json({ error: 'Browser session expired. Retry to get a fresh session.', code: 'session_expired', retryable: true, recovery: 'retry', ...extraFields });
   }
   // --- Frustration detection: report when a tab hits a streak of failures ---
   // Individual failures are noise. 3+ consecutive = the site is persistently broken.
@@ -1433,13 +1573,14 @@ async function recycleOldestTab(session, reqId, userId) {
   return { recycledTabId: oldestTabId, recycledFromGroup: oldestGroupKey };
 }
 
-function destroySession(userId) {
+async function destroySession(userId, { reason = 'destroy_session' } = {}) {
   const key = normalizeUserId(userId);
   const session = sessions.get(key);
-  if (!session) return;
-  log('warn', 'destroying dead session', { userId: key });
+  if (!session) return false;
+  log('warn', 'destroying session', { userId: key, reason });
   sessions.delete(key);
-  closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
+  await closeSession(key, session, { reason, clearDownloads: true, clearLocks: true });
+  return true;
 }
 
 function findTab(session, tabId) {
@@ -1460,7 +1601,11 @@ function tabNotFoundResponse(res, tabId) {
   // Only return 410 for tabs that look like valid UUIDs (plausibly created by this server),
   // belonged to this machine, and were lost in a recent browser restart.
   // Random/invalid strings like 'non-existent-tab' always get 404.
-  if (_lastBrowserRestartAt && (Date.now() - _lastBrowserRestartAt < 300_000) && UUID_RE.test(tabId) && fly.isLocalTab(tabId)) {
+  // Tab IDs may be Fly-prefixed: "{machineId}_{uuid}" — extract UUID portion for validation.
+  const uuidPart = tabId && tabId.includes('_') && !tabId.slice(0, tabId.indexOf('_')).includes('-')
+    ? tabId.slice(tabId.indexOf('_') + 1)
+    : tabId;
+  if (_lastBrowserRestartAt && (Date.now() - _lastBrowserRestartAt < 300_000) && UUID_RE.test(uuidPart) && fly.isLocalTab(tabId)) {
     return res.status(410).json({
       error: 'Tab no longer exists (browser was restarted). Create a new tab.',
       code: 'browser_restarted',
@@ -1471,7 +1616,7 @@ function tabNotFoundResponse(res, tabId) {
 
 function createTabState(page) {
   const healthTracker = createTabHealthTracker(page);
-  return {
+  const tabState = {
     page,
     refs: new Map(),
     visitedUrls: new Set(),
@@ -1487,7 +1632,10 @@ function createTabState(page) {
     navigateAbort: null,
     pressureObservedAt: Date.now(),
     pressureObservedToolCalls: 0,
+    crashed: false,
   };
+  page?.on?.('crash', () => { tabState.crashed = true; });
+  return tabState;
 }
 
 /**
@@ -1510,8 +1658,8 @@ function attachPopupHandler(page, userId, sessionKey) {
     popupGroup.set(popupTabId, popupTabState);
     currentSession.lastAccess = Date.now();
     refreshActiveTabsGauge();
-    log('info', 'popup registered as managed tab', { userId: key, tabId: popupTabId, url: popupPage.url() });
-    pluginEvents.emit('tab:created', { userId: key, tabId: popupTabId, page: popupPage, url: popupPage.url() });
+    log('info', 'popup registered as managed tab', { userId: key, tabId: popupTabId, url: safePageUrl(popupPage) });
+    pluginEvents.emit('tab:created', { userId: key, tabId: popupTabId, page: popupPage, url: safePageUrl(popupPage) });
     // Recursively handle popups from the popup
     attachPopupHandler(popupPage, userId, sessionKey);
   });
@@ -1637,7 +1785,7 @@ async function camofoxPressureCleanup(options = {}) {
       for (const [listItemId, group] of Array.from(session.tabGroups.entries())) {
         if (group.size === 0) session.tabGroups.delete(listItemId);
       }
-      if (closeEmptySessions && session.tabGroups.size === 0) {
+      if (closeEmptySessions && session.tabGroups.size === 0 && !hasActivePageLeases(session)) {
         session._closing = true;
         await closeSession(userId, session, { reason: 'pressure_cleanup_empty_session', clearDownloads: true, clearLocks: true });
         sessionsExpiredTotal.inc();
@@ -1686,12 +1834,13 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
   }
   const session = await getSession(userId);
   const group = getTabGroup(session, sessionKey);
-  const page = await session.context.newPage();
+  const { page, lease } = await createLeasedPage(session);
   const tabState = createTabState(page);
   tabState.googleRetryCount = (previousTabState.googleRetryCount || 0) + 1;
   tabState.lastRequestedUrl = previousTabState.lastRequestedUrl;
   attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
   group.set(tabId, tabState);
+  releasePageLease(session, lease);
   attachPopupHandler(page, userId, sessionKey);
   refreshActiveTabsGauge();
 
@@ -2370,6 +2519,23 @@ app.get('/health', (req, res) => {
   const rssMb = Math.round(mem.rss / 1048576);
   const heapUsedMb = Math.round(mem.heapUsed / 1048576);
   const nativeMemMb = rssMb - heapUsedMb;
+
+  // Browser not running: distinguish intentional idle stop from unexpected death
+  if (!running && _lastBrowserStopReason && !INTENTIONAL_STOP_REASONS.has(_lastBrowserStopReason)) {
+    // Unexpected browser absence — schedule recovery and report unhealthy
+    scheduleBrowserWarmRetry();
+    return res.status(503).json({
+      ok: false,
+      engine: 'camoufox',
+      browserRunning: false,
+      reason: _lastBrowserStopReason,
+      activeTabs: 0,
+      activeSessions: sessions.size,
+      memory: { rssMb, heapUsedMb, nativeMemMb },
+      ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
+    });
+  }
+
   res.json({ 
     ok: true, 
     engine: 'camoufox',
@@ -2485,7 +2651,7 @@ app.get('/metrics', async (_req, res) => {
  *                 preserved:
  *                   type: object
  */
-app.post('/pressure/cleanup', authMiddleware(), async (req, res) => {
+app.post('/pressure/cleanup', async (req, res) => {
   try {
     const result = await camofoxPressureCleanup(req.body || {});
     log('info', 'pressure cleanup', {
@@ -2611,13 +2777,17 @@ app.post('/tabs', async (req, res) => {
         }
       }
       
+      const createdPage = await createPageWithRecoveryForUser(userId, session, { trace: !!trace });
+      session = createdPage.session;
+      const page = createdPage.page;
+      const lease = createdPage.lease;
       const group = getTabGroup(session, resolvedSessionKey);
-      
-      const page = await session.context.newPage();
+
       const tabId = fly.makeTabId();
       let tabState = createTabState(page);
       attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
       group.set(tabId, tabState);
+      releasePageLease(session, lease);
       attachPopupHandler(page, userId, resolvedSessionKey);
       refreshActiveTabsGauge();
       
@@ -2640,11 +2810,12 @@ app.post('/tabs', async (req, res) => {
             }
             session = await getSession(userId, { trace: !!trace });
             const retryGroup = getTabGroup(session, resolvedSessionKey);
-            const retryPage = await session.context.newPage();
+            const { page: retryPage, lease: retryLease } = await createLeasedPage(session);
             tabState = createTabState(retryPage);
             tabState.lastRequestedUrl = url;
             attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
             retryGroup.set(tabId, tabState);
+            releasePageLease(session, retryLease);
             attachPopupHandler(retryPage, userId, resolvedSessionKey);
             refreshActiveTabsGauge();
             await withPageLoadDuration('open_url', () => retryPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
@@ -2794,9 +2965,15 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
 
         const prewarmGoogleHome = async () => {
           if (!isGoogleSearch || tabState.visitedUrls.has('https://www.google.com/')) return;
-          await withPageLoadDuration('navigate', () => tabState.page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }));
-          tabState.visitedUrls.add('https://www.google.com/');
-          await tabState.page.waitForTimeout(1200);
+          const prewarm = await createLeasedPage(session);
+          const prewarmPage = prewarm.page;
+          try {
+            await withPageLoadDuration('navigate', () => prewarmPage.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }));
+            tabState.visitedUrls.add('https://www.google.com/');
+            await prewarmPage.waitForTimeout(1200);
+          } finally {
+            await closeLeasedPage(session, prewarmPage, prewarm.lease);
+          }
         };
 
         const recreateTabOnFreshContext = async () => {
@@ -2811,11 +2988,12 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           }
           session = await getSession(userId);
           const group = getTabGroup(session, currentSessionKey);
-          const page = await session.context.newPage();
+          const { page, lease } = await createLeasedPage(session);
           tabState = createTabState(page);
           tabState.googleRetryCount = previousRetryCount + 1;
           attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
           group.set(tabId, tabState);
+          releasePageLease(session, lease);
           attachPopupHandler(page, userId, currentSessionKey);
           refreshActiveTabsGauge();
         };
@@ -3223,6 +3401,12 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: Page changed during the click; caller should take a fresh snapshot and retry with current refs.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs/:tabId/click', async (req, res) => {
   const tabId = req.params.tabId;
@@ -3241,6 +3425,8 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     if (!ref && !selector) {
       return res.status(400).json({ error: 'ref or selector required' });
     }
+    const selectorErr = selectorValidationError(selector);
+    if (selectorErr) throw invalidSelectorError(selectorErr);
     
     const result = await withUserLimit(userId, () => withTabLock(tabId, async () => {
       const clickStart = Date.now();
@@ -3248,7 +3434,23 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       // Full mouse event sequence for stubborn JS click handlers (mirrors Swift WebView.swift)
       // Dispatches: mouseover -> mouseenter -> mousedown -> mouseup -> click
       const dispatchMouseSequence = async (locator) => {
-        const box = await locator.boundingBox();
+        // boundingBox() with no timeout inherits Playwright's 30s default, which
+        // silently eats the entire handler budget when the element detached after
+        // the failed click attempt (the page changed under us). Bound it to the
+        // remaining budget (capped at 3s) so the route fails fast with an
+        // actionable 422 instead of blowing HANDLER_TIMEOUT_MS into a 500.
+        // NOTE: the message deliberately avoids the 'timed out after' phrase so
+        // isTimeoutError() doesn't classify a detached element as a navigation
+        // timeout and destroy the whole session in handleRouteError().
+        const bboxTimeout = Math.max(500, Math.min(3000, remainingBudget()));
+        let box;
+        try {
+          box = await locator.boundingBox({ timeout: bboxTimeout });
+        } catch (e) {
+          const detachedErr = new Error(`Element not actionable: no bounding box within ${bboxTimeout}ms (element likely detached after page change). Call snapshot to refresh refs and retry.`);
+          detachedErr.statusCode = 422;
+          throw detachedErr;
+        }
         if (!box) throw new Error('Element not visible (no bounding box)');
         
         const x = box.x + box.width / 2;
@@ -3381,10 +3583,13 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         if (found?.tabState?.page && !found.tabState.page.isClosed()) {
           found.tabState.refs = await refreshTabRefs(found.tabState, { reason: 'click_timeout' });
           found.tabState.lastSnapshot = null;
-          return res.status(500).json({
-            error: safeError(err),
+          return res.status(409).json({
+            error: 'Page changed during click. Call snapshot to see the current state and retry with current refs.',
+            code: 'page_changed',
+            retryable: true,
+            recovery: 'snapshot_then_retry',
             hint: 'The page may have changed. Call snapshot to see the current state and retry.',
-            url: found.tabState.page.url(),
+            url: safePageUrl(found.tabState.page),
             refsCount: found.tabState.refs.size,
           });
         }
@@ -3392,6 +3597,225 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         log('warn', 'post-timeout refresh failed', { error: refreshErr.message });
       }
     }
+    handleRouteError(err, req, res);
+  }
+});
+
+// --- /tabs/:tabId/upload timeouts (ms) ---
+// UPLOAD_UI_TIMEOUT_MS is the default for the request's optional `timeout`: the
+// overall budget to wait for an upload UI to appear after the trigger is
+// activated -- either an in-app panel <input type=file> (preferred) or the
+// native file chooser. The panel-poll window sits UPLOAD_PANEL_MARGIN_MS inside
+// that budget so a native chooser that fires late is still caught after polling
+// stops. The remaining constants bound the individual Playwright calls.
+const UPLOAD_UI_TIMEOUT_MS = 12000;
+const UPLOAD_PANEL_MARGIN_MS = 2000;
+const UPLOAD_INPUT_TIMEOUT_MS = 4000; // setInputFiles() on an <input type=file>
+const UPLOAD_FOCUS_TIMEOUT_MS = 3000; // focus() the trigger before pressing Enter
+const UPLOAD_CLICK_TIMEOUT_MS = 4000; // forced click() fallback on the trigger
+const UPLOAD_PANEL_POLL_MS = 500; // interval between panel-input polls
+const UPLOAD_REFS_TIMEOUT_MS = 4000; // refreshTabRefs() before/after the upload
+const UPLOAD_SETTLE_MS = 1500; // let the page process the upload / render a preview
+
+// Upload (file attach via filechooser / setInputFiles)
+/**
+ * @openapi
+ * /tabs/{tabId}/upload:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Attach a file to an upload control
+ *     description: >
+ *       Attaches files from the configured upload directory without going through
+ *       the native OS file dialog. Set CAMOFOX_UPLOADS_DIR to a directory that
+ *       contains the files (default: ~/.camofox/uploads). Two strategies are
+ *       tried in order: (1) if an
+ *       <input type="file"> is already present, call Playwright setInputFiles
+ *       on it directly (works for hidden inputs); (2) otherwise arm a
+ *       filechooser listener, activate the trigger element (ref or selector)
+ *       via keyboard (focus + Enter) then a forced click as fallback, and call
+ *       setFiles on the resulting chooser. Each path must be an absolute path
+ *       that resolves inside the configured upload directory.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, path]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               path:
+ *                 description: "Absolute path, or array of paths, that resolves within CAMOFOX_UPLOADS_DIR."
+ *                 oneOf:
+ *                   - type: string
+ *                   - type: array
+ *                     items:
+ *                       type: string
+ *               ref:
+ *                 type: string
+ *                 description: "Trigger element ref (e.g. e36). Optional when an input[type=file] already exists."
+ *               selector:
+ *                 type: string
+ *                 description: "Trigger element CSS/Playwright selector. Optional when an input[type=file] already exists."
+ *               timeout:
+ *                 type: integer
+ *                 default: 12000
+ *                 description: "Overall budget in ms to wait for an upload UI (in-app panel input or native file chooser) to appear after the trigger is activated. Ignored values (non-numeric or <= 0) fall back to the default."
+ *     responses:
+ *       200:
+ *         description: "File(s) attached."
+ *       400:
+ *         description: "Bad request (missing path/userId; non-regular file; or a path that is missing or outside the configured upload directory)."
+ *       404:
+ *         description: "Tab not found."
+ */
+app.post('/tabs/:tabId/upload', async (req, res) => {
+  const tabId = req.params.tabId;
+  try {
+    const { userId, ref, selector } = req.body;
+    const { path: filePath } = req.body;
+    const uploadTimeout = Number.isFinite(req.body.timeout) && req.body.timeout > 0
+      ? req.body.timeout
+      : UPLOAD_UI_TIMEOUT_MS;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    if (!filePath) return res.status(400).json({ error: 'path required (container-side file path)' });
+
+    const paths = await resolveUploadPaths({ uploadsDir: CONFIG.uploadsDir, filePaths: Array.isArray(filePath) ? filePath : [filePath] });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    const result = await withUserLimit(userId, () => withTabLock(tabId, async () => {
+      const directInput = tabState.page.locator('input[type="file"]').first();
+      let attachedVia = null;
+
+      const trySetExistingInput = async () => {
+        try {
+          if (await directInput.count() > 0) {
+            await directInput.setInputFiles(paths, { timeout: UPLOAD_INPUT_TIMEOUT_MS });
+            return true;
+          }
+        } catch (e) {
+          log('info', 'upload: setInputFiles on existing input failed', { error: e.message });
+        }
+        return false;
+      };
+
+      // Strategy 1: an <input type=file> already exists right now (an upload
+      // panel was opened before this call) -> set files directly. setInputFiles
+      // works on hidden inputs and skips the OS dialog entirely.
+      if (await trySetExistingInput()) {
+        attachedVia = 'direct_input';
+      }
+
+      // Strategy 2: activate the trigger element, then handle EITHER UI path:
+      //   (a) the trigger opens the OS file chooser  -> answer the filechooser;
+      //   (b) the trigger opens an in-app upload panel that mounts a hidden
+      //       <input type=file> a beat later          -> setInputFiles on it.
+      // LinkedIn A/B-tests both behaviors for the same "Photo" control, so we
+      // arm the filechooser listener BEFORE clicking and then race it against
+      // polling for a freshly-mounted input. Whichever resolves first wins.
+      if (!attachedVia) {
+        let locator;
+        if (ref) {
+          locator = refToLocator(tabState.page, ref, tabState.refs);
+          if (!locator) {
+            try {
+              tabState.refs = await refreshTabRefs(tabState, { reason: 'pre_upload', timeoutMs: UPLOAD_REFS_TIMEOUT_MS });
+            } catch (e) { /* proceed without refresh */ }
+            locator = refToLocator(tabState.page, ref, tabState.refs);
+          }
+          if (!locator) {
+            const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none';
+            throw new StaleRefsError(ref, maxRef, tabState.refs.size);
+          }
+        } else if (selector) {
+          locator = tabState.page.locator(selector);
+        } else {
+          const err = new Error('No input[type=file] present and no ref/selector trigger provided.');
+          err.statusCode = 400;
+          throw err;
+        }
+
+        // Arm the filechooser listener FIRST (catch a no-quotes rejection so an
+        // unfired listener never crashes the handler), then activate the trigger.
+        const fcPromise = tabState.page
+          .waitForEvent('filechooser', { timeout: uploadTimeout })
+          .catch(() => null);
+        try {
+          await locator.focus({ timeout: UPLOAD_FOCUS_TIMEOUT_MS });
+          await tabState.page.keyboard.press('Enter');
+        } catch (e) {
+          try { await locator.click({ timeout: UPLOAD_CLICK_TIMEOUT_MS, force: true }); } catch (e2) { /* chooser/panel may still appear */ }
+        }
+
+        // The trigger may surface EITHER UI path (LinkedIn A/B-tests both, and
+        // its "Add media" control opens a native chooser AND mounts a hidden
+        // panel <input>). We must attach the file EXACTLY ONCE — attaching via
+        // both paths produces a duplicate ("1 of 2") image. So this is a
+        // PREFERENCE order, not a race:
+        //   1. Poll for an in-app <input type=file> and setInputFiles on it
+        //      (the reliable LinkedIn path -> via: panel_input).
+        //   2. Only if no panel input ever mounts, fall back to the native
+        //      chooser if it fired -> via: filechooser.
+        const panelWindow = Math.max(UPLOAD_PANEL_POLL_MS, uploadTimeout - UPLOAD_PANEL_MARGIN_MS);
+        const deadline = Date.now() + panelWindow;
+        while (!attachedVia && Date.now() < deadline) {
+          if (await trySetExistingInput()) { attachedVia = 'panel_input'; break; }
+          await tabState.page.waitForTimeout(UPLOAD_PANEL_POLL_MS);
+        }
+        if (!attachedVia) {
+          const fc = await fcPromise;
+          if (fc) {
+            try {
+              await fc.setFiles(paths);
+              attachedVia = 'filechooser';
+            } catch (e) {
+              log('info', 'upload: setFiles on filechooser failed', { error: e.message });
+            }
+          }
+        }
+        // If the panel path won, a native chooser may still have fired and be
+        // sitting on fcPromise. fcPromise is already .catch()'d to null so it
+        // can never reject; Playwright intercepts file choosers (no real OS
+        // dialog is left open), so an un-actioned chooser is harmless and needs
+        // no cancel() — which FileChooser doesn't expose in this PW version
+        // anyway. Nothing to do here; documented so nobody re-adds a second
+        // setFiles (that was the source of the duplicate-image bug).
+
+        if (!attachedVia) {
+          const err = new Error('Upload trigger did not open a file chooser or mount a file input.');
+          err.statusCode = 422;
+          throw err;
+        }
+      }
+
+      // Allow the page to process the upload / render a preview.
+      await tabState.page.waitForTimeout(UPLOAD_SETTLE_MS);
+
+      // Refresh refs so the caller's next snapshot reflects the post-upload UI.
+      try {
+        tabState.refs = await refreshTabRefs(tabState, { reason: 'post_upload', timeoutMs: UPLOAD_REFS_TIMEOUT_MS });
+      } catch (e) { tabState.refs = new Map(); }
+
+      return { ok: true, attached: paths, via: attachedVia, refsAvailable: tabState.refs.size > 0 };
+    }));
+
+    log('info', 'uploaded', { reqId: req.reqId, tabId, attached: paths, via: result.via });
+    pluginEvents.emit('tab:upload', { userId, tabId, paths });
+    res.json(result);
+  } catch (err) {
+    log('error', 'upload failed', { reqId: req.reqId, tabId, error: err.message });
     handleRouteError(err, req, res);
   }
 });
@@ -3451,6 +3875,12 @@ app.post('/tabs/:tabId/click', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: Page changed or target became invalid; caller should take a fresh snapshot and retry.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs/:tabId/type', async (req, res) => {
   const tabId = req.params.tabId;
@@ -3475,6 +3905,8 @@ app.post('/tabs/:tabId/type', async (req, res) => {
     if (mode === 'fill' && !ref && !selector) {
       return res.status(400).json({ error: 'ref or selector required for mode=fill' });
     }
+    const selectorErr = selectorValidationError(selector);
+    if (selectorErr) throw invalidSelectorError(selectorErr);
     const shouldSubmit = submit || pressEnter;
     
     await withTabLock(tabId, async () => {
@@ -3492,9 +3924,9 @@ app.post('/tabs/:tabId/type', async (req, res) => {
       
       if (mode === 'fill') {
         if (locator) {
-          await locator.fill(text, { timeout: 10000 });
+          await fillLocator(locator, text);
         } else {
-          await tabState.page.fill(selector, text, { timeout: 10000 });
+          await fillLocator(tabState.page.locator(selector), text);
         }
       } else {
         // keyboard mode -- char-by-char real key events (required for Ember/contenteditable)
@@ -3519,10 +3951,13 @@ app.post('/tabs/:tabId/type', async (req, res) => {
         if (found?.tabState?.page && !found.tabState.page.isClosed()) {
           found.tabState.refs = await refreshTabRefs(found.tabState, { reason: 'type_timeout' });
           found.tabState.lastSnapshot = null;
-          return res.status(500).json({
-            error: safeError(err),
+          return res.status(409).json({
+            error: 'Page changed during type. Call snapshot to see the current state and retry with current refs.',
+            code: 'page_changed',
+            retryable: true,
+            recovery: 'snapshot_then_retry',
             hint: 'The page may have changed. Call snapshot to see the current state and retry.',
-            url: found.tabState.page.url(),
+            url: safePageUrl(found.tabState.page),
             refsCount: found.tabState.refs.size,
           });
         }
@@ -4389,8 +4824,20 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: Page navigated while evaluating; caller should retry once the page settles.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       503:
+ *         description: Browser session expired; caller should retry to get a fresh session.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
-app.post('/tabs/:tabId/evaluate', authMiddleware(), express.json({ limit: '1mb' }), async (req, res) => {
+app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySize }), async (req, res) => {
   try {
     const { userId, expression } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
@@ -4410,9 +4857,8 @@ app.post('/tabs/:tabId/evaluate', authMiddleware(), express.json({ limit: '1mb' 
     log('info', 'evaluate', { reqId: req.reqId, tabId: req.params.tabId, userId, resultType: typeof result });
     res.json({ ok: true, result });
   } catch (err) {
-    failuresTotal.labels(classifyError(err), 'evaluate').inc();
-    log('error', 'evaluate failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    log('error', 'evaluate failed', { reqId: req.reqId, tabId: req.params.tabId, error: err.message });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -4940,7 +5386,7 @@ app.delete('/sessions/:userId/traces/:filename', authMiddleware(), async (req, r
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.delete('/sessions/:userId', authMiddleware(), async (req, res) => {
+app.delete('/sessions/:userId', async (req, res) => {
   try {
     const userId = normalizeUserId(req.params.userId);
     const session = sessions.get(userId);
@@ -4993,7 +5439,7 @@ if (FLY_MACHINE_ID) {
       let oldestKey = null;
       let oldestAccess = Infinity;
       for (const [key, session] of sessions) {
-        if (session._closing) continue;
+        if (session._closing || hasActivePageLeases(session)) continue;
         if (session.lastAccess < oldestAccess) {
           oldestAccess = session.lastAccess;
           oldestKey = key;
@@ -5054,7 +5500,7 @@ setInterval(() => {
       }
     }
     // Clean up sessions with zero tabs remaining -- free browser context memory
-    if (session.tabGroups.size === 0) {
+    if (session.tabGroups.size === 0 && !hasActivePageLeases(session)) {
       session._closing = true;
       log('info', 'session empty after tab reaper, closing', { userId });
       closeSession(userId, session, { reason: 'tab_reaper_empty_session', clearDownloads: true, clearLocks: true }).catch(() => {});
@@ -5082,7 +5528,7 @@ setInterval(() => {
       for (const tabState of group.values()) registered.add(tabState.page);
     }
     for (const page of contextPages) {
-      if (!registered.has(page)) {
+      if (!registered.has(page) && !isPageLeased(session, page)) {
         reaped++;
         page.removeAllListeners();
         page.close({ runBeforeUnload: false }).catch(() => {});
@@ -5100,7 +5546,7 @@ setInterval(() => {
   if (sessions.size > 0 || !browser) return;
   const mem = process.memoryUsage();
   const nativeMemMb = Math.round((mem.rss - mem.heapUsed) / 1048576);
-  const browserRssMb = browserProcessTreeRssMb(_browserPid());
+  const browserRssMb = browserProcessTreeRssMb(_browserPid()) ?? browserProcessNameRssMb();
 
   if (browserRssMb !== null && browserRssMb >= CONFIG.browserRssRestartThresholdMb) {
     log('warn', 'browser rss pressure, restarting browser', {
@@ -5311,11 +5757,12 @@ app.post('/tabs/open', async (req, res) => {
     
     let group = getTabGroup(session, listItemId);
     
-    let page = await session.context.newPage();
+    let { page, lease } = await createLeasedPage(session);
     const tabId = fly.makeTabId();
     let tabState = createTabState(page);
     attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
     group.set(tabId, tabState);
+    releasePageLease(session, lease);
     attachPopupHandler(page, userId, listItemId);
     refreshActiveTabsGauge();
     
@@ -5334,10 +5781,11 @@ app.post('/tabs/open', async (req, res) => {
         }
         session = await getSession(userId);
         group = getTabGroup(session, listItemId);
-        page = await session.context.newPage();
+        ({ page, lease } = await createLeasedPage(session));
         tabState = createTabState(page);
         attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
         group.set(tabId, tabState);
+        releasePageLease(session, lease);
         attachPopupHandler(page, userId, listItemId);
         refreshActiveTabsGauge();
         await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
@@ -5835,9 +6283,9 @@ app.post('/act', async (req, res) => {
           
           if (mode === 'fill') {
             if (locator) {
-              await locator.fill(text, { timeout: 10000 });
+              await fillLocator(locator, text);
             } else {
-              await tabState.page.fill(selector, text, { timeout: 10000 });
+              await fillLocator(tabState.page.locator(selector), text);
             }
           } else {
             if (locator) {
@@ -6001,8 +6449,11 @@ async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   log('info', 'shutting down', { signal });
-  pluginEvents.emit('server:shutdown', { signal });
 
+  // Arm the watchdog and stop accepting new connections before anything
+  // that can block or reject -- a hung or failing server:shutdown listener
+  // must not disable the force-exit safety net or widen the window where
+  // the server still accepts new sessions.
   const forceTimeout = setTimeout(() => {
     log('error', 'shutdown timed out, forcing exit');
     process.exit(1);
@@ -6011,6 +6462,10 @@ async function gracefulShutdown(signal) {
 
   server.close();
   stopMemoryReporter();
+
+  await pluginEvents.emitAsync('server:shutdown', { signal }).catch((err) => {
+    log('error', 'server:shutdown listener failed', { error: err.message });
+  });
 
   await closeAllSessions(`shutdown:${signal}`, {
     clearDownloads: false,
@@ -6046,6 +6501,8 @@ const pluginCtx = {
   closeSession,
   withUserLimit,
   safePageClose,
+  createLeasedPage,
+  closeLeasedPage,
   normalizeUserId,
   validateUrl,
   safeError,
@@ -6055,7 +6512,7 @@ const pluginCtx = {
   metricsRegistry: getRegister,
   createMetric,
   /** Factory for Xvfb virtual display. Plugins can replace this to customise resolution/args. */
-  createVirtualDisplay: () => new VirtualDisplay(),
+  createVirtualDisplay: () => new DefaultVirtualDisplay(),
   /** The upstream VirtualDisplay class -- plugins can subclass it. */
   VirtualDisplay,
 };
@@ -6067,15 +6524,17 @@ mountDocs(app);
 // --- Sentry Express error handler (after all routes, before app.listen) ---
 setupSentryErrorHandler(app);
 
-const server = app.listen(PORT, async () => {
+const server = app.listen(PORT, CONFIG.bindHost || undefined, async () => {
   startMemoryReporter();
   refreshActiveTabsGauge();
   refreshTabLockQueueDepth();
-  pluginEvents.emit('server:started', { port: PORT, pid: process.pid, plugins: loadedPlugins });
+  const address = server.address();
+  const bindHost = typeof address === 'object' && address ? address.address : CONFIG.bindHost;
+  pluginEvents.emit('server:started', { port: PORT, host: bindHost, pid: process.pid, plugins: loadedPlugins });
   if (FLY_MACHINE_ID) {
-    log('info', 'server started (fly)', { port: PORT, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
+    log('info', 'server started (fly)', { port: PORT, host: bindHost, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
   } else {
-    log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
+    log('info', 'server started', { port: PORT, host: bindHost, pid: process.pid, nodeVersion: process.version });
   }
   const tmpCleanup = cleanupOrphanedTempFiles({ tmpDir: os.tmpdir() });
   if (tmpCleanup.removed > 0) {

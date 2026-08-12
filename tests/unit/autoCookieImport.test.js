@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { jest } from '@jest/globals';
-import { importBootstrapCookies } from '../../lib/cookies.js';
+import { importBootstrapCookies, readCookieFile } from '../../lib/cookies.js';
 
 describe('importBootstrapCookies', () => {
   let tmpDir;
@@ -63,5 +63,41 @@ describe('importBootstrapCookies', () => {
 
     expect(result.imported).toBe(0);
     expect(logger.warn).toHaveBeenCalled();
+  });
+
+  test('reads a nested cookie file and an in-directory symlink', async () => {
+    const nestedDir = path.join(tmpDir, 'nested');
+    await fs.mkdir(nestedDir);
+    await fs.writeFile(
+      path.join(nestedDir, 'cookies.txt'),
+      '.example.com\tTRUE\t/\tTRUE\t1700000000\tlogged_in\tyes\n'
+    );
+    await fs.symlink(path.join(nestedDir, 'cookies.txt'), path.join(tmpDir, 'cookies-link.txt'));
+
+    await expect(readCookieFile({ cookiesDir: tmpDir, cookiesPath: 'nested/cookies.txt' }))
+      .resolves.toEqual([expect.objectContaining({ name: 'logged_in', value: 'yes' })]);
+    await expect(readCookieFile({ cookiesDir: tmpDir, cookiesPath: 'cookies-link.txt' }))
+      .resolves.toEqual([expect.objectContaining({ name: 'logged_in', value: 'yes' })]);
+  });
+
+  test('rejects traversal, absolute paths, and symlinks that resolve outside the cookie directory', async () => {
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'camofox-outside-cookies-'));
+    const outsideFile = path.join(outsideDir, 'cookies.txt');
+    await fs.writeFile(
+      outsideFile,
+      '.example.com\tTRUE\t/\tTRUE\t1700000000\toutside\tsecret\n'
+    );
+    await fs.symlink(outsideFile, path.join(tmpDir, 'escape.txt'));
+
+    try {
+      await expect(readCookieFile({ cookiesDir: tmpDir, cookiesPath: '../cookies.txt' }))
+        .rejects.toThrow('relative path within the cookies directory');
+      await expect(readCookieFile({ cookiesDir: tmpDir, cookiesPath: outsideFile }))
+        .rejects.toThrow('relative path within the cookies directory');
+      await expect(readCookieFile({ cookiesDir: tmpDir, cookiesPath: 'escape.txt' }))
+        .rejects.toThrow('resolves outside the cookies directory');
+    } finally {
+      await fs.rm(outsideDir, { recursive: true, force: true });
+    }
   });
 });

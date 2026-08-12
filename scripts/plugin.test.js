@@ -99,7 +99,11 @@ describe('plugin remove', () => {
     expect(fs.existsSync(installed)).toBe(false);
 
     const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-    expect(config.plugins).not.toContain('.tmp-test-plugin-rm');
+    if (Array.isArray(config.plugins)) {
+      expect(config.plugins).not.toContain('.tmp-test-plugin-rm');
+    } else {
+      expect(config.plugins['.tmp-test-plugin-rm']).toBeUndefined();
+    }
   });
 
   test('errors on unknown plugin', () => {
