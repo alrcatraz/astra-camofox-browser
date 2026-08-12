@@ -91,7 +91,13 @@ ENV BROWSER_IDLE_TIMEOUT_MS=0
 EXPOSE 9377
 EXPOSE 5900
 
-CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
+# PID 1 must be node, NOT sh: `sh -c node` swallows SIGTERM (shell buffers it,
+# node never sees it) → podman stop hits the timeout and SIGKILLs the
+# container, losing unpersisted session state. With node as PID 1,
+# server.js's gracefulShutdown runs and the container exits cleanly in <1s.
+# MAX_OLD_SPACE_SIZE fixed at 128 to keep exec-form CMD (v1.11 lesson, kept
+# across the v1.13.1 merge — upstream's Dockerfile still uses the sh wrapper).
+CMD ["node", "--max-old-space-size=128", "server.js"]
 
 # Optional: rebuild plugin deps after adding third-party plugins
 # Usage: docker build --target with-plugins -t camofox-browser .
