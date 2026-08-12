@@ -58,9 +58,18 @@ RUN curl -L -o /usr/local/bin/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/
 
 WORKDIR /app
 
+# Astra fork build strategy: node_modules is pre-installed on the HOST (which
+# has a working npm registry mirror + native toolchain) and COPY'd in, instead
+# of `RUN npm ci` inside the container. Reasons:
+#   - Upstream v1.13.1 pulls better-sqlite3@13, whose postinstall runs
+#     node-gyp rebuild. Inside the slim container that requires make/gcc/g++,
+#     python3-dev and a node-gyp download of node headers — all flaky behind the
+#     GFW. The host already has a compiled/prebuilt node_modules.
+#   - Rootless podman + internal container network cannot reliably reach
+#     registry.npmjs.org behind the GFW; the host uses registry.npmmirror.com.
 COPY package.json package-lock.json ./
 COPY scripts/ ./scripts/
-RUN npm ci --omit=dev
+COPY node_modules ./node_modules
 
 COPY server.js ./
 COPY camofox.config.json ./
