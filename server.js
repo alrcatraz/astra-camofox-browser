@@ -790,7 +790,11 @@ function getTotalTabCount() {
 // Virtual display for WebGL support and anti-detection.
 // Xvfb gives Firefox a real X display with GLX, enabling software-rendered WebGL
 // via Mesa llvmpipe. Without this, WebGL returns "no context" -- a massive bot signal.
-const DEFAULT_VIRTUAL_DISPLAY_RESOLUTION = '1280x720x24';
+// Astra fork: keep the virtual display at 1920x1080x24 so a null-free browser
+// viewport (also 1920x1080, see the two `newContext({ viewport: { … 1920, 1080 } })`
+// call sites) matches the baked VNC screen (VNC_RESOLUTION=1920x1080x24). Upstream
+// defaults to 1280x720x24, which leaves letterboxing on the 1080p VNC display.
+const DEFAULT_VIRTUAL_DISPLAY_RESOLUTION = '1920x1080x24';
 
 class DefaultVirtualDisplay extends VirtualDisplay {
   get xvfb_args() {
@@ -827,7 +831,7 @@ async function probeGoogleSearch(candidateBrowser) {
   let context = null;
   try {
     context = await candidateBrowser.newContext({
-      viewport: null,
+      viewport: { width: 1920, height: 1080 },
       permissions: ['geolocation'],
     });
     const page = await context.newPage();
@@ -1271,7 +1275,7 @@ async function getSession(userId, { trace = false } = {}) {
       }
       const b = await ensureBrowser();
       const contextOptions = {
-        viewport: null,
+        viewport: { width: 1920, height: 1080 },
         permissions: ['geolocation'],
       };
       // When geoip is active (proxy configured), camoufox auto-configures
