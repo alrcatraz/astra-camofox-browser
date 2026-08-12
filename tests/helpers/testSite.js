@@ -36,6 +36,18 @@ function createTestApp() {
     `);
   });
   
+  // Page that fires a client-side redirect shortly after DOMContentLoaded
+  app.get('/lateRedirect', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Late Redirect</title></head>
+      <body>
+        <h1>Redirecting soon</h1>
+        <script>setTimeout(() => { location.href = '/pageA'; }, 300);</script>
+      </body></html>
+    `);
+  });
+
   // Page with multiple links for links extraction test
   app.get('/links', (req, res) => {
     res.send(`
@@ -235,7 +247,25 @@ function createTestApp() {
     res.send(body);
   });
 
-  // Large page for snapshot truncation tests -- simulates a big product listing
+  // Page with a direct file input for upload endpoint tests
+  app.get('/upload', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Upload Test</title></head>
+      <body>
+        <h1>Upload Test Page</h1>
+        <input type="file" id="fileInput" />
+        <output id="selected">No file selected</output>
+        <script>
+          document.getElementById('fileInput').addEventListener('change', (event) => {
+            const [file] = event.target.files;
+            document.getElementById('selected').textContent = file ? file.name : 'No file selected';
+          });
+        </script>
+      </body></html>
+    `);
+  });
+
   app.get('/large-page', (req, res) => {
     const count = parseInt(req.query.count) || 500;
     const items = Array.from({ length: count }, (_, i) =>
