@@ -42,45 +42,62 @@ RUN apt-get update && apt-get install -y \
     python3-minimal \
     && rm -rf /var/lib/apt/lists/*
 
-# Pre-bake Camoufox browser binary into image
+# Pre-bake Camoufox browser binary into image (downloaded at build time)
 # Note: unzip returns exit code 1 for warnings (Unicode filenames), so we use || true and verify
-COPY dist/camoufox-${ARCH}.zip /tmp/camoufox.zip
 RUN mkdir -p /root/.cache/camoufox \
+    && curl -L -o /tmp/camoufox.zip "https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.${ARCH}.zip" \
     && (unzip -q /tmp/camoufox.zip -d /root/.cache/camoufox || true) \
+    && rm /tmp/camoufox.zip \
     && chmod -R 755 /root/.cache/camoufox \
     && echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > /root/.cache/camoufox/version.json \
-    && rm /tmp/camoufox.zip \
     && test -f /root/.cache/camoufox/camoufox-bin && echo "Camoufox installed successfully"
 
 # Install yt-dlp for YouTube transcript extraction (no browser needed)
-COPY dist/yt-dlp-${ARCH} /usr/local/bin/yt-dlp
-RUN chmod 755 /usr/local/bin/yt-dlp
+RUN curl -L -o /usr/local/bin/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp" \
+    && chmod 755 /usr/local/bin/yt-dlp
 
 WORKDIR /app
 
-COPY package.json ./
+# Astra fork build strategy: node_modules is pre-installed on the HOST (which
+# has a working npm registry mirror + native toolchain) and COPY'd in, instead
+# of `RUN npm ci` inside the container. Reasons:
+#   - Upstream v1.13.1 pulls better-sqlite3@13, whose postinstall runs
+#     node-gyp rebuild. Inside the slim container that requires make/gcc/g++,
+#     python3-dev and a node-gyp download of node headers — all flaky behind the
+#     GFW. The host already has a compiled/prebuilt node_modules.
+#   - Rootless podman + internal container network cannot reliably reach
+#     registry.npmjs.org behind the GFW; the host uses registry.npmmirror.com.
+COPY package.json package-lock.json ./
 COPY scripts/ ./scripts/
 COPY node_modules ./node_modules
+
+COPY server.js ./
+COPY camofox.config.json ./
 COPY lib/ ./lib/
 COPY plugins/ ./plugins/
 COPY scripts/ ./scripts/
-COPY server.js ./
-COPY camofox.config.json ./
-
-# Pin playwright-core to v1.58.0 for Camoufox compatibility
 
 # Install default plugin dependencies (apt packages + post-install hooks)
 RUN sh scripts/install-plugin-deps.sh
 
 ENV NODE_ENV=production
 ENV CAMOFOX_PORT=9377
+# Astra fork: bake a persistent VNC display so port 5900 is always servable
+# (mirrors the fork's v2.3 watcher fallback-Xvfb design; no browser session is
+# required to reach the VNC screen). Disables idle-shutdown of the browser too.
 ENV ENABLE_VNC=1
 ENV BROWSER_IDLE_TIMEOUT_MS=0
 
 EXPOSE 9377
 EXPOSE 5900
 
-CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
+# PID 1 must be node, NOT sh: `sh -c node` swallows SIGTERM (shell buffers it,
+# node never sees it) → podman stop hits the timeout and SIGKILLs the
+# container, losing unpersisted session state. With node as PID 1,
+# server.js's gracefulShutdown runs and the container exits cleanly in <1s.
+# MAX_OLD_SPACE_SIZE fixed at 128 to keep exec-form CMD (v1.11 lesson, kept
+# across the v1.13.1 merge — upstream's Dockerfile still uses the sh wrapper).
+CMD ["node", "--max-old-space-size=128", "server.js"]
 
 # Optional: rebuild plugin deps after adding third-party plugins
 # Usage: docker build --target with-plugins -t camofox-browser .

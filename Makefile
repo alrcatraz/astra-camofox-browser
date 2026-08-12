@@ -64,6 +64,7 @@ up:
 	  $(MAKE) build; \
 	fi
 	podman run -d --restart unless-stopped --name camofox-browser \
+	  --shm-size=2g \
 	  -v ~/.camofox/profiles:/root/.camofox/profiles:Z \
 	  -p 9377:9377 $(IMAGE)
 
