@@ -32,4 +32,9 @@ ENV BROWSER_IDLE_TIMEOUT_MS=0
 EXPOSE 9377
 EXPOSE 5900
 
-CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
+# PID 1 must be node, NOT sh: `sh -c node` swallows SIGTERM (shell buffers it,
+# node never sees it) → podman stop hits the 10s timeout and SIGKILLs the
+# container. With node as PID 1, server.js's gracefulShutdown runs and the
+# container exits cleanly in <1s. MAX_OLD_SPACE_SIZE is fixed at 128 to keep
+# the CMD exec-form; override at build time via --change if ever needed.
+CMD ["node", "--max-old-space-size=128", "server.js"]
