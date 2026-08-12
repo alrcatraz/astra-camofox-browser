@@ -73,8 +73,14 @@ RUN sh scripts/install-plugin-deps.sh
 
 ENV NODE_ENV=production
 ENV CAMOFOX_PORT=9377
+# Astra fork: bake a persistent VNC display so port 5900 is always servable
+# (mirrors the fork's v2.3 watcher fallback-Xvfb design; no browser session is
+# required to reach the VNC screen). Disables idle-shutdown of the browser too.
+ENV ENABLE_VNC=1
+ENV BROWSER_IDLE_TIMEOUT_MS=0
 
 EXPOSE 9377
+EXPOSE 5900
 
 CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
 
