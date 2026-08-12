@@ -18,7 +18,7 @@ describe('launch compatibility source contract', () => {
     expect(serverSource).not.toMatch(/vdDisplay\s*=\s*localVirtualDisplay\.get\(\)/);
   });
 
-  test('sizes the default virtual display used with null context viewports', () => {
+  test('sizes the default virtual display used with hardcoded 1920x1080 viewports', () => {
     const defaultVirtualDisplay = sourceBetween(
       'const DEFAULT_VIRTUAL_DISPLAY_RESOLUTION',
       'let virtualDisplay = null;'
@@ -28,13 +28,15 @@ describe('launch compatibility source contract', () => {
       'const loadedPlugins = await loadPlugins'
     );
 
-    expect(defaultVirtualDisplay).toContain("DEFAULT_VIRTUAL_DISPLAY_RESOLUTION = '1280x720x24'");
+    // Astra fork: default virtual display is 1920x1080x24 (matches the baked
+    // 1080p VNC screen and the hardcoded 1920x1080 browser context viewport).
+    expect(defaultVirtualDisplay).toContain("DEFAULT_VIRTUAL_DISPLAY_RESOLUTION = '1920x1080x24'");
     expect(defaultVirtualDisplay).toContain('class DefaultVirtualDisplay extends VirtualDisplay');
     expect(defaultVirtualDisplay).toContain('patched[idx + 1] = DEFAULT_VIRTUAL_DISPLAY_RESOLUTION');
     expect(pluginContext).toContain('createVirtualDisplay: () => new DefaultVirtualDisplay()');
   });
 
-  test('does not configure a fixed default browser context viewport', () => {
+  test('uses a fixed 1920x1080 browser context viewport (matches VNC screen)', () => {
     const googleProbeOptions = sourceBetween(
       'context = await candidateBrowser.newContext({',
       'const page = await context.newPage();'
@@ -44,8 +46,11 @@ describe('launch compatibility source contract', () => {
       '// When geoip is active'
     );
 
-    expect(googleProbeOptions).toContain('viewport: null');
-    expect(sessionContextOptions).toContain('viewport: null');
-    expect(`${googleProbeOptions}\n${sessionContextOptions}`).not.toMatch(/viewport\s*:\s*\{\s*width\s*:/);
+    // Astra fork: fixed viewport so the browser canvas fills the 1080p VNC
+    // display without letterboxing (upstream uses `viewport: null` + a 1280x720
+    // default virtual display, which leaves bars on the fork's baked VNC screen).
+    expect(googleProbeOptions).toMatch(/viewport:\s*\{\s*width:\s*1920,\s*height:\s*1080\s*\}/);
+    expect(sessionContextOptions).toMatch(/viewport:\s*\{\s*width:\s*1920,\s*height:\s*1080\s*\}/);
+    expect(`${googleProbeOptions}\n${sessionContextOptions}`).not.toMatch(/viewport\s*:\s*null/);
   });
 });
