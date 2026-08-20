@@ -576,3 +576,52 @@ Key patterns:
 - **Metrics**: `ctx.failuresTotal.labels(...)` for core counters, `ctx.createMetric()` for custom
 - **Code separation**: `child_process` in `youtube.js`, route handler in `index.js` -- separate files
 - **System deps**: `apt.txt` lists packages installed via `scripts/install-plugin-deps.sh`
+
+## Container Image Hygiene (2026-08-20)
+
+**Background.** rootless Podman keeps images/layers in
+`~/.local/share/containers/storage/`. Building a new version and tagging it
+does NOT free the previous tag — if old tags are not removed, the image
+history fills the disk (the host once hit 100% full with 1.6G left). This is
+the most common disk problem in this project's container build loop. The same
+discipline applies to any container-image project built with Podman.
+
+**Habit — after EVERY successful build of a new version:**
+1. Confirm the running/production container is on the **new** tag, then delete
+   the old tag(s):
+   ```bash
+   podman images                            # list current tags + sizes
+   podman rmi <image>:<old-version-tag>     # delete each obsolete tag one by one
+   ```
+   Keep only tags a running container references, plus one or two recent
+   versions as rollback insurance (how many is a user decision).
+2. Prune dangling images: `podman image prune -f`
+3. Multi-tag deletion often surfaces **new** `<none>` images (shared parent
+   layers exposed by the removed tags). Re-run `podman image prune -f` until
+   `podman images` shows a stable dangling set — a single pass is NOT enough.
+
+**Full-disk diagnosis checklist** (when the disk reports full):
+```bash
+df -h /                                     # which mount is full
+du -xhd1 ~/<user> | sort -rh | head        # locate the big user-dir blocks
+podman images | sort                        # image inventory
+podman image prune -f                       # clear dangling
+```
+The largest recoverable space is almost always `~/.local/share/containers/
+storage` (old image history).
+
+**Pitfalls (verified):**
+- Most dangling `<none>` images are **shared layers** (referenced by a running
+  container or as a parent of another image). Direct `podman rmi` fails and
+  `podman image prune -f` only removes what is safe — **do not force-delete
+  them**. They are usually not independent physical space (overlay de-dups
+  layers), so `df` may not grow from their removal.
+- **`podman images` Size is virtual** (includes parent layers). Physical disk
+  use is the de-duplicated overlay space, so the apparent sum of image sizes
+  is roughly double the real footprint — do not size recovery proposals off
+  that field.
+- `.cache` (uv/pip/npm) and `/tmp` are secondary recovery sources; they have
+  real value when the disk is extremely full.
+- **Never touch production data layers.** Layers under
+  `containers/storage/overlay` that are referenced by a running container
+  (this project's production image data) must not be deleted.
