@@ -1,0 +1,26 @@
+{
+  "name": "camofox-mcp",
+  "version": "1.0.0",
+  "description": "Streamable-HTTP MCP wrapper exposing the Camofox browser-automation REST API as MCP tools",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "camofox-mcp": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test test/camofox-mcp.test.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "camofox",
+    "browser-automation"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  }
+}
