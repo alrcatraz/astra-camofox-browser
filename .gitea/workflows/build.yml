@@ -48,7 +48,12 @@ jobs:
           # baked-in cache: nodejs_22 python3 gcc gnumake git curl (see bake script)
           export npm_config_build_from_source=true
           npm ci --no-audit --no-fund 2>&1 | tail -3
-          npx jest tests/unit plugins --silent 2>&1 | tail -6
+          # ESM tests need --experimental-vm-modules (same as npm run test:plugins).
+          # Camoufox-binary-dependent suites (cookies/security/tab*) can only pass
+          # where the browser exists; CI runs plugins + non-browser unit tests.
+          NODE_OPTIONS='--experimental-vm-modules' npx jest plugins \
+            tests/unit --testPathIgnorePatterns='cookies|security|tabRecycling|tabLifecycleContract|operationalFailures' \
+            --silent --forceExit 2>&1 | tail -6
 
   build-smoke:
     needs: test
