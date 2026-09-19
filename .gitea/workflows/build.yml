@@ -1,12 +1,13 @@
 name: Build & publish camofox image (astra)
 
-# Gitea-only pipeline. NAS runners ONLY (GitHub's .github/workflows belong to
-# upstream and are NOT used for astra builds):
-#   - nix-capable = ds425plus-nix; job container defaults to the runner's
-#     nixos/nix:runner image (runner-mounted /jobdata/ci-clone-token + baked /bin/sleep). node
-#     toolchain comes from a nix profile baked by scripts/bake-node-ci-image.sh,
-#     exposed via NIX_PATH profile activation below.
-#   - host = steps run directly on the DSM host (docker CLI + local images).
+# Gitea-only pipeline, NAS runners. Design decided 2026-09-19 after the baked
+# `nixos/nix:runner-ci` image was found wiped by Container Manager GC:
+# STOP baking toolchains/secrets into mutable local images. Instead both jobs
+# run on nix-capable and drive the NAS docker daemon through the socket that
+# act_runner mounts at /var/run/docker.sock — all heavy machinery (node test
+# image, VNC base, build cache) lives in the NAS image store under proper tags.
+# Secrets come from the host file /volume1/docker/act_runner_nix/data/ci-clone-token,
+# which is always available via a helper-container copy (no image baking).
 #
 # Regression gate: persistence smoke guards the silent plugin-death class
 # fixed in 1553c0f (missing mcp/lib/cookies.mjs COPY + logger.info TypeError).
@@ -20,79 +21,73 @@ concurrency:
   group: camofox-image-build
   cancel-in-progress: false
 
+env:
+  TOKEN_HOST_PATH: /volume1/docker/act_runner_nix/data/ci-clone-token
+
 jobs:
   test:
     runs-on: nix-capable
     steps:
-      - name: Checkout & unit tests
+      - name: Unit tests in node:22 container (docker.sock)
         shell: bash
         run: |
           set -euo pipefail
-          # DIAGNOSTIC RUN: print every line's exit status instead of dying silently.
-          _step() { echo "STEP[$1]"; }
-          TOK=$(cat /root/ci-clone-token); echo "TOK_LEN=${#TOK}"
+          # job image is minimal alpine+git; everything else happens in containers
+          docker version --format "server {{.Server.Version}}" || exit 1
+          TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
+          rm -rf "$PWD/repo"
           git config --global http.sslVerify false
-          rm -rf /workspace/repo
-          # container runs on gitea_default net -> talk to gitea directly (no Lucky round-trip)
-          git clone --branch "${{ gitea.ref_name }}" \
-            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" /workspace/repo
-          cd /workspace/repo
-          git checkout "${{ gitea.sha }}" 2>/dev/null || true
-          # activate the baked ci-cache profile (nodejs_22 python3 gcc gnumake git curl)
-          export PATH=/nix/var/nix/profiles/ci-cache/bin:$PATH
-          export npm_config_build_from_source=true
-          npm ci --no-audit --no-fund 2>&1 | tail -3
-          # ESM tests need --experimental-vm-modules (same as npm run test:plugins).
-          # Camoufox-binary-dependent suites can only pass where the browser exists.
-          # CLI --testPathIgnorePatterns REPLACES config patterns — repeat every exclusion here.
-          # ALL double quotes: act's format() rewrite collapses single quotes.
-          env NODE_OPTIONS="--experimental-vm-modules" npx jest plugins \
-            tests/unit --testPathIgnorePatterns="cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher" \
-            --silent --forceExit > /tmp/jest.log 2>&1 || true
-          # DIAGNOSTIC GATE: trap prints the exact line that killed the step.
-          trap "echo TRAP: step died at line \$LINENO" ERR
-          set -E
-          cat -A /tmp/jest.log | grep -E "Test Suites|Tests:" | head -4
-          grep -qE "^Test Suites: [0-9]+ passed, [0-9]+ total" /tmp/jest.log
-          grep -qE "^Tests: +[0-9]+ passed, [0-9]+ total" /tmp/jest.log
-          ! grep -qE "^(Test Suites|Tests): .*failed" /tmp/jest.log
-          echo TEST-GATE-PASSED
+          # clone as the CURRENT user (rootless docker mounts can reject root-owned trees)
+          GIT_SSL_NO_VERIFY=true git clone --branch "${{ gitea.ref_name }}" \
+            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/repo"
+          cd "$PWD/repo" && git checkout "${{ gitea.sha }}" 2>/dev/null || true
+          chmod -R a+rwX .
+          # npm ci + jest inside node:22 (toolchain comes from Docker Hub, not a
+          # hand-baked image). Cache volume persists node_modules between runs.
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            -v camofox-npm-ci-cache:/root/.npm \
+            -e CI=false \
+            node:22 sh -c "
+              npm ci --no-audit --no-fund 2>&1 | tail -3
+              env NODE_OPTIONS=--experimental-vm-modules npx jest plugins \
+                tests/unit --testPathIgnorePatterns='cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher' \
+                --silent --forceExit > /tmp/jest.log 2>&1 || true
+              grep -E '^Test Suites:|^Tests:' /tmp/jest.log | head -4
+              grep -qE '^Test Suites: [0-9]+ passed, [0-9]+ total' /tmp/jest.log
+              grep -qE '^Tests: +[0-9]+ passed, [0-9]+ total' /tmp/jest.log
+              ! grep -qE '^(Test Suites|Tests): .*failed' /tmp/jest.log
+              echo TEST-GATE-PASSED
+            "
 
   build-smoke:
     needs: test
-    # nix-capable runner = act_runner_nix: its config.yaml mounts the NAS
-    # docker.sock into every job container, and the baked :runner-ci image
-    # carries docker-cli + /root/ci-clone-token. ("host" was never a
-    # registered label -> eternal queue; ubuntu-latest lacked creds+docker.)
     runs-on: nix-capable
     steps:
-      - name: Clone repo (nix job container, NAS docker.sock mounted)
+      - name: Clone repo
         shell: bash
         run: |
           set -euo pipefail
-          TOK=$(cat /root/ci-clone-token)
+          TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
           rm -rf "$PWD/ci-repo"
           git config --global http.sslVerify false
           GIT_SSL_NO_VERIFY=true git clone --branch "${{ gitea.ref_name }}" \
             "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/ci-repo"
           cd "$PWD/ci-repo" && git checkout "${{ gitea.sha }}" 2>/dev/null || true
-          # cwd is now ci-repo; $WORK must NOT re-append it (double-path bug)
+          # cwd is now ci-repo; WORK must NOT re-append it (double-path bug of run#359)
           echo "WORK=$PWD" >> "$GITHUB_ENV"
 
       - name: Thin-layer build over VNC base
         shell: bash
         run: |
           set -euo pipefail
-          # docker CLI comes from the ubuntu-latest runner image; it talks to the
-          # NAS daemon through the mounted socket. The VNC base + node toolchain
-          # only exist on act_runner_nix's host image store — same NAS daemon, so
-          # localhost/ tags are visible here too.
-          which docker || { echo "::error::no docker cli in job image"; exit 1; }
           cd "$WORK"
           VER=$(grep -oE '"version": *"[^"]+"' package.json | head -1 | cut -d'"' -f4)
           SHA=$(git rev-parse --short HEAD)
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA}"
           echo "TAG=$TAG" >> "$GITHUB_ENV"
+          docker image inspect localhost/camofox-browser:135.0.1-x86_64-vnc >/dev/null \
+            || { echo "::error::VNC base missing on NAS (restore from HC01 podman save/load)"; exit 1; }
           docker build -f Dockerfile.astra -t "$TAG" . 2>&1 | tail -5
 
       - name: Smoke — persistence loads + checkpoint persists
