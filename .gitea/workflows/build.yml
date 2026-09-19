@@ -43,8 +43,9 @@ jobs:
           # ESM tests need --experimental-vm-modules (same as npm run test:plugins).
           # Camoufox-binary-dependent suites can only pass where the browser exists.
           # CLI --testPathIgnorePatterns REPLACES config patterns — repeat every exclusion here.
-          NODE_OPTIONS='--experimental-vm-modules' npx jest plugins \
-            tests/unit --testPathIgnorePatterns='cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher' \
+          # ALL double quotes: act's format() rewrite collapses single quotes.
+          env NODE_OPTIONS="--experimental-vm-modules" npx jest plugins \
+            tests/unit --testPathIgnorePatterns="cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher" \
             --silent --forceExit > /tmp/jest.log 2>&1 || true
           # ALWAYS print the summary first — jest writes it even when a suite dies,
           # and an empty log must not be mistaken for a passing run.
