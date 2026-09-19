@@ -1,0 +1,95 @@
+name: Build & publish camofox image (astra)
+
+# Runs on NAS nix-capable act_runner (nixos/nix:runner image).
+# Steps that need node/npm run inside a node:22 container (image pull is OK —
+# NAS egress verified fine); the podman build+smoke step runs directly on the
+# NAS host via `runs-on: host` so it can reach the prebuilt VNC base image and
+# manage the production container.
+#
+# Regression gate: the persistence-plugin smoke assertion guards the silent
+# plugin-death class fixed in 1553c0f (Dockerfile missing mcp/lib/cookies.mjs
+# + logger missing info()).
+
+on:
+  push:
+    branches: [astra]
+  workflow_dispatch: {}
+
+concurrency:
+  group: camofox-image-build
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: nix-capable
+    container:
+      image: docker.io/library/node:22-bookworm-slim
+    steps:
+      - name: Checkout
+        run: |
+          set -euo pipefail
+          apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null
+          git clone --branch "${{ gitea.ref_name || 'astra' }}" \
+            "http://gitea:3000/${{ gitea.repository }}.git" /workspace/repo
+          cd /workspace/repo
+          git checkout "${{ gitea.sha }}" 2>/dev/null || true
+      - name: Install deps & unit tests
+        run: |
+          set -euo pipefail
+          cd /workspace/repo
+          npm ci --no-audit --no-fund 2>&1 | tail -3
+          npx jest tests/unit plugins --silent 2>&1 | tail -6
+
+  build-smoke-deploy:
+    needs: test
+    runs-on: host
+    steps:
+      - name: Clone repo (NAS host, token from KeePass-baked file)
+        run: |
+          set -euo pipefail
+          WORK=/volume1/docker/ci-camofox
+          rm -rf "$WORK"; mkdir -p "$WORK"
+          TOK=$(cat /volume1/docker/ci-clone-token 2>/dev/null || true)
+          if [ -z "$TOK" ]; then echo "::error::missing /volume1/docker/ci-clone-token"; exit 1; fi
+          git clone --branch astra "https://alrcatraz:${TOK}@git01.wrt.astra-lab.org:10443/${{ gitea.repository }}.git" "$WORK/repo"
+          cd "$WORK/repo" && git checkout "${{ gitea.sha }}" 2>/dev/null || true
+          echo "WORK=$WORK" >> "$GITHUB_ENV"
+
+      - name: Thin-layer build over VNC base
+        run: |
+          set -euo pipefail
+          cd "$WORK/repo"
+          VER=$(node -p "require('./package.json').version" 2>/dev/null || grep -oE '"version": *"[^"]+"' package.json | head -1 | cut -d'"' -f4)
+          SHA=$(git rev-parse --short HEAD)
+          TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          # Dockerfile.astra expects the code overlay incl. mcp/lib/cookies.mjs (fixed in 1553c0f)
+          sudo -n docker build -f Dockerfile.astra -t "$TAG" . 2>&1 | tail -5 || {
+            echo "::error::docker build failed on NAS"; exit 1; }
+
+      - name: Smoke — persistence loads + checkpoint persists
+        run: |
+          set -euo pipefail
+          C=$(sudo -n docker run -d --rm -e CAMOFOX_API_KEY=*** -p 19377:9377 "$TAG")
+          trap 'sudo -n docker rm -f $C 2>/dev/null || true' EXIT
+          ok=""
+          for i in $(seq 1 15); do
+            sleep 2
+            L=$(sudo -n docker logs $C 2>&1 || true)
+            echo "$L" | grep -q 'persistence plugin enabled' && { ok=1; break; }
+            echo "$L" | grep -q 'plugin load failed.*persistence' && { echo "::error::persistence load failed"; exit 1; }
+          done
+          [ -n "$ok" ] || { echo "::error::persistence never loaded"; exit 1; }
+          curl -sf -X POST http://127.0.0.1:19377/tabs -H 'Content-Type: application/json' \
+            -d '{"userId":"ci_smoke","sessionKey":"s","url":"https://example.com"}' >/dev/null
+          sleep 3
+          curl -sf -X DELETE http://127.0.0.1:19377/sessions/ci_smoke >/dev/null
+          sleep 3
+          sudo -n docker logs $C 2>&1 | grep -q 'storage state persisted' || { echo "::error::checkpoint not persisted"; exit 1; }
+          echo SMOKE_OK
+
+      - name: Publish :live tag (deploy stays manual)
+        run: |
+          set -euo pipefail
+          sudo -n docker tag "$TAG" localhost/camofox-browser:live
+          echo "Published $TAG as :live on NAS. HC01 deploy = save/load or rebuild there (manual)."
