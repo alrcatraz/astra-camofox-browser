@@ -53,11 +53,14 @@ jobs:
             "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/repo" > /tmp/clone.log 2>&1 || { cat /tmp/clone.log; exit 1; }
           (cd "$PWD/repo" && git checkout "${{ gitea.sha }}")
           chmod -R a+rwX "$PWD/repo"
-          JOBID=$(grep -oE "[0-9a-f]{64}" /proc/self/cgroup | head -1)
-          HOSTPWD=$(docker inspect "$JOBID" --format "{{range .Mounts}}{{if eq .Destination \"/workspace\"}}{{.Source}}{{end}}{{end}}")$PWD
-          echo "HOSTPWD=$HOSTPWD"
+          # $PWD is an overlay INSIDE the job container — invisible to siblings.
+          # The named volume IS daemon-visible: hand the repo over via a helper
+          # container that mounts both, then bind the volume into the test container.
           docker run --rm \
-            -v "$HOSTPWD/repo:/src" -w /src \
+            -v "$PWD/repo:/repo:ro" -v camofox-ci-src:/vol \
+            alpine sh -c "rm -rf /vol/* /vol/.[!.]* 2>/dev/null || true; cp -a /repo/. /vol/"
+          docker run --rm \
+            -v camofox-ci-src:/src -w /src \
             -v camofox-npm-ci-cache:/root/.npm \
             -e CI=false \
             node:22 sh -c "
@@ -103,11 +106,14 @@ jobs:
           [ -n "$VER" ] || { echo "::error::no version"; exit 1; }
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
           echo "TAG=$TAG"
-          JOBID=$(grep -oE "[0-9a-f]{64}" /proc/self/cgroup | head -1)
-          HOSTPWD=$(docker inspect "$JOBID" --format "{{range .Mounts}}{{if eq .Destination \"/workspace\"}}{{.Source}}{{end}}{{end}}")$PWD
+          # stage the repo into the daemon-visible named volume (helper copies
+          # across the overlay boundary — same trick as the test step)
+          docker run --rm \
+            -v "$PWD/repo:/repo:ro" -v camofox-ci-src:/vol \
+            alpine sh -c "rm -rf /vol/* /vol/.[!.]* 2>/dev/null || true; cp -a /repo/. /vol/"
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$HOSTPWD/repo":/src -w /src \
+            -v camofox-ci-src:/src -w /src \
             docker:cli sh -c "docker build -f Dockerfile.astra -t '$TAG' . 2>&1 | tail -5"
 
       - name: Smoke — persistence loads + checkpoint persists
