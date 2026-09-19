@@ -42,10 +42,14 @@ jobs:
           set -euo pipefail
           docker version --format "server {{.Server.Version}}" || exit 1
           TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
+          # NOTE: container.options in config.yaml does NOT reach job containers
+          # on this act_runner (runs #41/#45 proved it) — the sandbox is on the
+          # default bridge, so gitea's service name won't resolve. Route through
+          # the host-reachable Lucky endpoint instead (sslVerify off covers the cert).
           docker run --rm \
             -v camofox-ci-src:/src -w /src \
             -e CI=false \
-            -e REPO_URL="http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" \
+            -e REPO_URL="https://alrcatraz:${TOK}@git01.wrt.astra-lab.org:10443/${{ gitea.repository }}.git" \
             -e REF="${{ gitea.ref_name }}" -e SHA="${{ gitea.sha }}" \
             node:22 sh -c "
               rm -rf /src/* 2>/dev/null || true
@@ -74,7 +78,7 @@ jobs:
           TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
           docker run --rm \
             -v camofox-ci-src:/src -w /src \
-            -e REPO_URL="http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" \
+            -e REPO_URL="https://alrcatraz:${TOK}@git01.wrt.astra-lab.org:10443/${{ gitea.repository }}.git" \
             -e REF="${{ gitea.ref_name }}" -e SHA="${{ gitea.sha }}" \
             node:22 sh -c "
               rm -rf /src/* 2>/dev/null || true
