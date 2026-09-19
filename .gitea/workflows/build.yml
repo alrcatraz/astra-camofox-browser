@@ -1,6 +1,6 @@
 name: Build & publish camofox image (astra)
 
-# Gitea-only pipeline, NAS runners. Design decided 2026-09-19 after the baked
+# Gitea-only pipeline, NAS runners. Design decided 2026-09-19/20 after the baked
 # `nixos/nix:runner-ci` image was found wiped by Container Manager GC:
 # STOP baking toolchains/secrets into mutable local images. Both jobs run on
 # nix-capable and drive the NAS docker daemon through the socket act_runner
@@ -9,13 +9,15 @@ name: Build & publish camofox image (astra)
 # Secrets come from the host file /volume1/docker/act_runner_nix/data/ci-clone-token,
 # read via a helper-container copy (no image baking).
 #
-# Layout facts proven empirically (runs #41–#44):
-#   - the job's own workspace is invisible to sibling containers (bind fails)
-#   - /workspace is PER-JOB, not shared across jobs
-#   - named volumes ARE shared; every step re-clones into camofox-ci-src:/src
-#     root (nested dirs raced away between steps once; root checkout is stable)
-#   - GITHUB_ENV does NOT carry across steps -> derive TAG deterministically
-#     per step from ${{ gitea.sha }} + version extracted INSIDE the container
+# Layout facts proven empirically (runs #41–#46):
+#   - ONLY the job container itself resolves gitea:3000 (it joins gitea_default
+#     via the runner's network config); sibling helper containers are on the
+#     default bridge -> no DNS for gitea, and Lucky:10443 hairpin fails.
+#   - the job's workspace IS a host dir under the runner data volume; bind it
+#     into sibling containers by its HOST path (discovered via docker inspect
+#     of our own container id from /proc/self/cgroup).
+#   - steps within one job share $PWD (same container fs), so clone once per job.
+#   - GITHUB_ENV does NOT carry across steps -> derive TAG per step from disk.
 #
 # Regression gate: persistence smoke guards the silent plugin-death class
 # fixed in 1553c0f (missing mcp/lib/cookies.mjs COPY + logger.info TypeError).
@@ -42,20 +44,20 @@ jobs:
           set -euo pipefail
           docker version --format "server {{.Server.Version}}" || exit 1
           TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
-          # NOTE: container.options in config.yaml does NOT reach job containers
-          # on this act_runner (runs #41/#45 proved it) — the sandbox is on the
-          # default bridge, so gitea's service name won't resolve. Route through
-          # the host-reachable Lucky endpoint instead (sslVerify off covers the cert).
+          rm -rf "$PWD/repo"
+          git config --global http.sslVerify false
+          git clone --branch "${{ gitea.ref_name }}" \
+            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/repo"
+          (cd "$PWD/repo" && git checkout "${{ gitea.sha }}")
+          chmod -R a+rwX "$PWD/repo"
+          JOBID=$(grep -oE "[0-9a-f]{64}" /proc/self/cgroup | head -1)
+          HOSTPWD=$(docker inspect "$JOBID" --format "{{range .Mounts}}{{if eq .Destination \"/workspace\"}}{{.Source}}{{end}}{{end}}")$PWD
+          echo "HOSTPWD=$HOSTPWD"
           docker run --rm \
-            -v camofox-ci-src:/src -w /src \
+            -v "$HOSTPWD/repo:/src" -w /src \
+            -v camofox-npm-ci-cache:/root/.npm \
             -e CI=false \
-            -e REPO_URL="https://alrcatraz:${TOK}@git01.wrt.astra-lab.org:10443/${{ gitea.repository }}.git" \
-            -e REF="${{ gitea.ref_name }}" -e SHA="${{ gitea.sha }}" \
             node:22 sh -c "
-              rm -rf /src/* /src/.[!.]* 2>/dev/null || true
-              git config --global http.sslVerify false
-              GIT_SSL_NO_VERIFY=true git clone --branch \$REF \$REPO_URL /src
-              cd /src && git checkout \$SHA 2>/dev/null || true
               npm ci --no-audit --no-fund 2>&1 | tail -3
               env NODE_OPTIONS=--experimental-vm-modules npx jest plugins \
                 tests/unit --testPathIgnorePatterns='cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher' \
@@ -71,23 +73,19 @@ jobs:
     needs: test
     runs-on: nix-capable
     steps:
-      - name: Clone repo into shared volume
+      - name: Clone repo (job git over gitea:3000)
         shell: bash
         run: |
           set -euo pipefail
           TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
-          docker run --rm \
-            -v camofox-ci-src:/src -w /src \
-            -e REPO_URL="https://alrcatraz:${TOK}@git01.wrt.astra-lab.org:10443/${{ gitea.repository }}.git" \
-            -e REF="${{ gitea.ref_name }}" -e SHA="${{ gitea.sha }}" \
-            node:22 sh -c "
-              rm -rf /src/* /src/.[!.]* 2>/dev/null || true
-              git config --global http.sslVerify false
-              GIT_SSL_NO_VERIFY=true git clone --branch \$REF \$REPO_URL /src
-              cd /src && git checkout \$SHA 2>/dev/null || true
-              node -e \"console.log(require('/src/package.json').version)\" > /src/.ci-ver
-              cat /src/.ci-ver
-            "
+          rm -rf "$PWD/repo"
+          git config --global http.sslVerify false
+          git clone --branch "${{ gitea.ref_name }}" \
+            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/repo"
+          (cd "$PWD/repo" && git checkout "${{ gitea.sha }}")
+          chmod -R a+rwX "$PWD/repo"
+          VER=$(grep -oE '"version": *"[^"]+"' "$PWD/repo/package.json" | head -1 | cut -d'"' -f4)
+          echo "CLONE_OK VER=$VER"
 
       - name: Thin-layer build over VNC base
         shell: bash
@@ -95,22 +93,24 @@ jobs:
           set -euo pipefail
           docker image inspect localhost/camofox-browser:135.0.1-x86_64-vnc >/dev/null \
             || { echo "::error::VNC base missing on NAS (restore from HC01 podman save/load)"; exit 1; }
-          VER=$(docker run --rm -v camofox-ci-src:/src alpine cat /src/.ci-ver)
-          [ -n "$VER" ] || { echo "::error::missing /src/.ci-ver"; exit 1; }
           SHA="${{ gitea.sha }}"
+          VER=$(grep -oE '"version": *"[^"]+"' "$PWD/repo/package.json" | head -1 | cut -d'"' -f4)
+          [ -n "$VER" ] || { echo "::error::no version"; exit 1; }
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
           echo "TAG=$TAG"
+          JOBID=$(grep -oE "[0-9a-f]{64}" /proc/self/cgroup | head -1)
+          HOSTPWD=$(docker inspect "$JOBID" --format "{{range .Mounts}}{{if eq .Destination \"/workspace\"}}{{.Source}}{{end}}{{end}}")$PWD
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v camofox-ci-src:/src -w /src \
+            -v "$HOSTPWD/repo":/src -w /src \
             docker:cli sh -c "docker build -f Dockerfile.astra -t '$TAG' . 2>&1 | tail -5"
 
       - name: Smoke — persistence loads + checkpoint persists
         shell: bash
         run: |
           set -euo pipefail
-          VER=$(docker run --rm -v camofox-ci-src:/src alpine cat /src/.ci-ver)
           SHA="${{ gitea.sha }}"
+          VER=$(grep -oE '"version": *"[^"]+"' "$PWD/repo/package.json" | head -1 | cut -d'"' -f4)
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
           docker image inspect "$TAG" >/dev/null || { echo "::error::tag $TAG missing"; exit 1; }
           C=$(docker run -d --rm -e CAMOFOX_API_KEY=*** -p 19377:9377 --network gitea_default "$TAG")
@@ -123,8 +123,6 @@ jobs:
             echo "$L" | grep -q 'plugin load failed.*persistence' && { echo "::error::persistence load failed"; exit 1; }
           done
           [ -n "$ok" ] || { echo "::error::persistence never loaded"; exit 1; }
-          # reach the smoke container over the shared docker network (the job's
-          # own 127.0.0.1 is NOT the NAS host namespace)
           curl -sf -X POST "http://$C:9377/tabs" -H 'Content-Type: application/json' \
             -d '{"userId":"ci_smoke","sessionKey":"s","url":"https://example.com"}' >/dev/null
           sleep 3
@@ -137,8 +135,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VER=$(docker run --rm -v camofox-ci-src:/src alpine cat /src/.ci-ver)
           SHA="${{ gitea.sha }}"
+          VER=$(grep -oE '"version": *"[^"]+"' "$PWD/repo/package.json" | head -1 | cut -d'"' -f4)
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
           docker tag "$TAG" localhost/camofox-browser:live
           echo "Published $TAG as :live (NAS-local). HC01 deploy via scripts/deploy-hc01.sh."
