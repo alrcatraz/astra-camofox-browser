@@ -25,6 +25,11 @@ concurrency:
 jobs:
   test:
     runs-on: nix-capable
+    container:
+      # NAS-baked derivative of nixos/nix:runner with /bin/sleep (act's hardcoded
+      # entrypoint) + /root/ci-clone-token baked; rebuild via scripts/bake-node-ci-image.sh.
+      # node toolchain comes from nix-shell below.
+      image: nixos/nix:runner-ci
     steps:
       - name: Checkout & unit tests
         shell: bash
@@ -37,7 +42,7 @@ jobs:
             "https://alrcatraz:${TOK}@git01.wrt.astra-lab.org:10443/${{ gitea.repository }}.git" /workspace/repo
           cd /workspace/repo
           git checkout "${{ gitea.sha }}" 2>/dev/null || true
-          nix-shell -p nodejs_22 python3 gcc g++ make git --run '
+          nix-shell -p nodejs_22 python3 gcc g++ make --run '
             set -euo pipefail
             npm ci --no-audit --no-fund 2>&1 | tail -3
             npx jest tests/unit plugins --silent 2>&1 | tail -6
