@@ -60,28 +60,17 @@ jobs:
 
   build-smoke:
     needs: test
-    # "host" is NOT a registered label on this Gitea (act_runner = ubuntu-latest/
-    # ubuntu-24.04/rust; act_runner_nix = nix-capable/nixos) -> queued forever.
-    # Route to the plain NAS runner; its job containers get docker.sock mounted
-    # by act_runner, so `docker` CLI drives the NAS daemon from inside the job.
-    runs-on: ubuntu-latest
+    # nix-capable runner = act_runner_nix: its config.yaml mounts the NAS
+    # docker.sock into every job container, and the baked :runner-ci image
+    # carries docker-cli + /root/ci-clone-token. ("host" was never a
+    # registered label -> eternal queue; ubuntu-latest lacked creds+docker.)
+    runs-on: nix-capable
     steps:
-      - name: Clone repo (job container, docker.sock available)
+      - name: Clone repo (nix job container, NAS docker.sock mounted)
         shell: bash
         run: |
           set -euo pipefail
-          # ubuntu-latest image has no baked creds. Job cwd is a named docker
-          # volume; copy the host token file into it with a helper container on
-          # the NAS daemon (socket mounted here): mounting the VOLUME by name
-          # resolves host-side for us — no path guessing needed.
-          JOBID=$(grep -oE "[0-9a-f]{64}" /proc/self/cgroup | head -1)
-          VOL=$(docker inspect "$JOBID" --format "{{range .Mounts}}{{if eq .Destination \"/workspace/alrcatraz/astra-camofox-browser\"}}{{.Name}}{{end}}{{end}}")
-          echo "JOBID=$JOBID JOB_VOL=$VOL"
-          docker run --rm \
-            -v /volume1/docker/act_runner_nix/data/ci-clone-token:/tok:ro \
-            -v "$VOL":/shared \
-            alpine sh -c "cp /tok /shared/.ci-token"
-          TOK=$(cat "$PWD/.ci-token")
+          TOK=$(cat /root/ci-clone-token)
           rm -rf "$PWD/ci-repo"
           git config --global http.sslVerify false
           GIT_SSL_NO_VERIFY=true git clone --branch "${{ gitea.ref_name }}" \
