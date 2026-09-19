@@ -1,28 +1,23 @@
 name: Build & publish camofox image (astra)
 
-# Flake-based CI (decided 2026-09-20): the toolchain is NO LONGER baked into a
-# mutable local image (`nixos/nix:runner-ci` was silently wiped by Container
-# Manager GC — runs #41+). Jobs run on `nix-capable`, whose label points at
-# `nixos/nix:runner-ci` = official nixos/nix:latest + ONE softlink layer
-# (/bin/sleep -> /nix/store/...; act_runner's keepalive entrypoint hardcodes
-# it, bare nixos/nix fails to start — run#54). Toolchain truth lives in
-# flake.lock; every step enters it via `nix develop .#ci`. If CM GC wipes the
-# derivative again: rebuild with `FROM nixos/nix:latest; RUN ln -s $(docker
-# run --rm --entrypoint /bin/sh nixos/nix:latest -c "ls /nix/store/*/bin/sleep
-# | head -1") /bin/sleep` and retag. Never bake anything else into it.
+# Flake-based CI (2026-09-20). Toolchain truth = flake.lock, NOT a baked image.
+# Label `nix-capable` -> `nixos/nix:runner-ci` = official nixos/nix:latest + one
+# /bin/sleep softlink layer (act keepalive entrypoint; bare latest won't start).
+# GC-wipe recovery: rebuild that single-layer Dockerfile and retag — nothing else.
 #
-# Proven environment facts (runs #37–#49, do not re-litigate):
-#   - ONLY the job container resolves gitea:3000; sibling helper containers
-#     live on the default bridge (no DNS, no Lucky hairpin).
-#   - The job workspace is invisible to sibling containers even via its host
-#     path (act's dirs live in the runner CONTAINER namespace). Never bind
-#     job paths into docker-run helpers.
-#   - act_runner v0.6.1: GITHUB_ENV does NOT carry across steps; single quotes
-#     in run blocks get mangled by Go format() — use double quotes only.
-#   - pipefail + inherited SIGPIPE=ignore kills git/tail with exit 141 —
-#     `trap "" PIPE` at the top of every step.
-#   - Token source of truth: host file mounted read-only into jobs at
-#     /root/ci-clone-token by the runner config (baked-image copies are gone).
+# Job-image constraints (each proven by a failed run — do not re-litigate):
+#   - job fs has NO docker CLI and NO host paths visible; it DOES have
+#     /var/run/docker.sock -> drive the NAS daemon via curl --unix-socket REST
+#     (dlib.sh below); helper containers mount HOST paths fine (daemon-side).
+#   - only --network gitea_default resolves gitea:3000.
+#   - act format() eats single quotes in run blocks -> double quotes only.
+#   - GITHUB_ENV does not carry across steps -> re-derive TAG from disk.
+#   - inherited SIGPIPE=ignore + pipefail -> exit 141 -> trap "" PIPE per step.
+#   - container.options mounts never reach jobs (runs #41/#45/#55).
+#
+# Flow: stage repo into volume camofox-ci-src (alpine/git helper) -> jest in
+# node:22 on that volume (npm cache volume persists native builds) -> thin-layer
+# docker build via docker:cli helper -> smoke -> :live tag.
 
 on:
   push:
@@ -35,86 +30,140 @@ concurrency:
 
 env:
   TOKEN_HOST_PATH: /volume1/docker/act_runner_nix/data/ci-clone-token
+  REPO_VOL: camofox-ci-src
+  NPM_VOL: camofox-npm-ci-cache
+  VNC_BASE: localhost/camofox-browser:135.0.1-x86_64-vnc
 
 jobs:
   test:
     runs-on: nix-capable
     steps:
-      - name: Unit tests in pinned flake shell
+      - name: Setup docker REST helpers
         shell: bash
         run: |
           set -euo pipefail
           trap "" PIPE
-          export NIX_CONFIG="experimental-features = nix-command flakes"
-          TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
-          rm -rf ci-repo && mkdir ci-repo
-          git config --global http.sslVerify false
-          git clone --quiet --branch "${{ gitea.ref_name }}" \
-            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" ci-repo > /tmp/clone.log 2>&1 || { cat /tmp/clone.log; exit 1; }
-          cd ci-repo && git checkout --quiet "${{ gitea.sha }}"
-          echo "=== flake lock: resolving toolchain (cached after first run) ==="
-          nix develop .#ci --command bash -c "
-            node --version && gcc --version | head -1
-            npm ci --no-audit --no-fund 2>&1 | tail -3
-            env NODE_OPTIONS=--experimental-vm-modules npx jest plugins \
-              tests/unit --testPathIgnorePatterns='cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher' \
-              --silent --forceExit > /tmp/jest.log 2>&1 || true
-            grep -E '^Test Suites:|^Tests:' /tmp/jest.log | head -4
-            grep -qE '^Test Suites: [0-9]+ passed, [0-9]+ total' /tmp/jest.log
-            grep -qE '^Tests: +[0-9]+ passed, [0-9]+ total' /tmp/jest.log
-            ! grep -qE '^(Test Suites|Tests): .*failed' /tmp/jest.log
-            echo TEST-GATE-PASSED
-          "
+          cat > "$PWD/dlib.sh" <<'DLIB'
+          API="curl -sS --unix-socket /var/run/docker.sock"
+          dcreate() { $API -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/containers/create | sed -E 's/.*"Id":"([^"]+)".*/\1/'; }
+          dstart()  { $API -X POST "http://localhost/containers/$1/start"; }
+          dwait()   { $API "http://localhost/containers/$1/wait"; }
+          dfmt()    { python3 -c "
+          import sys
+          data=sys.stdin.buffer.read(); out=[]; i=0
+          while i+8<=len(data):
+              n=int.from_bytes(data[i+4:i+8],'big'); out.append(data[i+8:i+8+n]); i+=8+n
+          sys.stdout.write(b''.join(out).decode('utf-8','replace'))"; }
+          drun() { local spec="$1" c rc
+            c=$(dcreate "$spec"); dstart "$c"; rc=$(dwait "$c")
+            DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
+            echo "$DR_LOG" | tail -12
+            DR_CID=$c
+            [ "$rc" = "0" ]; }
+          DLIB
+          echo dlib-ready
+
+      - name: Stage repo into shared volume
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap "" PIPE
+          . "$PWD/dlib.sh"
+          TOKSPEC="{\"Image\":\"alpine\",\"Cmd\":[\"cat\",\"/tok\"],\"HostConfig\":{\"Binds\":[\"$TOKEN_HOST_PATH:/tok:ro\"],\"AutoRemove\":true,\"NetworkMode\":\"none\"}}"
+          drun "$TOKSPEC" || { echo "::error::token relay"; exit 1; }
+          TOKEN=$(echo "$DR_LOG" | tr -d "\r\n")
+          [ -n "$TOKEN" ] || { echo "::error::empty token"; exit 1; }
+          SPEC="{\"Image\":\"alpine/git\",\"Cmd\":[\"sh\",\"-c\",\"rm -rf /src/* /src/.[!.]* 2>/dev/null||true; git config --global http.sslVerify false; GIT_SSL_NO_VERIFY=true git clone --quiet --branch ${{ gitea.ref_name }} http://x:${TOKEN}@gitea:3000/${{ gitea.repository }}.git /src && cd /src && git checkout --quiet ${{ gitea.sha }} && echo STAGE-OK\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"gitea_default\",\"AutoRemove\":true}}"
+          drun "$SPEC" && echo REPO-STAGED || { echo "::error::stage failed"; exit 1; }
+
+      - name: Jest inside node:22 on shared volume
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap "" PIPE
+          . "$PWD/dlib.sh"
+          IGNORE="cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher"
+          INNER="cd /src && npm ci --no-audit --no-fund 2>&1 | tail -3; env NODE_OPTIONS=--experimental-vm-modules npx jest plugins tests/unit --testPathIgnorePatterns \"$IGNORE\" --silent --forceExit > /tmp/jest.log 2>&1 || true; grep -E \"^Test Suites:|^Tests:\" /tmp/jest.log | head -4; grep -qE \"^Test Suites: [0-9]+ passed, [0-9]+ total\" /tmp/jest.log && grep -qE \"^Tests: +[0-9]+ passed, [0-9]+ total\" /tmp/jest.log && ! grep -qE \"^(Test Suites|Tests): .*failed\" /tmp/jest.log && echo TEST-GATE-PASSED"
+          SPEC="{\"Image\":\"node:22\",\"Entrypoint\":[\"sh\",\"-c\"],\"Cmd\":[$(python3 -c "import json,sys;print(json.dumps(sys.argv[1]))" "$INNER")],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"AutoRemove\":true,\"Memory\":4294967296}}"
+          drun "$SPEC" && echo RUN-COMPLETE || echo "container rc nonzero — checking gate"
+          echo "$DR_LOG" | grep -E "added [0-9]+ packages|Test Suites:|Tests:" | tail -4
+          echo "$DR_LOG" | grep -q TEST-GATE-PASSED || { echo "$DR_LOG" | grep -E "FAIL|●|Error" | head -20; echo "::error::test gate failed"; exit 1; }
 
   build-smoke:
     needs: test
     runs-on: nix-capable
     steps:
+      - name: Setup docker REST helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap "" PIPE
+          cat > "$PWD/dlib.sh" <<'DLIB'
+          API="curl -sS --unix-socket /var/run/docker.sock"
+          dcreate() { $API -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/containers/create | sed -E 's/.*"Id":"([^"]+)".*/\1/'; }
+          dstart()  { $API -X POST "http://localhost/containers/$1/start"; }
+          dwait()   { $API "http://localhost/containers/$1/wait"; }
+          dfmt()    { python3 -c "
+          import sys
+          data=sys.stdin.buffer.read(); out=[]; i=0
+          while i+8<=len(data):
+              n=int.from_bytes(data[i+4:i+8],'big'); out.append(data[i+8:i+8+n]); i+=8+n
+          sys.stdout.write(b''.join(out).decode('utf-8','replace'))"; }
+          drun() { local spec="$1" c rc
+            c=$(dcreate "$spec"); dstart "$c"; rc=$(dwait "$c")
+            DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
+            echo "$DR_LOG" | tail -12
+            DR_CID=$c
+            [ "$rc" = "0" ]; }
+          DLIB
+          echo dlib-ready
+
       - name: Thin-layer build over VNC base
         shell: bash
         run: |
           set -euo pipefail
           trap "" PIPE
-          docker version --format "server {{.Server.Version}}" || exit 1
-          docker image inspect localhost/camofox-browser:135.0.1-x86_64-vnc >/dev/null \
-            || { echo "::error::VNC base missing on NAS"; exit 1; }
-          TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
-          rm -rf ci-repo && mkdir ci-repo
-          git config --global http.sslVerify false
-          git clone --quiet --branch "${{ gitea.ref_name }}" \
-            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" ci-repo > /tmp/clone.log 2>&1 || { cat /tmp/clone.log; exit 1; }
-          cd ci-repo && git checkout --quiet "${{ gitea.sha }}"
+          . "$PWD/dlib.sh"
+          $API "http://localhost/images/$VNC_BASE/json" >/dev/null || { echo "::error::VNC base missing on NAS"; exit 1; }
+          drun "{\"Image\":\"alpine\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"AutoRemove\":true,\"NetworkMode\":\"none\"}}" || true
+          VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+          [ -n "$VERSION" ] || { echo "::error::no version"; exit 1; }
           SHA="${{ gitea.sha }}"
-          VER=$(grep -oE '"version": *"[^"]+"' package.json | head -1 | cut -d'"' -f4)
-          TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
+          TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
           echo "TAG=$TAG"
-          docker build -f Dockerfile.astra -t "$TAG" . 2>&1 | tail -5
+          drun "{\"Image\":\"docker:cli\",\"Cmd\":[\"docker\",\"build\",\"-f\",\"Dockerfile.astra\",\"-t\",\"$TAG\",\".\"],\"WorkingDir\":\"/src\",\"HostConfig\":{\"Binds\":[\"/var/run/docker.sock:/var/run/docker.sock\",\"$REPO_VOL:/src\"],\"AutoRemove\":true}}" \
+            && echo BUILD_TRIGGERED || { echo "::error::image build failed"; exit 1; }
+          $API "http://localhost/images/$TAG/json" >/dev/null || { echo "::error::$TAG missing after build"; exit 1; }
+          echo BUILD_OK
 
       - name: Smoke — persistence loads + checkpoint persists
         shell: bash
         run: |
           set -euo pipefail
           trap "" PIPE
+          . "$PWD/dlib.sh"
           SHA="${{ gitea.sha }}"
-          VER=$(grep -oE '"version": *"[^"]+"' "$PWD/ci-repo/package.json" | head -1 | cut -d'"' -f4)
-          TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
-          docker image inspect "$TAG" >/dev/null || { echo "::error::tag $TAG missing"; exit 1; }
-          C=$(docker run -d --rm -e CAMOFOX_API_KEY=*** -p 19377:9377 --network gitea_default "$TAG")
-          trap 'docker rm -f $C 2>/dev/null || true' EXIT
+          drun "{\"Image\":\"alpine\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"AutoRemove\":true,\"NetworkMode\":\"none\"}}" || true
+          VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+          TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
+          CID=$(dcreate "{\"Image\":\"$TAG\",\"Env\":[\"CAMOFOX_API_KEY=***\"],\"HostConfig\":{\"AutoRemove\":true,\"NetworkMode\":\"gitea_default\"}}")
+          dstart "$CID"
           ok=""
           for i in $(seq 1 15); do
             sleep 2
-            L=$(docker logs $C 2>&1 || true)
-            echo "$L" | grep -q 'persistence plugin enabled' && { ok=1; break; }
-            echo "$L" | grep -q 'plugin load failed.*persistence' && { echo "::error::persistence load failed"; exit 1; }
+            L=$($API "http://localhost/containers/$CID/logs?stdout=1&stderr=1" | dfmt || true)
+            echo "$L" | grep -q "persistence plugin enabled" && { ok=1; break; }
+            echo "$L" | grep -q "plugin load failed.*persistence" && { echo "::error::persistence load failed"; exit 1; }
           done
           [ -n "$ok" ] || { echo "::error::persistence never loaded"; exit 1; }
-          curl -sf -X POST "http://$C:9377/tabs" -H 'Content-Type: application/json' \
+          IP=$($API "http://localhost/containers/$CID/json" | python3 -c "import json,sys;print(json.load(sys.stdin)['NetworkSettings']['Networks']['gitea_default']['IPAddress'])")
+          curl -sf -m 15 -X POST "http://$IP:9377/tabs" -H "Content-Type: application/json" \
             -d '{"userId":"ci_smoke","sessionKey":"s","url":"https://example.com"}' >/dev/null
           sleep 3
-          curl -sf -X DELETE "http://$C:9377/sessions/ci_smoke" >/dev/null
+          curl -sf -m 15 -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
           sleep 3
-          docker logs $C 2>&1 | grep -q 'storage state persisted' || { echo "::error::checkpoint not persisted"; exit 1; }
+          $API "http://localhost/containers/$CID/logs?stdout=1&stderr=1" | dfmt | grep -q "storage state persisted" || { echo "::error::checkpoint not persisted"; exit 1; }
+          $API -X DELETE "http://localhost/containers/$CID?force=true" >/dev/null || true
           echo SMOKE_OK
 
       - name: Publish :live tag on NAS
@@ -122,8 +171,10 @@ jobs:
         run: |
           set -euo pipefail
           trap "" PIPE
+          . "$PWD/dlib.sh"
           SHA="${{ gitea.sha }}"
-          VER=$(grep -oE '"version": *"[^"]+"' "$PWD/ci-repo/package.json" | head -1 | cut -d'"' -f4)
-          TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
-          docker tag "$TAG" localhost/camofox-browser:live
+          drun "{\"Image\":\"alpine\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"AutoRemove\":true,\"NetworkMode\":\"none\"}}" || true
+          VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+          TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
+          $API -X POST "http://localhost/images/$TAG/tag?repo=localhost/camofox-browser&tag=live" >/dev/null
           echo "Published $TAG as :live (NAS-local)."
