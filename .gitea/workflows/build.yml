@@ -1,26 +1,24 @@
 name: Build & publish camofox image (astra)
 
-# Gitea-only pipeline, NAS runners. Design decided 2026-09-19/20 after the baked
-# `nixos/nix:runner-ci` image was found wiped by Container Manager GC:
-# STOP baking toolchains/secrets into mutable local images. Both jobs run on
-# nix-capable and drive the NAS docker daemon through the socket act_runner
-# mounts at /var/run/docker.sock — all heavy machinery (node test image, VNC
-# base, build cache) lives in the NAS image store under proper tags.
-# Secrets come from the host file /volume1/docker/act_runner_nix/data/ci-clone-token,
-# read via a helper-container copy (no image baking).
+# Flake-based CI (decided 2026-09-20): the toolchain is NO LONGER baked into a
+# mutable local image (`nixos/nix:runner-ci` was silently wiped by Container
+# Manager GC — runs #41+). Jobs run on `nix-capable` -> official
+# `nixos/nix:latest` (GC-safe, has /nix + nix 2.35.2), and every step enters
+# the repo's pinned dev shell: `nix develop .#ci`. Reproducible, auditable,
+# survives any image GC.
 #
-# Layout facts proven empirically (runs #41–#46):
-#   - ONLY the job container itself resolves gitea:3000 (it joins gitea_default
-#     via the runner's network config); sibling helper containers are on the
-#     default bridge -> no DNS for gitea, and Lucky:10443 hairpin fails.
-#   - the job's workspace IS a host dir under the runner data volume; bind it
-#     into sibling containers by its HOST path (discovered via docker inspect
-#     of our own container id from /proc/self/cgroup).
-#   - steps within one job share $PWD (same container fs), so clone once per job.
-#   - GITHUB_ENV does NOT carry across steps -> derive TAG per step from disk.
-#
-# Regression gate: persistence smoke guards the silent plugin-death class
-# fixed in 1553c0f (missing mcp/lib/cookies.mjs COPY + logger.info TypeError).
+# Proven environment facts (runs #37–#49, do not re-litigate):
+#   - ONLY the job container resolves gitea:3000; sibling helper containers
+#     live on the default bridge (no DNS, no Lucky hairpin).
+#   - The job workspace is invisible to sibling containers even via its host
+#     path (act's dirs live in the runner CONTAINER namespace). Never bind
+#     job paths into docker-run helpers.
+#   - act_runner v0.6.1: GITHUB_ENV does NOT carry across steps; single quotes
+#     in run blocks get mangled by Go format() — use double quotes only.
+#   - pipefail + inherited SIGPIPE=ignore kills git/tail with exit 141 —
+#     `trap "" PIPE` at the top of every step.
+#   - Token source of truth: host file mounted read-only into jobs at
+#     /root/ci-clone-token by the runner config (baked-image copies are gone).
 
 on:
   push:
@@ -31,98 +29,67 @@ concurrency:
   group: camofox-image-build
   cancel-in-progress: false
 
-env:
-  TOKEN_HOST_PATH: /volume1/docker/act_runner_nix/data/ci-clone-token
-
 jobs:
   test:
     runs-on: nix-capable
     steps:
-      - name: Unit tests in node:22 container (docker.sock)
+      - name: Unit tests in pinned flake shell
         shell: bash
         run: |
           set -euo pipefail
-          trap "" PIPE   # act job shell inherits SIGPIPE=ignore; git checkout died 141 (run#47/48)
-          docker version --format "server {{.Server.Version}}" || exit 1
-          TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
-          rm -rf "$PWD/repo"
+          trap "" PIPE
+          export NIX_CONFIG="experimental-features = nix-command flakes"
+          TOK=$(cat /jobdata/ci-clone-token)
+          rm -rf ci-repo && mkdir ci-repo
           git config --global http.sslVerify false
-          # `| tail` under pipefail = SIGPIPE 141 when git writes to stderr after
-          # tail exits early; redirect instead (run#47).
           git clone --quiet --branch "${{ gitea.ref_name }}" \
-            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/repo" > /tmp/clone.log 2>&1 || { cat /tmp/clone.log; exit 1; }
-          (cd "$PWD/repo" && git checkout "${{ gitea.sha }}")
-          chmod -R a+rwX "$PWD/repo"
-          # $PWD is an overlay INSIDE the job container — invisible to siblings.
-          # The named volume IS daemon-visible: hand the repo over via a helper
-          # container that mounts both, then bind the volume into the test container.
-          docker run --rm \
-            -v "$PWD/repo:/repo:ro" -v camofox-ci-src:/vol \
-            alpine sh -c "rm -rf /vol/* /vol/.[!.]* 2>/dev/null || true; cp -a /repo/. /vol/"
-          docker run --rm \
-            -v camofox-ci-src:/src -w /src \
-            -v camofox-npm-ci-cache:/root/.npm \
-            -e CI=false \
-            node:22 sh -c "
-              npm ci --no-audit --no-fund 2>&1 | tail -3
-              env NODE_OPTIONS=--experimental-vm-modules npx jest plugins \
-                tests/unit --testPathIgnorePatterns='cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher' \
-                --silent --forceExit > /tmp/jest.log 2>&1 || true
-              grep -E '^Test Suites:|^Tests:' /tmp/jest.log | head -4
-              grep -qE '^Test Suites: [0-9]+ passed, [0-9]+ total' /tmp/jest.log
-              grep -qE '^Tests: +[0-9]+ passed, [0-9]+ total' /tmp/jest.log
-              ! grep -qE '^(Test Suites|Tests): .*failed' /tmp/jest.log
-              echo TEST-GATE-PASSED
-            "
+            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" ci-repo > /tmp/clone.log 2>&1 || { cat /tmp/clone.log; exit 1; }
+          cd ci-repo && git checkout --quiet "${{ gitea.sha }}"
+          echo "=== flake lock: resolving toolchain (cached after first run) ==="
+          nix develop .#ci --command bash -c "
+            node --version && gcc --version | head -1
+            npm ci --no-audit --no-fund 2>&1 | tail -3
+            env NODE_OPTIONS=--experimental-vm-modules npx jest plugins \
+              tests/unit --testPathIgnorePatterns='cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher' \
+              --silent --forceExit > /tmp/jest.log 2>&1 || true
+            grep -E '^Test Suites:|^Tests:' /tmp/jest.log | head -4
+            grep -qE '^Test Suites: [0-9]+ passed, [0-9]+ total' /tmp/jest.log
+            grep -qE '^Tests: +[0-9]+ passed, [0-9]+ total' /tmp/jest.log
+            ! grep -qE '^(Test Suites|Tests): .*failed' /tmp/jest.log
+            echo TEST-GATE-PASSED
+          "
 
   build-smoke:
     needs: test
     runs-on: nix-capable
     steps:
-      - name: Clone repo (job git over gitea:3000)
-        shell: bash
-        run: |
-          set -euo pipefail
-          trap "" PIPE   # act job shell inherits SIGPIPE=ignore; git checkout died 141 (run#47/48)
-          TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
-          rm -rf "$PWD/repo"
-          git config --global http.sslVerify false
-          git clone --quiet --branch "${{ gitea.ref_name }}" \
-            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/repo" > /tmp/clone.log 2>&1 || { cat /tmp/clone.log; exit 1; }
-          (cd "$PWD/repo" && git checkout "${{ gitea.sha }}")
-          chmod -R a+rwX "$PWD/repo"
-          VER=$(grep -oE '"version": *"[^"]+"' "$PWD/repo/package.json" | head -1 | cut -d'"' -f4)
-          echo "CLONE_OK VER=$VER"
-
       - name: Thin-layer build over VNC base
         shell: bash
         run: |
           set -euo pipefail
-          trap "" PIPE   # act job shell inherits SIGPIPE=ignore; git checkout died 141 (run#47/48)
+          trap "" PIPE
+          docker version --format "server {{.Server.Version}}" || exit 1
           docker image inspect localhost/camofox-browser:135.0.1-x86_64-vnc >/dev/null \
-            || { echo "::error::VNC base missing on NAS (restore from HC01 podman save/load)"; exit 1; }
+            || { echo "::error::VNC base missing on NAS"; exit 1; }
+          TOK=$(cat /jobdata/ci-clone-token)
+          rm -rf ci-repo && mkdir ci-repo
+          git config --global http.sslVerify false
+          git clone --quiet --branch "${{ gitea.ref_name }}" \
+            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" ci-repo > /tmp/clone.log 2>&1 || { cat /tmp/clone.log; exit 1; }
+          cd ci-repo && git checkout --quiet "${{ gitea.sha }}"
           SHA="${{ gitea.sha }}"
-          VER=$(grep -oE '"version": *"[^"]+"' "$PWD/repo/package.json" | head -1 | cut -d'"' -f4)
-          [ -n "$VER" ] || { echo "::error::no version"; exit 1; }
+          VER=$(grep -oE '"version": *"[^"]+"' package.json | head -1 | cut -d'"' -f4)
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
           echo "TAG=$TAG"
-          # stage the repo into the daemon-visible named volume (helper copies
-          # across the overlay boundary — same trick as the test step)
-          docker run --rm \
-            -v "$PWD/repo:/repo:ro" -v camofox-ci-src:/vol \
-            alpine sh -c "rm -rf /vol/* /vol/.[!.]* 2>/dev/null || true; cp -a /repo/. /vol/"
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v camofox-ci-src:/src -w /src \
-            docker:cli sh -c "docker build -f Dockerfile.astra -t '$TAG' . 2>&1 | tail -5"
+          docker build -f Dockerfile.astra -t "$TAG" . 2>&1 | tail -5
 
       - name: Smoke — persistence loads + checkpoint persists
         shell: bash
         run: |
           set -euo pipefail
-          trap "" PIPE   # act job shell inherits SIGPIPE=ignore; git checkout died 141 (run#47/48)
+          trap "" PIPE
           SHA="${{ gitea.sha }}"
-          VER=$(grep -oE '"version": *"[^"]+"' "$PWD/repo/package.json" | head -1 | cut -d'"' -f4)
+          VER=$(grep -oE '"version": *"[^"]+"' "$PWD/ci-repo/package.json" | head -1 | cut -d'"' -f4)
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
           docker image inspect "$TAG" >/dev/null || { echo "::error::tag $TAG missing"; exit 1; }
           C=$(docker run -d --rm -e CAMOFOX_API_KEY=*** -p 19377:9377 --network gitea_default "$TAG")
@@ -147,9 +114,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          trap "" PIPE   # act job shell inherits SIGPIPE=ignore; git checkout died 141 (run#47/48)
+          trap "" PIPE
           SHA="${{ gitea.sha }}"
-          VER=$(grep -oE '"version": *"[^"]+"' "$PWD/repo/package.json" | head -1 | cut -d'"' -f4)
+          VER=$(grep -oE '"version": *"[^"]+"' "$PWD/ci-repo/package.json" | head -1 | cut -d'"' -f4)
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
           docker tag "$TAG" localhost/camofox-browser:live
-          echo "Published $TAG as :live (NAS-local). HC01 deploy via scripts/deploy-hc01.sh."
+          echo "Published $TAG as :live (NAS-local)."
