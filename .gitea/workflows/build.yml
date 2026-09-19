@@ -2,10 +2,14 @@ name: Build & publish camofox image (astra)
 
 # Flake-based CI (decided 2026-09-20): the toolchain is NO LONGER baked into a
 # mutable local image (`nixos/nix:runner-ci` was silently wiped by Container
-# Manager GC — runs #41+). Jobs run on `nix-capable` -> official
-# `nixos/nix:latest` (GC-safe, has /nix + nix 2.35.2), and every step enters
-# the repo's pinned dev shell: `nix develop .#ci`. Reproducible, auditable,
-# survives any image GC.
+# Manager GC — runs #41+). Jobs run on `nix-capable`, whose label points at
+# `nixos/nix:runner-ci` = official nixos/nix:latest + ONE softlink layer
+# (/bin/sleep -> /nix/store/...; act_runner's keepalive entrypoint hardcodes
+# it, bare nixos/nix fails to start — run#54). Toolchain truth lives in
+# flake.lock; every step enters it via `nix develop .#ci`. If CM GC wipes the
+# derivative again: rebuild with `FROM nixos/nix:latest; RUN ln -s $(docker
+# run --rm --entrypoint /bin/sh nixos/nix:latest -c "ls /nix/store/*/bin/sleep
+# | head -1") /bin/sleep` and retag. Never bake anything else into it.
 #
 # Proven environment facts (runs #37–#49, do not re-litigate):
 #   - ONLY the job container resolves gitea:3000; sibling helper containers
