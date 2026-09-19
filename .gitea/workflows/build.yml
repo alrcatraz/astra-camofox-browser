@@ -36,16 +36,17 @@ jobs:
           docker version --format "server {{.Server.Version}}" || exit 1
           TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
           docker run --rm \
-            -v camofox-ci-src:/src -v camofox-npm-ci-cache:/root/.npm \
-            -w /src \
+            -v camofox-ci-src:/src -w /src \
             -e CI=false \
             -e REPO_URL="http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" \
             -e REF="${{ gitea.ref_name }}" -e SHA="${{ gitea.sha }}" \
             node:22 sh -c "
-              rm -rf /src/repo
+              # clone into the volume ROOT (run#42/43 proved nested /src/repo
+              # vanished between containers; a clean root checkout is reliable)
+              rm -rf ./* ./.[!.]* 2>/dev/null || true
               git config --global http.sslVerify false
-              GIT_SSL_NO_VERIFY=true git clone --branch \$REF \$REPO_URL /src/repo
-              cd /src/repo && git checkout \$SHA 2>/dev/null || true
+              GIT_SSL_NO_VERIFY=true git clone --branch \$REF \$REPO_URL /src
+              cd /src && git checkout \$SHA 2>/dev/null || true
               npm ci --no-audit --no-fund 2>&1 | tail -3
               env NODE_OPTIONS=--experimental-vm-modules npx jest plugins \
                 tests/unit --testPathIgnorePatterns='cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher' \
@@ -75,10 +76,10 @@ jobs:
             -e REPO_URL="http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" \
             -e REF="${{ gitea.ref_name }}" -e SHA="${{ gitea.sha }}" \
             node:22 sh -c "
-              rm -rf /src/repo
+              rm -rf /src/* 2>/dev/null || true
               git config --global http.sslVerify false
-              GIT_SSL_NO_VERIFY=true git clone --branch \$REF \$REPO_URL /src/repo
-              cd /src/repo && git checkout \$SHA 2>/dev/null || true
+              GIT_SSL_NO_VERIFY=true git clone --branch \$REF \$REPO_URL /src
+              cd /src && git checkout \$SHA 2>/dev/null || true
             "
           echo "SRC_VOL=camofox-ci-src" >> "$GITHUB_ENV"
 
@@ -89,7 +90,7 @@ jobs:
           docker image inspect localhost/camofox-browser:135.0.1-x86_64-vnc >/dev/null \
             || { echo "::error::VNC base missing on NAS (restore from HC01 podman save/load)"; exit 1; }
           VER=$(docker run --rm -v camofox-ci-src:/src node:22 \
-            sh -c "cd /src/repo && grep -oE '\"version\": *\"[^\"]+\"' package.json | head -1" | cut -d'"' -f4)
+            sh -c "cd /src && grep -oE '\"version\": *\"[^\"]+\"' package.json | head -1" | cut -d'"' -f4)
           SHA="${{ gitea.sha }}"
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
           echo "TAG=$TAG" >> "$GITHUB_ENV"
@@ -97,7 +98,7 @@ jobs:
           # mounted into a docker:cli container that runs the build itself.
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v camofox-ci-src:/src -w /src/repo \
+            -v camofox-ci-src:/src -w /src \
             docker:cli sh -c "docker build -f Dockerfile.astra -t '$TAG' . 2>&1 | tail -5"
 
       - name: Smoke — persistence loads + checkpoint persists
