@@ -38,8 +38,9 @@ jobs:
           TOK=$(cat /root/ci-clone-token)
           git config --global http.sslVerify false
           rm -rf /workspace/repo
+          # container runs on gitea_default net -> talk to gitea directly (no Lucky round-trip)
           git clone --branch "${{ gitea.ref_name }}" \
-            "https://alrcatraz:${TOK}@git01.wrt.astra-lab.org:10443/${{ gitea.repository }}.git" /workspace/repo
+            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" /workspace/repo
           cd /workspace/repo
           git checkout "${{ gitea.sha }}" 2>/dev/null || true
           nix-shell -p nodejs_22 python3 gcc g++ make --run '
