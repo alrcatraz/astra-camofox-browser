@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TOK=$(cat /root/ci-clone-token)
+          TOK=$(cat /jobdata/ci-clone-token)
           git config --global http.sslVerify false
           rm -rf /workspace/repo
           # container runs on gitea_default net -> talk to gitea directly (no Lucky round-trip)
@@ -52,11 +52,9 @@ jobs:
           grep -E "✕|^FAIL |●.*›" /tmp/jest.log | head -20
           tail -6 /tmp/jest.log
           # single awk gate: suites all-passed AND zero failed counts in summaries
-          awk '
-            /^Test Suites:/ { if ($0 ~ /failed/) bad=1; seen++ }
-            /^Tests: +/     { if ($0 ~ /failed/) bad=1; seen++ }
-            END { exit (seen==2 && !bad) ? 0 : 1 }
-          ' /tmp/jest.log
+          # act_runner renders run: through Go format() which eats single quotes —
+          # awk program MUST be double-quoted with no inner single quotes.
+          awk "/^Test Suites:/{if (/failed/) bad=1; seen++} /^Tests: /{if (/failed/) bad=1; seen++} END{exit !(seen>=2 && !bad)}" /tmp/jest.log
 
   build-smoke:
     needs: test
