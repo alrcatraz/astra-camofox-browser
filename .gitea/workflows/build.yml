@@ -105,6 +105,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # GITHUB_ENV writes are per-step in act_runner — re-derive TAG (same
+          # deterministic formula; workflow env is not shared across steps here)
+          SHA="${{ gitea.sha }}"
+          VER=$(docker run --rm -v camofox-ci-src:/src node:22 \
+            sh -c "cd /src && grep -oE '\"version\": *\"[^\"]+\"' package.json | head -1" | cut -d'"' -f4)
+          TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
+          docker image inspect "$TAG" >/dev/null || { echo "::error::tag $TAG missing"; exit 1; }
           C=$(docker run -d --rm -e CAMOFOX_API_KEY=*** -p 19377:9377 --network gitea_default "$TAG")
           trap 'docker rm -f $C 2>/dev/null || true' EXIT
           ok=""
@@ -129,5 +136,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          SHA="${{ gitea.sha }}"
+          VER=$(docker run --rm -v camofox-ci-src:/src node:22 \
+            sh -c "cd /src && grep -oE '\"version\": *\"[^\"]+\"' package.json | head -1" | cut -d'"' -f4)
+          TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
           docker tag "$TAG" localhost/camofox-browser:live
           echo "Published $TAG as :live (NAS-local). HC01 deploy via scripts/deploy-hc01.sh."
