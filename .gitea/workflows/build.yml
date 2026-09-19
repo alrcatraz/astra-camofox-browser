@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TOK=$(cat /jobdata/ci-clone-token)
+          TOK=$(cat /root/ci-clone-token)
           git config --global http.sslVerify false
           rm -rf /workspace/repo
           # container runs on gitea_default net -> talk to gitea directly (no Lucky round-trip)
