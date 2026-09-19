@@ -2,12 +2,10 @@ name: Build & publish camofox image (astra)
 
 # Gitea-only pipeline. NAS runners ONLY (GitHub's .github/workflows belong to
 # upstream and are NOT used for astra builds):
-#   - nix-capable = ds425plus-nix; job container defaults to nixos/nix:runner,
-#     which carries the baked clone token at /root/ci-clone-token AND a full
-#     git+curl toolchain (the only credential mechanism on this act_runner
-#     build — secrets API returns 404, custom `container:` images lose both
-#     the baked file and the FHS layout act relies on). npm/node come from a
-#     nix-shell.
+#   - nix-capable = ds425plus-nix; job container defaults to the runner's
+#     nixos/nix:runner image (baked /root/ci-clone-token + /bin/sleep). node
+#     toolchain comes from a nix profile baked by scripts/bake-node-ci-image.sh,
+#     exposed via NIX_PATH profile activation below.
 #   - host = steps run directly on the DSM host (docker CLI + local images).
 #
 # Regression gate: persistence smoke guards the silent plugin-death class
@@ -25,18 +23,11 @@ concurrency:
 jobs:
   test:
     runs-on: nix-capable
-    container:
-      # NAS-baked derivative of nixos/nix:runner with /bin/sleep (act's hardcoded
-      # entrypoint) + /root/ci-clone-token baked; rebuild via scripts/bake-node-ci-image.sh.
-      # node toolchain comes from nix-shell below.
-      image: nixos/nix:runner-ci
     steps:
       - name: Checkout & unit tests
         shell: bash
         run: |
           set -euo pipefail
-          # act's container PATH drops /usr/local/bin; baked toolchain lives there
-          export PATH=/usr/local/bin:$PATH
           TOK=$(cat /root/ci-clone-token)
           git config --global http.sslVerify false
           rm -rf /workspace/repo
@@ -45,12 +36,12 @@ jobs:
             "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" /workspace/repo
           cd /workspace/repo
           git checkout "${{ gitea.sha }}" 2>/dev/null || true
-          # baked-in cache: nodejs_22 python3 gcc gnumake git curl (see bake script)
+          # activate the baked ci-cache profile (nodejs_22 python3 gcc gnumake git curl)
+          export PATH=/nix/var/nix/profiles/ci-cache/bin:$PATH
           export npm_config_build_from_source=true
           npm ci --no-audit --no-fund 2>&1 | tail -3
           # ESM tests need --experimental-vm-modules (same as npm run test:plugins).
-          # Camoufox-binary-dependent suites (cookies/security/tab*) can only pass
-          # where the browser exists; CI runs plugins + non-browser unit tests.
+          # Camoufox-binary-dependent suites can only pass where the browser exists.
           NODE_OPTIONS='--experimental-vm-modules' npx jest plugins \
             tests/unit --testPathIgnorePatterns='cookies|security|tabRecycling|tabLifecycleContract|operationalFailures' \
             --silent --forceExit 2>&1 | tail -6
