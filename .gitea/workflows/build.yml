@@ -70,22 +70,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          WORK=/workspace/ci-camofox
-          rm -rf "$WORK"; mkdir -p "$WORK"
-          # ubuntu-latest image has no baked creds: run the clone inside a
-          # throwaway container that bind-mounts the NAS token file (docker.sock
-          # is mounted into every job by act_runner, so this talks to the NAS
-          # daemon and sees host paths directly).
+          # ubuntu-latest image has no baked creds. Job cwd is a named docker
+          # volume; copy the host token file into it with a helper container on
+          # the NAS daemon (socket mounted here): mounting the VOLUME by name
+          # resolves host-side for us — no path guessing needed.
+          JOBID=$(grep -oE "[0-9a-f]{64}" /proc/self/cgroup | head -1)
+          VOL=$(docker inspect "$JOBID" --format "{{range .Mounts}}{{if eq .Destination \"/workspace/alrcatraz/astra-camofox-browser\"}}{{.Name}}{{end}}{{end}}")
+          echo "JOBID=$JOBID JOB_VOL=$VOL"
           docker run --rm \
             -v /volume1/docker/act_runner_nix/data/ci-clone-token:/tok:ro \
-            -v "$WORK:/out" -v /var/run/docker.sock:/var/run/docker.sock \
-            alpine sh -c "cp /tok /out/.ci-token; chmod 600 /out/.ci-token"
-          TOK=$(cat "$WORK/.ci-token")
+            -v "$VOL":/shared \
+            alpine sh -c "cp /tok /shared/.ci-token"
+          TOK=$(cat "$PWD/.ci-token")
+          rm -rf "$PWD/ci-repo"
           git config --global http.sslVerify false
           GIT_SSL_NO_VERIFY=true git clone --branch "${{ gitea.ref_name }}" \
-            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$WORK/repo"
-          cd "$WORK/repo" && git checkout "${{ gitea.sha }}" 2>/dev/null || true
-          echo "WORK=$WORK" >> "$GITHUB_ENV"
+            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/ci-repo"
+          cd "$PWD/ci-repo" && git checkout "${{ gitea.sha }}" 2>/dev/null || true
+          echo "WORK=$PWD/ci-repo" >> "$GITHUB_ENV"
 
       - name: Thin-layer build over VNC base
         shell: bash
@@ -96,7 +98,7 @@ jobs:
           # only exist on act_runner_nix's host image store — same NAS daemon, so
           # localhost/ tags are visible here too.
           which docker || { echo "::error::no docker cli in job image"; exit 1; }
-          cd "$WORK/repo"
+          cd "$WORK"
           VER=$(grep -oE '"version": *"[^"]+"' package.json | head -1 | cut -d'"' -f4)
           SHA=$(git rev-parse --short HEAD)
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA}"
