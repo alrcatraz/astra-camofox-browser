@@ -16,6 +16,8 @@ module.exports = {
   
   // Ignore patterns
   testPathIgnorePatterns: [
+    // procfs-dependent watcher helpers only work on a normal /proc (not containers with masked paths)
+    "vnc-watcher\\.test\\.js",
     '/node_modules/'
   ],
   
