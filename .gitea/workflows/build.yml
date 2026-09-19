@@ -42,6 +42,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap "" PIPE   # act job shell inherits SIGPIPE=ignore; git checkout died 141 (run#47/48)
           docker version --format "server {{.Server.Version}}" || exit 1
           TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
           rm -rf "$PWD/repo"
@@ -79,6 +80,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap "" PIPE   # act job shell inherits SIGPIPE=ignore; git checkout died 141 (run#47/48)
           TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
           rm -rf "$PWD/repo"
           git config --global http.sslVerify false
@@ -93,6 +95,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap "" PIPE   # act job shell inherits SIGPIPE=ignore; git checkout died 141 (run#47/48)
           docker image inspect localhost/camofox-browser:135.0.1-x86_64-vnc >/dev/null \
             || { echo "::error::VNC base missing on NAS (restore from HC01 podman save/load)"; exit 1; }
           SHA="${{ gitea.sha }}"
@@ -111,6 +114,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap "" PIPE   # act job shell inherits SIGPIPE=ignore; git checkout died 141 (run#47/48)
           SHA="${{ gitea.sha }}"
           VER=$(grep -oE '"version": *"[^"]+"' "$PWD/repo/package.json" | head -1 | cut -d'"' -f4)
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
@@ -137,6 +141,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap "" PIPE   # act job shell inherits SIGPIPE=ignore; git checkout died 141 (run#47/48)
           SHA="${{ gitea.sha }}"
           VER=$(grep -oE '"version": *"[^"]+"' "$PWD/repo/package.json" | head -1 | cut -d'"' -f4)
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
