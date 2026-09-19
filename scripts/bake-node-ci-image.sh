@@ -7,10 +7,11 @@ TOK_SRC=/volume1/docker/ci-clone-token
 D='/usr/local/bin/docker'
 $D rm -f tok-bake-node >/dev/null 2>&1 || true
 $D create --name tok-bake-node --entrypoint /bin/sh docker.io/library/node:22-bookworm-slim \
-  -c 'ln -sf /usr/local/bin/sleep /bin/sleep; true' >/dev/null
+  -c 'true' >/dev/null
 $D cp "$TOK_SRC" tok-bake-node:/root/ci-clone-token
-$D start -a tok-bake-node >/dev/null
 $D commit tok-bake-node docker.io/library/node:22-bookworm-slim-ci
 $D rm tok-bake-node
+echo "== verify via act_runner EXACT entrypoint:"
+$D run --rm --entrypoint '/bin/sleep' docker.io/library/node:22-bookworm-slim-ci 2 && echo SLEEP_ENTRY_OK
 $D run --rm --entrypoint /bin/sh docker.io/library/node:22-bookworm-slim-ci \
-  -c 'ls -l /root/ci-clone-token && ls -l /bin/sleep'
+  -c 'ls -l /root/ci-clone-token; ls -l /bin/sleep'
