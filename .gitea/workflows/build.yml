@@ -46,6 +46,9 @@ jobs:
           NODE_OPTIONS='--experimental-vm-modules' npx jest plugins \
             tests/unit --testPathIgnorePatterns='cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher' \
             --silent --forceExit > /tmp/jest.log 2>&1 || true
+          # ALWAYS print the summary first — jest writes it even when a suite dies,
+          # and an empty log must not be mistaken for a passing run.
+          grep -E "Test Suites:|Tests:" /tmp/jest.log || echo "JEST PRODUCED NO SUMMARY (crash before run?)"
           grep -E "✕|^FAIL |●.*›" /tmp/jest.log | head -20
           tail -6 /tmp/jest.log
           grep -qE "Test Suites: [0-9]+ passed, [0-9]+ total" /tmp/jest.log
