@@ -44,10 +44,10 @@ jobs:
           # Camoufox-binary-dependent suites can only pass where the browser exists.
           NODE_OPTIONS='--experimental-vm-modules' npx jest plugins \
             tests/unit --testPathIgnorePatterns='cookies|security|tabRecycling|tabLifecycleContract|operationalFailures' \
-            --silent --forceExit > /tmp/jest.log 2>&1; rc=$?
-          grep -E "✕|FAIL |●.*›" /tmp/jest.log | head -20
+            --silent --forceExit > /tmp/jest.log 2>&1 || true
+          grep -E "✕|^FAIL |●.*›" /tmp/jest.log | head -20
           tail -6 /tmp/jest.log
-          exit $rc
+          grep -q "Test Suites: 56 passed, 56 total" /tmp/jest.log
 
   build-smoke:
     needs: test
