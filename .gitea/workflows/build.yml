@@ -87,7 +87,8 @@ jobs:
           GIT_SSL_NO_VERIFY=true git clone --branch "${{ gitea.ref_name }}" \
             "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/ci-repo"
           cd "$PWD/ci-repo" && git checkout "${{ gitea.sha }}" 2>/dev/null || true
-          echo "WORK=$PWD/ci-repo" >> "$GITHUB_ENV"
+          # cwd is now ci-repo; $WORK must NOT re-append it (double-path bug)
+          echo "WORK=$PWD" >> "$GITHUB_ENV"
 
       - name: Thin-layer build over VNC base
         shell: bash
