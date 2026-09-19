@@ -3,7 +3,7 @@ name: Build & publish camofox image (astra)
 # Gitea-only pipeline. NAS runners ONLY (GitHub's .github/workflows belong to
 # upstream and are NOT used for astra builds):
 #   - nix-capable = ds425plus-nix; job container defaults to the runner's
-#     nixos/nix:runner image (runner-mounted /data/ci-clone-token + baked /bin/sleep). node
+#     nixos/nix:runner image (runner-mounted /jobdata/ci-clone-token + baked /bin/sleep). node
 #     toolchain comes from a nix profile baked by scripts/bake-node-ci-image.sh,
 #     exposed via NIX_PATH profile activation below.
 #   - host = steps run directly on the DSM host (docker CLI + local images).
@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TOK=$(cat /data/ci-clone-token)
+          TOK=$(cat /jobdata/ci-clone-token)
           git config --global http.sslVerify false
           rm -rf /workspace/repo
           # container runs on gitea_default net -> talk to gitea directly (no Lucky round-trip)
