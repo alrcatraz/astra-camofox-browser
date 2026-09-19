@@ -88,8 +88,8 @@ jobs:
           set -euo pipefail
           docker image inspect localhost/camofox-browser:135.0.1-x86_64-vnc >/dev/null \
             || { echo "::error::VNC base missing on NAS (restore from HC01 podman save/load)"; exit 1; }
-          VER=$(docker run --rm -v camofox-ci-src:/src -w /src/repo node:22 \
-            grep -oE '"version": *"[^"]+"' package.json | head -1 | cut -d'"' -f4)
+          VER=$(docker run --rm -v camofox-ci-src:/src node:22 \
+            sh -c "cd /src/repo && grep -oE '\"version\": *\"[^\"]+\"' package.json | head -1" | cut -d'"' -f4)
           SHA="${{ gitea.sha }}"
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
           echo "TAG=$TAG" >> "$GITHUB_ENV"
