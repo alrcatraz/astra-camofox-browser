@@ -52,7 +52,7 @@ jobs:
           grep -E "✕|^FAIL |●.*›" /tmp/jest.log | head -20
           tail -6 /tmp/jest.log
           grep -qE "Test Suites: [0-9]+ passed, [0-9]+ total" /tmp/jest.log
-          ! grep -q "failed" /tmp/jest.log
+          ! grep -qE "(Suites|Tests): +[0-9]+ failed" /tmp/jest.log
 
   build-smoke:
     needs: test
