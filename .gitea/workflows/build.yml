@@ -105,13 +105,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # GITHUB_ENV writes are per-step in act_runner — re-derive TAG (same
-          # deterministic formula; workflow env is not shared across steps here)
+          # Deterministic tag formula — clone lands in the shared /workspace, so
+          # read package.json straight off disk (no docker-run extraction needed).
           SHA="${{ gitea.sha }}"
-          VER=$(docker run --rm -v camofox-ci-src:/src node:22 \
-            sh -c "cd /src && grep -oE '\"version\": *\"[^\"]+\"' package.json | head -1" | cut -d'"' -f4)
+          VER=$(grep -oE '"version": *"[^"]+"' /workspace/repo/package.json | head -1 | cut -d'"' -f4)
+          echo "VER=[$VER]"
+          [ -n "$VER" ] || { echo "::error::could not extract version"; exit 1; }
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
-          docker image inspect "$TAG" >/dev/null || { echo "::error::tag $TAG missing"; exit 1; }
           C=$(docker run -d --rm -e CAMOFOX_API_KEY=*** -p 19377:9377 --network gitea_default "$TAG")
           trap 'docker rm -f $C 2>/dev/null || true' EXIT
           ok=""
