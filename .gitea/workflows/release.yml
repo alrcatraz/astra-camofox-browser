@@ -23,7 +23,7 @@ jobs:
           set -euo pipefail
           WORK=/volume1/docker/ci-camofox-rel
           rm -rf "$WORK"; mkdir -p "$WORK"
-          TOK=$(cat /volume1/docker/ci-clone-token)
+          TOK=$(cat /volume1/docker/act_runner_nix/data/ci-clone-token)
           GIT_SSL_NO_VERIFY=true git clone --branch "${{ gitea.ref_name }}" \
             "https://alrcatraz:${TOK}@git01.wrt.astra-lab.org:10443/${{ gitea.repository }}.git" "$WORK/repo"
           echo "WORK=$WORK" >> "$GITHUB_ENV"
@@ -66,7 +66,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TOK=$(cat /volume1/docker/ci-clone-token)
+          TOK=$(cat /volume1/docker/act_runner_nix/data/ci-clone-token)
           curl -sf -u "alrcatraz:${TOK}" -X POST \
             "https://git01.wrt.astra-lab.org:10443/api/v1/repos/${{ gitea.repository }}/releases" \
             -H 'Content-Type: application/json' \

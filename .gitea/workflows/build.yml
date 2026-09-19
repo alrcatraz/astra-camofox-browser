@@ -60,17 +60,22 @@ jobs:
 
   build-smoke:
     needs: test
-    runs-on: host
+    # "host" is NOT a registered label on this Gitea (act_runner = ubuntu-latest/
+    # ubuntu-24.04/rust; act_runner_nix = nix-capable/nixos) -> queued forever.
+    # Route to the plain NAS runner; its job containers get docker.sock mounted
+    # by act_runner, so `docker` CLI drives the NAS daemon from inside the job.
+    runs-on: ubuntu-latest
     steps:
-      - name: Clone repo on NAS host
+      - name: Clone repo (job container, docker.sock available)
         shell: bash
         run: |
           set -euo pipefail
-          WORK=/volume1/docker/ci-camofox
+          WORK=/workspace/ci-camofox
           rm -rf "$WORK"; mkdir -p "$WORK"
-          TOK=$(cat /volume1/docker/ci-clone-token)
+          TOK=$(cat /root/ci-clone-token)
+          git config --global http.sslVerify false
           GIT_SSL_NO_VERIFY=true git clone --branch "${{ gitea.ref_name }}" \
-            "https://alrcatraz:${TOK}@git01.wrt.astra-lab.org:10443/${{ gitea.repository }}.git" "$WORK/repo"
+            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$WORK/repo"
           cd "$WORK/repo" && git checkout "${{ gitea.sha }}" 2>/dev/null || true
           echo "WORK=$WORK" >> "$GITHUB_ENV"
 
@@ -78,6 +83,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # docker CLI comes from the ubuntu-latest runner image; it talks to the
+          # NAS daemon through the mounted socket. The VNC base + node toolchain
+          # only exist on act_runner_nix's host image store — same NAS daemon, so
+          # localhost/ tags are visible here too.
+          which docker || { echo "::error::no docker cli in job image"; exit 1; }
           cd "$WORK/repo"
           VER=$(grep -oE '"version": *"[^"]+"' package.json | head -1 | cut -d'"' -f4)
           SHA=$(git rev-parse --short HEAD)
