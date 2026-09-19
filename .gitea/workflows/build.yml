@@ -2,12 +2,20 @@ name: Build & publish camofox image (astra)
 
 # Gitea-only pipeline, NAS runners. Design decided 2026-09-19 after the baked
 # `nixos/nix:runner-ci` image was found wiped by Container Manager GC:
-# STOP baking toolchains/secrets into mutable local images. Instead both jobs
-# run on nix-capable and drive the NAS docker daemon through the socket that
-# act_runner mounts at /var/run/docker.sock — all heavy machinery (node test
-# image, VNC base, build cache) lives in the NAS image store under proper tags.
+# STOP baking toolchains/secrets into mutable local images. Both jobs run on
+# nix-capable and drive the NAS docker daemon through the socket act_runner
+# mounts at /var/run/docker.sock — all heavy machinery (node test image, VNC
+# base, build cache) lives in the NAS image store under proper tags.
 # Secrets come from the host file /volume1/docker/act_runner_nix/data/ci-clone-token,
-# which is always available via a helper-container copy (no image baking).
+# read via a helper-container copy (no image baking).
+#
+# Layout facts proven empirically (runs #41–#44):
+#   - the job's own workspace is invisible to sibling containers (bind fails)
+#   - /workspace is PER-JOB, not shared across jobs
+#   - named volumes ARE shared; every step re-clones into camofox-ci-src:/src
+#     root (nested dirs raced away between steps once; root checkout is stable)
+#   - GITHUB_ENV does NOT carry across steps -> derive TAG deterministically
+#     per step from ${{ gitea.sha }} + version extracted INSIDE the container
 #
 # Regression gate: persistence smoke guards the silent plugin-death class
 # fixed in 1553c0f (missing mcp/lib/cookies.mjs COPY + logger.info TypeError).
@@ -32,7 +40,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # job image is minimal alpine+git; everything else happens in containers
           docker version --format "server {{.Server.Version}}" || exit 1
           TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
           docker run --rm \
@@ -41,9 +48,7 @@ jobs:
             -e REPO_URL="http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" \
             -e REF="${{ gitea.ref_name }}" -e SHA="${{ gitea.sha }}" \
             node:22 sh -c "
-              # clone into the volume ROOT (run#42/43 proved nested /src/repo
-              # vanished between containers; a clean root checkout is reliable)
-              rm -rf ./* ./.[!.]* 2>/dev/null || true
+              rm -rf /src/* 2>/dev/null || true
               git config --global http.sslVerify false
               GIT_SSL_NO_VERIFY=true git clone --branch \$REF \$REPO_URL /src
               cd /src && git checkout \$SHA 2>/dev/null || true
@@ -62,15 +67,11 @@ jobs:
     needs: test
     runs-on: nix-capable
     steps:
-      - name: Clone repo
+      - name: Clone repo into shared volume
         shell: bash
         run: |
           set -euo pipefail
           TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
-          # clone via a node:22 container on the SHARED named volume camofox-ci-src
-          # (the job's own workspace is an overlay — invisible to sibling containers,
-          # which killed run#41's bind mount). node:22-bookworm has git; we also
-          # mount the job's git cert helper aside — sslVerify off covers self-signed.
           docker run --rm \
             -v camofox-ci-src:/src -w /src \
             -e REPO_URL="http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" \
@@ -80,8 +81,9 @@ jobs:
               git config --global http.sslVerify false
               GIT_SSL_NO_VERIFY=true git clone --branch \$REF \$REPO_URL /src
               cd /src && git checkout \$SHA 2>/dev/null || true
+              node -e \"console.log(require('/src/package.json').version)\" > /src/.ci-ver
+              cat /src/.ci-ver
             "
-          echo "SRC_VOL=camofox-ci-src" >> "$GITHUB_ENV"
 
       - name: Thin-layer build over VNC base
         shell: bash
@@ -89,13 +91,11 @@ jobs:
           set -euo pipefail
           docker image inspect localhost/camofox-browser:135.0.1-x86_64-vnc >/dev/null \
             || { echo "::error::VNC base missing on NAS (restore from HC01 podman save/load)"; exit 1; }
-          VER=$(docker run --rm -v camofox-ci-src:/src node:22 \
-            sh -c "cd /src && grep -oE '\"version\": *\"[^\"]+\"' package.json | head -1" | cut -d'"' -f4)
+          VER=$(docker run --rm -v camofox-ci-src:/src alpine cat /src/.ci-ver)
+          [ -n "$VER" ] || { echo "::error::missing /src/.ci-ver"; exit 1; }
           SHA="${{ gitea.sha }}"
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
-          # build context must live where the daemon can read it: named volume,
-          # mounted into a docker:cli container that runs the build itself.
+          echo "TAG=$TAG"
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v camofox-ci-src:/src -w /src \
@@ -105,13 +105,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Deterministic tag formula — clone lands in the shared /workspace, so
-          # read package.json straight off disk (no docker-run extraction needed).
+          VER=$(docker run --rm -v camofox-ci-src:/src alpine cat /src/.ci-ver)
           SHA="${{ gitea.sha }}"
-          VER=$(grep -oE '"version": *"[^"]+"' /workspace/repo/package.json | head -1 | cut -d'"' -f4)
-          echo "VER=[$VER]"
-          [ -n "$VER" ] || { echo "::error::could not extract version"; exit 1; }
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
+          docker image inspect "$TAG" >/dev/null || { echo "::error::tag $TAG missing"; exit 1; }
           C=$(docker run -d --rm -e CAMOFOX_API_KEY=*** -p 19377:9377 --network gitea_default "$TAG")
           trap 'docker rm -f $C 2>/dev/null || true' EXIT
           ok=""
@@ -136,9 +133,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          VER=$(docker run --rm -v camofox-ci-src:/src alpine cat /src/.ci-ver)
           SHA="${{ gitea.sha }}"
-          VER=$(docker run --rm -v camofox-ci-src:/src node:22 \
-            sh -c "cd /src && grep -oE '\"version\": *\"[^\"]+\"' package.json | head -1" | cut -d'"' -f4)
           TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
           docker tag "$TAG" localhost/camofox-browser:live
           echo "Published $TAG as :live (NAS-local). HC01 deploy via scripts/deploy-hc01.sh."
