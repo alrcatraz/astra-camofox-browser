@@ -45,7 +45,8 @@ jobs:
             "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" /workspace/repo
           cd /workspace/repo
           git checkout "${{ gitea.sha }}" 2>/dev/null || true
-          # baked-in cache: nodejs_22 + python3 + build tools (see bake script); no nix-shell here
+          # baked-in cache: nodejs_22 python3 gcc gnumake git curl (see bake script)
+          export npm_config_build_from_source=true
           npm ci --no-audit --no-fund 2>&1 | tail -3
           npx jest tests/unit plugins --silent 2>&1 | tail -6
 
