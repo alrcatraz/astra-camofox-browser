@@ -46,8 +46,10 @@ jobs:
           TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
           rm -rf "$PWD/repo"
           git config --global http.sslVerify false
-          git clone --branch "${{ gitea.ref_name }}" \
-            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/repo"
+          # `| tail` under pipefail = SIGPIPE 141 when git writes to stderr after
+          # tail exits early; redirect instead (run#47).
+          git clone --quiet --branch "${{ gitea.ref_name }}" \
+            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/repo" > /tmp/clone.log 2>&1 || { cat /tmp/clone.log; exit 1; }
           (cd "$PWD/repo" && git checkout "${{ gitea.sha }}")
           chmod -R a+rwX "$PWD/repo"
           JOBID=$(grep -oE "[0-9a-f]{64}" /proc/self/cgroup | head -1)
@@ -80,8 +82,8 @@ jobs:
           TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
           rm -rf "$PWD/repo"
           git config --global http.sslVerify false
-          git clone --branch "${{ gitea.ref_name }}" \
-            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/repo"
+          git clone --quiet --branch "${{ gitea.ref_name }}" \
+            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/repo" > /tmp/clone.log 2>&1 || { cat /tmp/clone.log; exit 1; }
           (cd "$PWD/repo" && git checkout "${{ gitea.sha }}")
           chmod -R a+rwX "$PWD/repo"
           VER=$(grep -oE '"version": *"[^"]+"' "$PWD/repo/package.json" | head -1 | cut -d'"' -f4)
