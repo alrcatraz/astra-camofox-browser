@@ -35,20 +35,17 @@ jobs:
           # job image is minimal alpine+git; everything else happens in containers
           docker version --format "server {{.Server.Version}}" || exit 1
           TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
-          rm -rf "$PWD/repo"
-          git config --global http.sslVerify false
-          # clone as the CURRENT user (rootless docker mounts can reject root-owned trees)
-          GIT_SSL_NO_VERIFY=true git clone --branch "${{ gitea.ref_name }}" \
-            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/repo"
-          cd "$PWD/repo" && git checkout "${{ gitea.sha }}" 2>/dev/null || true
-          chmod -R a+rwX .
-          # npm ci + jest inside node:22 (toolchain comes from Docker Hub, not a
-          # hand-baked image). Cache volume persists node_modules between runs.
           docker run --rm \
-            -v "$PWD:/src" -w /src \
-            -v camofox-npm-ci-cache:/root/.npm \
+            -v camofox-ci-src:/src -v camofox-npm-ci-cache:/root/.npm \
+            -w /src \
             -e CI=false \
+            -e REPO_URL="http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" \
+            -e REF="${{ gitea.ref_name }}" -e SHA="${{ gitea.sha }}" \
             node:22 sh -c "
+              rm -rf /src/repo
+              git config --global http.sslVerify false
+              GIT_SSL_NO_VERIFY=true git clone --branch \$REF \$REPO_URL /src/repo
+              cd /src/repo && git checkout \$SHA 2>/dev/null || true
               npm ci --no-audit --no-fund 2>&1 | tail -3
               env NODE_OPTIONS=--experimental-vm-modules npx jest plugins \
                 tests/unit --testPathIgnorePatterns='cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher' \
@@ -69,32 +66,45 @@ jobs:
         run: |
           set -euo pipefail
           TOK=$(docker run --rm -v "$TOKEN_HOST_PATH":/tok:ro alpine cat /tok)
-          rm -rf "$PWD/ci-repo"
-          git config --global http.sslVerify false
-          GIT_SSL_NO_VERIFY=true git clone --branch "${{ gitea.ref_name }}" \
-            "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" "$PWD/ci-repo"
-          cd "$PWD/ci-repo" && git checkout "${{ gitea.sha }}" 2>/dev/null || true
-          # cwd is now ci-repo; WORK must NOT re-append it (double-path bug of run#359)
-          echo "WORK=$PWD" >> "$GITHUB_ENV"
+          # clone via a node:22 container on the SHARED named volume camofox-ci-src
+          # (the job's own workspace is an overlay — invisible to sibling containers,
+          # which killed run#41's bind mount). node:22-bookworm has git; we also
+          # mount the job's git cert helper aside — sslVerify off covers self-signed.
+          docker run --rm \
+            -v camofox-ci-src:/src -w /src \
+            -e REPO_URL="http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" \
+            -e REF="${{ gitea.ref_name }}" -e SHA="${{ gitea.sha }}" \
+            node:22 sh -c "
+              rm -rf /src/repo
+              git config --global http.sslVerify false
+              GIT_SSL_NO_VERIFY=true git clone --branch \$REF \$REPO_URL /src/repo
+              cd /src/repo && git checkout \$SHA 2>/dev/null || true
+            "
+          echo "SRC_VOL=camofox-ci-src" >> "$GITHUB_ENV"
 
       - name: Thin-layer build over VNC base
         shell: bash
         run: |
           set -euo pipefail
-          cd "$WORK"
-          VER=$(grep -oE '"version": *"[^"]+"' package.json | head -1 | cut -d'"' -f4)
-          SHA=$(git rev-parse --short HEAD)
-          TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA}"
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
           docker image inspect localhost/camofox-browser:135.0.1-x86_64-vnc >/dev/null \
             || { echo "::error::VNC base missing on NAS (restore from HC01 podman save/load)"; exit 1; }
-          docker build -f Dockerfile.astra -t "$TAG" . 2>&1 | tail -5
+          VER=$(docker run --rm -v camofox-ci-src:/src -w /src/repo node:22 \
+            grep -oE '"version": *"[^"]+"' package.json | head -1 | cut -d'"' -f4)
+          SHA="${{ gitea.sha }}"
+          TAG="localhost/camofox-browser:${VER}-x86_64-vnc-ci-${SHA:0:7}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          # build context must live where the daemon can read it: named volume,
+          # mounted into a docker:cli container that runs the build itself.
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v camofox-ci-src:/src -w /src/repo \
+            docker:cli sh -c "docker build -f Dockerfile.astra -t '$TAG' . 2>&1 | tail -5"
 
       - name: Smoke — persistence loads + checkpoint persists
         shell: bash
         run: |
           set -euo pipefail
-          C=$(docker run -d --rm -e CAMOFOX_API_KEY=*** -p 19377:9377 "$TAG")
+          C=$(docker run -d --rm -e CAMOFOX_API_KEY=*** -p 19377:9377 --network gitea_default "$TAG")
           trap 'docker rm -f $C 2>/dev/null || true' EXIT
           ok=""
           for i in $(seq 1 15); do
@@ -104,10 +114,12 @@ jobs:
             echo "$L" | grep -q 'plugin load failed.*persistence' && { echo "::error::persistence load failed"; exit 1; }
           done
           [ -n "$ok" ] || { echo "::error::persistence never loaded"; exit 1; }
-          curl -sf -X POST http://127.0.0.1:19377/tabs -H 'Content-Type: application/json' \
+          # reach the smoke container over the shared docker network (the job's
+          # own 127.0.0.1 is NOT the NAS host namespace)
+          curl -sf -X POST "http://$C:9377/tabs" -H 'Content-Type: application/json' \
             -d '{"userId":"ci_smoke","sessionKey":"s","url":"https://example.com"}' >/dev/null
           sleep 3
-          curl -sf -X DELETE http://127.0.0.1:19377/sessions/ci_smoke >/dev/null
+          curl -sf -X DELETE "http://$C:9377/sessions/ci_smoke" >/dev/null
           sleep 3
           docker logs $C 2>&1 | grep -q 'storage state persisted' || { echo "::error::checkpoint not persisted"; exit 1; }
           echo SMOKE_OK
