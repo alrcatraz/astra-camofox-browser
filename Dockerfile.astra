@@ -22,6 +22,10 @@ COPY camofox.config.json ./
 COPY lib/ ./lib/
 COPY plugins/ ./plugins/
 COPY scripts/ ./scripts/
+# persistence plugin's bootstrap-cookie helpers live in the mcp package (upstream
+# v1.13.1 split); without this COPY the plugin fails to load and storage-state
+# checkpoints silently stop persisting (fixed 2026-09-19).
+COPY mcp/lib/cookies.mjs ./mcp/lib/cookies.mjs
 
 # Astra fork runtime env (baked mirror of the upstream Dockerfile values).
 ENV NODE_ENV=production

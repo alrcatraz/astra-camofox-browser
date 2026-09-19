@@ -62,6 +62,7 @@ export async function register(app, ctx, pluginConfig = {}) {
   ctx.persistenceStorageStateOptions = indexedDB ? { indexedDB: true } : undefined;
 
   const logger = {
+    info: (msg, fields = {}) => log('info', msg, fields),
     warn: (msg, fields = {}) => log('warn', msg, fields),
   };
 
