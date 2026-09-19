@@ -35,6 +35,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # act's container PATH drops /usr/local/bin; baked toolchain lives there
+          export PATH=/usr/local/bin:$PATH
           TOK=$(cat /root/ci-clone-token)
           git config --global http.sslVerify false
           rm -rf /workspace/repo
@@ -43,11 +45,9 @@ jobs:
             "http://alrcatraz:${TOK}@gitea:3000/${{ gitea.repository }}.git" /workspace/repo
           cd /workspace/repo
           git checkout "${{ gitea.sha }}" 2>/dev/null || true
-          nix-shell -p nodejs_22 python3 gcc g++ make --run '
-            set -euo pipefail
-            npm ci --no-audit --no-fund 2>&1 | tail -3
-            npx jest tests/unit plugins --silent 2>&1 | tail -6
-          '
+          # baked-in cache: nodejs_22 + python3 + build tools (see bake script); no nix-shell here
+          npm ci --no-audit --no-fund 2>&1 | tail -3
+          npx jest tests/unit plugins --silent 2>&1 | tail -6
 
   build-smoke:
     needs: test
