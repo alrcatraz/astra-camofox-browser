@@ -52,7 +52,7 @@ jobs:
             -e REPO_URL="https://alrcatraz:${TOK}@git01.wrt.astra-lab.org:10443/${{ gitea.repository }}.git" \
             -e REF="${{ gitea.ref_name }}" -e SHA="${{ gitea.sha }}" \
             node:22 sh -c "
-              rm -rf /src/* 2>/dev/null || true
+              rm -rf /src/* /src/.[!.]* 2>/dev/null || true
               git config --global http.sslVerify false
               GIT_SSL_NO_VERIFY=true git clone --branch \$REF \$REPO_URL /src
               cd /src && git checkout \$SHA 2>/dev/null || true
@@ -81,7 +81,7 @@ jobs:
             -e REPO_URL="https://alrcatraz:${TOK}@git01.wrt.astra-lab.org:10443/${{ gitea.repository }}.git" \
             -e REF="${{ gitea.ref_name }}" -e SHA="${{ gitea.sha }}" \
             node:22 sh -c "
-              rm -rf /src/* 2>/dev/null || true
+              rm -rf /src/* /src/.[!.]* 2>/dev/null || true
               git config --global http.sslVerify false
               GIT_SSL_NO_VERIFY=true git clone --branch \$REF \$REPO_URL /src
               cd /src && git checkout \$SHA 2>/dev/null || true
