@@ -54,7 +54,9 @@ jobs:
           # single awk gate: suites all-passed AND zero failed counts in summaries
           # act_runner renders run: through Go format() which eats single quotes —
           # awk program MUST be double-quoted with no inner single quotes.
-          awk "/^Test Suites:/{if (/failed/) bad=1; seen++} /^Tests: /{if (/failed/) bad=1; seen++} END{exit !(seen>=2 && !bad)}" /tmp/jest.log
+          grep -qE "^Test Suites: [0-9]+ passed, [0-9]+ total" /tmp/jest.log
+          grep -qE "^Tests: +[0-9]+ passed, [0-9]+ total" /tmp/jest.log
+          ! grep -qE "^(Test Suites|Tests): .*failed" /tmp/jest.log
 
   build-smoke:
     needs: test
