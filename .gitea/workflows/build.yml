@@ -2,13 +2,13 @@ name: Build & publish camofox image (astra)
 
 # Gitea-only pipeline. NAS runners ONLY (GitHub's .github/workflows belong to
 # upstream and are NOT used for astra builds):
-#   - nix-capable = ds425plus-nix; job container node:22-bookworm-slim-ci is a
-#     NAS-local derived image with /root/ci-clone-token + /bin/sleep baked in
-#     (the only credential mechanism on this act_runner build — secrets API
-#     returns 404, valid_volumes binds are rejected). force-pull must stay off
-#     or Docker Hub would replace the derived tag.
+#   - nix-capable = ds425plus-nix; job container defaults to nixos/nix:runner,
+#     which carries the baked clone token at /root/ci-clone-token AND a full
+#     git+curl toolchain (the only credential mechanism on this act_runner
+#     build — secrets API returns 404, custom `container:` images lose both
+#     the baked file and the FHS layout act relies on). npm/node come from a
+#     nix-shell.
 #   - host = steps run directly on the DSM host (docker CLI + local images).
-# If :22-bookworm-slim-ci disappears (prune), re-bake via scripts/bake-node-ci-image.sh.
 #
 # Regression gate: persistence smoke guards the silent plugin-death class
 # fixed in 1553c0f (missing mcp/lib/cookies.mjs COPY + logger.info TypeError).
@@ -25,8 +25,6 @@ concurrency:
 jobs:
   test:
     runs-on: nix-capable
-    container:
-      image: docker.io/library/node:22-bookworm-slim-ci
     steps:
       - name: Checkout & unit tests
         shell: bash
@@ -34,12 +32,16 @@ jobs:
           set -euo pipefail
           TOK=$(cat /root/ci-clone-token)
           git config --global http.sslVerify false
+          rm -rf /workspace/repo
           git clone --branch "${{ gitea.ref_name }}" \
             "https://alrcatraz:${TOK}@git01.wrt.astra-lab.org:10443/${{ gitea.repository }}.git" /workspace/repo
           cd /workspace/repo
           git checkout "${{ gitea.sha }}" 2>/dev/null || true
-          npm ci --no-audit --no-fund 2>&1 | tail -3
-          npx jest tests/unit plugins --silent 2>&1 | tail -6
+          nix-shell -p nodejs_22 python3 gcc g++ make git --run '
+            set -euo pipefail
+            npm ci --no-audit --no-fund 2>&1 | tail -3
+            npx jest tests/unit plugins --silent 2>&1 | tail -6
+          '
 
   build-smoke:
     needs: test
