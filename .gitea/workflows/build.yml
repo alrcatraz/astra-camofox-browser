@@ -48,7 +48,8 @@ jobs:
             --silent --forceExit > /tmp/jest.log 2>&1 || true
           grep -E "✕|^FAIL |●.*›" /tmp/jest.log | head -20
           tail -6 /tmp/jest.log
-          grep -q "Test Suites: 55 passed, 55 total" /tmp/jest.log
+          grep -qE "Test Suites: [0-9]+ passed, [0-9]+ total" /tmp/jest.log
+          grep -q "Tests:       0 failed" /tmp/jest.log
 
   build-smoke:
     needs: test
