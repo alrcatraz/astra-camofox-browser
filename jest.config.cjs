@@ -38,8 +38,7 @@ module.exports = {
   ],
   
   // Reporter settings
-  reporters: [
-    'default',
-    ...(process.env.CI ? [['jest-junit', { outputDirectory: 'test-results' }]] : [])
-  ]
+  // NOTE: jest-junit is NOT a dependency of this repo — the old CI-env branch
+  // here crashed jest-config normalizeReporters on any runner exporting CI=true.
+  reporters: ['default']
 };
