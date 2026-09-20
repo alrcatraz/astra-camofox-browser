@@ -57,7 +57,8 @@ jobs:
             c=$(dcreate "$spec") || return 1
             sr=$($API -X POST "http://localhost/containers/$c/start" 2>&1); echo "start-reply:$sr" >&2
             case "$sr" in *rror*) DR_LOG=""; return 1;; esac
-            rcs=$($API "http://localhost/containers/$c/wait" | tr , "\n" | grep StatusCode | grep -oE "[0-9]+" | head -1)
+            WRESP=$($API "http://localhost/containers/$c/wait"); echo "wait-reply:$WRESP" >&2
+            rcs=$(echo "$WRESP" | tr , "\n" | grep StatusCode | grep -oE "[0-9]+" | head -1)
             echo "drun rc=$rcs cid=$c" >&2
             DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
             echo "$DR_LOG" | tail -12
@@ -121,7 +122,8 @@ jobs:
             c=$(dcreate "$spec") || return 1
             sr=$($API -X POST "http://localhost/containers/$c/start" 2>&1); echo "start-reply:$sr" >&2
             case "$sr" in *rror*) DR_LOG=""; return 1;; esac
-            rcs=$($API "http://localhost/containers/$c/wait" | tr , "\n" | grep StatusCode | grep -oE "[0-9]+" | head -1)
+            WRESP=$($API "http://localhost/containers/$c/wait"); echo "wait-reply:$WRESP" >&2
+            rcs=$(echo "$WRESP" | tr , "\n" | grep StatusCode | grep -oE "[0-9]+" | head -1)
             echo "drun rc=$rcs cid=$c" >&2
             DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
             echo "$DR_LOG" | tail -12
