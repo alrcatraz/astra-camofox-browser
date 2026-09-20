@@ -191,7 +191,9 @@ jobs:
           drun "{\"Image\":\"node:22\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
           VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
-          CID=$(dcreate "{\"Image\":\"$TAG\",\"Env\":[\"CAMOFOX_API_KEY=***\"],\"HostConfig\":{\"AutoRemove\":true,\"NetworkMode\":\"bridge\"}}")
+          # smoke container: default bridge (NAT to NAS outbound — example.com needs it)
+          # + API key via header (image keeps NODE_ENV=production; auth enforced by CAMOFOX_API_KEY)
+          CID=$(dcreate "{\"Image\":\"$TAG\",\"Env\":[\"CAMOFOX_API_KEY=***\"],\"ExposedPorts\":{\"9377/tcp\":{}},\"HostConfig\":{\"AutoRemove\":true,\"PublishAllPorts\":true}}")
           dstart "$CID"
           ok=""
           for i in $(seq 1 15); do
@@ -201,16 +203,23 @@ jobs:
             grep -aq "plugin load failed.*persistence" /tmp/smoke.log && { echo "::error::persistence load failed"; tail -20 /tmp/smoke.log | tr -dc "[:print:]\n"; exit 1; }
           done
           [ -n "$ok" ] || { echo "::error::persistence never loaded"; tr -dc "[:print:]\n" < /tmp/smoke.log | tail -30; exit 1; }
-          $API "http://localhost/v1.43/containers/$CID/json" > /tmp/cid.json 2>/dev/null || true
+          for i in $(seq 1 15); do
+            $API "http://localhost/v1.43/containers/$CID/json" > /tmp/cid.json 2>/dev/null || true
+            PORT=$(tr , "\n" < /tmp/cid.json | grep -A0 HostPort | grep -oE "[0-9]+" | head -1)
+            [ -n "$PORT" ] && break
+            sleep 2
+          done
           GW=$(tr , "\n" < /tmp/cid.json | grep -m1 Gateway | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+")
-          PREFIX=${GW%.*}
-          IP="$PREFIX.2"
-          echo "SMOKE-GW=$GW IP=$IP (mesh-port trick)"
+          [ -n "$GW" ] || { echo "::error::no gateway"; exit 1; }
+          [ -n "$PORT" ] || { echo "::error::no published port"; exit 1; }
+          # published port binds host; reachable from any container netns via that bridge's gateway IP
+          IP="$GW"; P="$PORT"
+          echo "SMOKE-TARGET=$IP:$P (published port via host gw)"
           echo "SMOKE-IP=$IP"
-          TABCODE=$(curl -s -o /tmp/tab.json -w "%{http_code}" -H "Authorization: Bearer ci-smoke-key" -m 120 --retry 5 --retry-delay 5 --retry-all-errors -X POST "http://$IP:9377/tabs" -H "Content-Type: application/json" -d "{\"userId\":\"ci_smoke\",\"sessionKey\":\"s\",\"url\":\"https://example.com\"}")
+          TABCODE=$(curl -s -o /tmp/tab.json -w "%{http_code}" -H "Authorization: Bearer ci-smoke-key" -m 120 --retry 5 --retry-delay 5 --retry-all-errors -X POST "http://$IP:$P/tabs" -H "Content-Type: application/json" -d "{\"userId\":\"ci_smoke\",\"sessionKey\":\"s\",\"url\":\"https://example.com\"}")
           [ "$TABCODE" = "200" ] || { echo "::error::tab create http=$TABCODE body=$(head -c 300 /tmp/tab.json)"; $API "http://localhost/v1.43/containers/$CID/logs?stdout=1&stderr=1" > /tmp/smoke.log 2>/dev/null || true; tr -dc "[:print:]\n" < /tmp/smoke.log | tail -30; exit 1; }
           sleep 3
-          curl -sf -m 15 -H "Authorization: Bearer ci-smoke-key" -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
+          curl -sf -m 15 -H "Authorization: Bearer ci-smoke-key" -X DELETE "http://$IP:$P/sessions/ci_smoke" >/dev/null
           sleep 3
           $API "http://localhost/v1.43/containers/$CID/logs?stdout=1&stderr=1" > /tmp/smoke.log 2>/dev/null || true
           grep -aq "storage state persisted" /tmp/smoke.log || { echo "::error::checkpoint not persisted"; tail -30 /tmp/smoke.log | tr -dc "[:print:]\n"; exit 1; }
