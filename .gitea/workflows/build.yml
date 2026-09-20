@@ -102,7 +102,7 @@ jobs:
           IGNORE="cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher"
           # script travels as an Env var (JSON-safe, zero quote nesting);
           # container runs sh -c "$JEST_SCRIPT"
-          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"\$JEST_SCRIPT\"],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\",\"IGNORE=cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher\",\"JEST_SCRIPT=export HOME=/tmp; cd /src; npm ci --no-audit --no-fund 2>&1 | tail -3; env NODE_OPTIONS=--experimental-vm-modules npx jest plugins tests/unit --testPathIgnorePatterns \$IGNORE --silent --forceExit > /src/.ci-jest.log 2>&1; echo JEST-DONE rc=$?\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"Memory\":4294967296}}"
+          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"\$JEST_SCRIPT\"],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\",\"IGNORE=cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher\",\"JEST_SCRIPT=cd /src; HOME=/tmp npm ci --no-audit --no-fund 2>&1 | tail -3; HOME=/tmp NODE_OPTIONS=--experimental-vm-modules npx jest plugins tests/unit --testPathIgnorePatterns \$IGNORE --silent --forceExit > /src/.ci-jest.log 2>&1; echo JEST-DONE rc=$?\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"Memory\":4294967296}}"
           drun "$SPEC" || true
           echo RUN-COMPLETE
           drun "{\"Image\":\"node:22\",\"Cmd\":[\"cat\",\"/src/.ci-jest.log\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
