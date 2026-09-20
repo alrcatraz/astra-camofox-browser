@@ -49,8 +49,9 @@ jobs:
           cat > "$PWD/dlib.sh" <<'DLIB'
           API="curl -sS --unix-socket /var/run/docker.sock"
           jfield() { grep -oE "[0-9a-f]{64}" | head -1; }
-          dcreate() { local out; out=$($API -f -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/v1.51/containers/create 2>&1) || { echo "create failed: $out" >&2; return 1; }
-            DR_RAW=$(echo "$out" | jfield Id); [ -n "$DR_RAW" ] || { echo "create no-id: $out" >&2; return 1; }; echo "$DR_RAW"; }
+          dcreate() { local out st; out=$($API -w "\n%{http_code}" -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/v1.51/containers/create) || { echo "create curl-error" >&2; return 1; }
+            st=$(echo "$out" | tail -1); [ "$st" = "201" ] || { echo "create http=$st body=$(echo "$out" | head -1)" >&2; return 1; }
+            DR_RAW=$(echo "$out" | jfield Id); [ -n "$DR_RAW" ] || { echo "create no-id: $(echo "$out" | head -1)" >&2; return 1; }; echo "$DR_RAW"; }
           dstart()  { $API -X POST "http://localhost/v1.51/containers/$1/start"; }
           dwait()   { $API "http://localhost/v1.51/containers/$1/wait"; }
           dfmt() { tr "\000-\010" "\n"; }
@@ -114,8 +115,9 @@ jobs:
           cat > "$PWD/dlib.sh" <<'DLIB'
           API="curl -sS --unix-socket /var/run/docker.sock"
           jfield() { grep -oE "[0-9a-f]{64}" | head -1; }
-          dcreate() { local out; out=$($API -f -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/v1.51/containers/create 2>&1) || { echo "create failed: $out" >&2; return 1; }
-            DR_RAW=$(echo "$out" | jfield Id); [ -n "$DR_RAW" ] || { echo "create no-id: $out" >&2; return 1; }; echo "$DR_RAW"; }
+          dcreate() { local out st; out=$($API -w "\n%{http_code}" -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/v1.51/containers/create) || { echo "create curl-error" >&2; return 1; }
+            st=$(echo "$out" | tail -1); [ "$st" = "201" ] || { echo "create http=$st body=$(echo "$out" | head -1)" >&2; return 1; }
+            DR_RAW=$(echo "$out" | jfield Id); [ -n "$DR_RAW" ] || { echo "create no-id: $(echo "$out" | head -1)" >&2; return 1; }; echo "$DR_RAW"; }
           dstart()  { $API -X POST "http://localhost/v1.51/containers/$1/start"; }
           dwait()   { $API "http://localhost/v1.51/containers/$1/wait"; }
           dfmt() { tr "\000-\010" "\n"; }
