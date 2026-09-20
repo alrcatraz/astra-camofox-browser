@@ -53,8 +53,10 @@ jobs:
           dstart()  { $API -X POST "http://localhost/containers/$1/start"; }
           dwait()   { $API "http://localhost/containers/$1/wait"; }
           dfmt() { tr "\000-\010" "\n"; }
-          drun() { local spec="$1"; local c; local rcs
-            c=$(dcreate "$spec") || return 1; dstart "$c"
+          drun() { local spec="$1"; local c; local rcs sr
+            c=$(dcreate "$spec") || return 1
+            sr=$($API -X POST "http://localhost/containers/$c/start" 2>&1); echo "start-reply:$sr" >&2
+            case "$sr" in *rror*) DR_LOG=""; return 1;; esac
             rcs=$($API "http://localhost/containers/$c/wait" | tr , "\n" | grep StatusCode | grep -oE "[0-9]+" | head -1)
             echo "drun rc=$rcs cid=$c" >&2
             DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
@@ -73,7 +75,7 @@ jobs:
           TOKSPEC="{\"Image\":\"alpine\",\"Cmd\":[\"cat\",\"/tok\"],\"HostConfig\":{\"Binds\":[\"$TOKEN_HOST_PATH:/tok:ro\"],\"AutoRemove\":true,\"NetworkMode\":\"none\"}}"
           drun "$TOKSPEC" || { echo "::error::token relay"; exit 1; }
           TOKEN=$(echo "$DR_LOG" | grep -oE "[0-9a-f]{40}" | head -1)
-          [ -n "$TOKEN" ] || { echo "::error::empty token"; echo "$DR_LOG" | od -c | head -5; exit 1; }
+          [ -n "$TOKEN" ] || { echo "::error::empty token (relay rc=$?)"; echo "$DR_LOG" | od -c | head -5; exit 1; }
           SPEC="{\"Image\":\"alpine/git\",\"Cmd\":[\"sh\",\"-c\",\"export HOME=/tmp; rm -rf /src/* /src/.[!.]* 2>/dev/null||true; git config --global http.sslVerify false; GIT_SSL_NO_VERIFY=true git clone --quiet --branch ${{ gitea.ref_name }} http://x:${TOKEN}@gitea:3000/${{ gitea.repository }}.git /src && cd /src && git checkout --quiet ${{ gitea.sha }} && echo STAGE-OK\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"gitea_default\",\"AutoRemove\":true}}"
           drun "$SPEC" && echo REPO-STAGED || { echo "::error::stage failed"; exit 1; }
 
@@ -115,8 +117,10 @@ jobs:
           dstart()  { $API -X POST "http://localhost/containers/$1/start"; }
           dwait()   { $API "http://localhost/containers/$1/wait"; }
           dfmt() { tr "\000-\010" "\n"; }
-          drun() { local spec="$1"; local c; local rcs
-            c=$(dcreate "$spec") || return 1; dstart "$c"
+          drun() { local spec="$1"; local c; local rcs sr
+            c=$(dcreate "$spec") || return 1
+            sr=$($API -X POST "http://localhost/containers/$c/start" 2>&1); echo "start-reply:$sr" >&2
+            case "$sr" in *rror*) DR_LOG=""; return 1;; esac
             rcs=$($API "http://localhost/containers/$c/wait" | tr , "\n" | grep StatusCode | grep -oE "[0-9]+" | head -1)
             echo "drun rc=$rcs cid=$c" >&2
             DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
