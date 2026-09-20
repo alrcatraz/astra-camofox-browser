@@ -58,8 +58,8 @@ jobs:
           drun() { local spec="$1"; local c; local rcs sr
             c=$(dcreate "$spec") || return 1
             if ! $API -f -X POST "http://localhost/v1.43/containers/$c/start" >/dev/null; then echo "start failed cid=$c" >&2; DR_LOG=""; return 1; fi
-            WRESP=$($API "http://localhost/v1.43/containers/$c/wait")
-            rcs=$(echo "$WRESP" | tr , "\n" | grep StatusCode | grep -oE "[0-9]+" | head -1)
+            WRESP=$($API "http://localhost/v1.43/containers/$c/wait"); echo "wait-reply:$WRESP" >&2
+            rcs=$(echo "$WRESP" | grep -oE "[0-9]+" | head -1)
             echo "drun rc=$rcs cid=$c" >&2
             DR_LOG=$($API "http://localhost/v1.43/containers/$c/logs?stdout=1&stderr=1" | dfmt)
             echo "$DR_LOG" | tail -12
@@ -124,8 +124,8 @@ jobs:
           drun() { local spec="$1"; local c; local rcs sr
             c=$(dcreate "$spec") || return 1
             if ! $API -f -X POST "http://localhost/v1.43/containers/$c/start" >/dev/null; then echo "start failed cid=$c" >&2; DR_LOG=""; return 1; fi
-            WRESP=$($API "http://localhost/v1.43/containers/$c/wait")
-            rcs=$(echo "$WRESP" | tr , "\n" | grep StatusCode | grep -oE "[0-9]+" | head -1)
+            WRESP=$($API "http://localhost/v1.43/containers/$c/wait"); echo "wait-reply:$WRESP" >&2
+            rcs=$(echo "$WRESP" | grep -oE "[0-9]+" | head -1)
             echo "drun rc=$rcs cid=$c" >&2
             DR_LOG=$($API "http://localhost/v1.43/containers/$c/logs?stdout=1&stderr=1" | dfmt)
             echo "$DR_LOG" | tail -12
