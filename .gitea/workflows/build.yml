@@ -1,14 +1,17 @@
 name: Build & publish camofox image (astra)
 
-# Flake-based CI (2026-09-20). Toolchain truth = flake.lock, NOT a baked image.
-# Label `nix-capable` -> `nixos/nix:runner-ci` = official nixos/nix:latest + one
-# /bin/sleep softlink layer (act keepalive entrypoint; bare latest won't start).
-# GC-wipe recovery: rebuild that single-layer Dockerfile and retag — nothing else.
+# Flake-era CI (2026-09-20). Label `nix-capable` -> `nixos/nix:runner-ci` =
+# official nixos/nix:latest + one /bin/sleep softlink layer (act keepalive
+# entrypoint hardcodes it; bare latest won't start — run#54). If CM GC wipes
+# the derivative, rebuild ONLY that layer and retag. Toolchain truth for the
+# repo itself lives in flake.lock (dev use); CI jobs run heavy lifting inside
+# helper containers on the NAS daemon.
 #
 # Job-image constraints (each proven by a failed run — do not re-litigate):
-#   - job fs has NO docker CLI and NO host paths visible; it DOES have
-#     /var/run/docker.sock -> drive the NAS daemon via curl --unix-socket REST
-#     (dlib.sh below); helper containers mount HOST paths fine (daemon-side).
+#   - job fs: NO docker CLI, NO host paths, only grep/cut/tr/tail/head/curl/git
+#     (NO sed/python3/awk — run#57) -> dlib uses tr+cut JSON extraction.
+#   - drive the NAS daemon via curl --unix-socket /var/run/docker.sock REST;
+#     helper containers mount HOST paths fine (daemon-side resolution).
 #   - only --network gitea_default resolves gitea:3000.
 #   - act format() eats single quotes in run blocks -> double quotes only.
 #   - GITHUB_ENV does not carry across steps -> re-derive TAG from disk.
@@ -43,20 +46,15 @@ jobs:
         run: |
           set -euo pipefail
           trap "" PIPE
-          cat > "$PWD/dlib.sh" <<'DLIB'
+          cat > "$PWD/dlib.sh" <<DLIB
           API="curl -sS --unix-socket /var/run/docker.sock"
-          dcreate() { $API -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/containers/create | sed -E 's/.*"Id":"([^"]+)".*/\1/'; }
+          jfield() { tr , "\n" | grep "\"$1\"" | cut -d\" -f4 | head -1; }
+          dcreate() { $API -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/containers/create | jfield Id; }
           dstart()  { $API -X POST "http://localhost/containers/$1/start"; }
           dwait()   { $API "http://localhost/containers/$1/wait"; }
-          dfmt()    { python3 -c "
-          import sys
-          data=sys.stdin.buffer.read(); out=[]; i=0
-          while i+8<=len(data):
-              n=int.from_bytes(data[i+4:i+8],'big'); out.append(data[i+8:i+8+n]); i+=8+n
-          sys.stdout.write(b''.join(out).decode('utf-8','replace'))"; }
           drun() { local spec="$1" c rc
             c=$(dcreate "$spec"); dstart "$c"; rc=$(dwait "$c")
-            DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
+            DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | head -c 2000000)
             echo "$DR_LOG" | tail -12
             DR_CID=$c
             [ "$rc" = "0" ]; }
@@ -83,11 +81,20 @@ jobs:
           trap "" PIPE
           . "$PWD/dlib.sh"
           IGNORE="cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher"
-          INNER="cd /src && npm ci --no-audit --no-fund 2>&1 | tail -3; env NODE_OPTIONS=--experimental-vm-modules npx jest plugins tests/unit --testPathIgnorePatterns \"$IGNORE\" --silent --forceExit > /tmp/jest.log 2>&1 || true; grep -E \"^Test Suites:|^Tests:\" /tmp/jest.log | head -4; grep -qE \"^Test Suites: [0-9]+ passed, [0-9]+ total\" /tmp/jest.log && grep -qE \"^Tests: +[0-9]+ passed, [0-9]+ total\" /tmp/jest.log && ! grep -qE \"^(Test Suites|Tests): .*failed\" /tmp/jest.log && echo TEST-GATE-PASSED"
-          SPEC="{\"Image\":\"node:22\",\"Entrypoint\":[\"sh\",\"-c\"],\"Cmd\":[$(python3 -c "import json,sys;print(json.dumps(sys.argv[1]))" "$INNER")],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"AutoRemove\":true,\"Memory\":4294967296}}"
-          drun "$SPEC" && echo RUN-COMPLETE || echo "container rc nonzero — checking gate"
-          echo "$DR_LOG" | grep -E "added [0-9]+ packages|Test Suites:|Tests:" | tail -4
-          echo "$DR_LOG" | grep -q TEST-GATE-PASSED || { echo "$DR_LOG" | grep -E "FAIL|●|Error" | head -20; echo "::error::test gate failed"; exit 1; }
+          # script travels as an Env var (JSON-safe, zero quote nesting);
+          # container runs sh -c "$JEST_SCRIPT"
+          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"$JEST_SCRIPT\"],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\",\"JEST_SCRIPT=cd /src && npm ci --no-audit --no-fund 2>&1 | tail -3; env NODE_OPTIONS=--experimental-vm-modules npx jest plugins tests/unit --testPathIgnorePatterns $IGNORE --silent --forceExit > /src/.ci-jest.log 2>&1 || true; echo JEST-DONE\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"AutoRemove\":true,\"Memory\":4294967296}}"
+          drun "$SPEC" || true
+          echo RUN-COMPLETE
+          drun "{\"Image\":\"alpine\",\"Cmd\":[\"cat\",\"/src/.ci-jest.log\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"AutoRemove\":true,\"NetworkMode\":\"none\"}}" || true
+          SUITES=$(echo "$DR_LOG" | grep "^Test Suites:" | head -1)
+          TESTS=$(echo "$DR_LOG" | grep "^Tests:" | head -1)
+          echo "SUITES=[$SUITES]"
+          echo "TESTS=[$TESTS]"
+          case "$SUITES" in *" passed, "*total*) ;; *) echo "::error::no suites summary"; exit 1;; esac
+          case "$TESTS" in *" passed, "*total*) ;; *) echo "::error::no tests summary"; exit 1;; esac
+          case "$SUITES$TESTS" in *failed*) echo "::error::tests failed"; exit 1;; esac
+          echo TEST-GATE-PASSED
 
   build-smoke:
     needs: test
@@ -98,20 +105,15 @@ jobs:
         run: |
           set -euo pipefail
           trap "" PIPE
-          cat > "$PWD/dlib.sh" <<'DLIB'
+          cat > "$PWD/dlib.sh" <<DLIB
           API="curl -sS --unix-socket /var/run/docker.sock"
-          dcreate() { $API -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/containers/create | sed -E 's/.*"Id":"([^"]+)".*/\1/'; }
+          jfield() { tr , "\n" | grep "\"$1\"" | cut -d\" -f4 | head -1; }
+          dcreate() { $API -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/containers/create | jfield Id; }
           dstart()  { $API -X POST "http://localhost/containers/$1/start"; }
           dwait()   { $API "http://localhost/containers/$1/wait"; }
-          dfmt()    { python3 -c "
-          import sys
-          data=sys.stdin.buffer.read(); out=[]; i=0
-          while i+8<=len(data):
-              n=int.from_bytes(data[i+4:i+8],'big'); out.append(data[i+8:i+8+n]); i+=8+n
-          sys.stdout.write(b''.join(out).decode('utf-8','replace'))"; }
           drun() { local spec="$1" c rc
             c=$(dcreate "$spec"); dstart "$c"; rc=$(dwait "$c")
-            DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
+            DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | head -c 2000000)
             echo "$DR_LOG" | tail -12
             DR_CID=$c
             [ "$rc" = "0" ]; }
@@ -151,18 +153,18 @@ jobs:
           ok=""
           for i in $(seq 1 15); do
             sleep 2
-            L=$($API "http://localhost/containers/$CID/logs?stdout=1&stderr=1" | dfmt || true)
+            L=$($API "http://localhost/containers/$CID/logs?stdout=1&stderr=1" | head -c 2000000 || true)
             echo "$L" | grep -q "persistence plugin enabled" && { ok=1; break; }
             echo "$L" | grep -q "plugin load failed.*persistence" && { echo "::error::persistence load failed"; exit 1; }
           done
           [ -n "$ok" ] || { echo "::error::persistence never loaded"; exit 1; }
-          IP=$($API "http://localhost/containers/$CID/json" | python3 -c "import json,sys;print(json.load(sys.stdin)['NetworkSettings']['Networks']['gitea_default']['IPAddress'])")
+          IP=$($API "http://localhost/containers/$CID/json" | tr , "\n" | grep IPAddress | head -1 | cut -d\" -f4)
           curl -sf -m 15 -X POST "http://$IP:9377/tabs" -H "Content-Type: application/json" \
-            -d '{"userId":"ci_smoke","sessionKey":"s","url":"https://example.com"}' >/dev/null
+            -d "{\"userId\":\"ci_smoke\",\"sessionKey\":\"s\",\"url\":\"https://example.com\"}" >/dev/null
           sleep 3
           curl -sf -m 15 -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
           sleep 3
-          $API "http://localhost/containers/$CID/logs?stdout=1&stderr=1" | dfmt | grep -q "storage state persisted" || { echo "::error::checkpoint not persisted"; exit 1; }
+          $API "http://localhost/containers/$CID/logs?stdout=1&stderr=1" | head -c 2000000 | grep -q "storage state persisted" || { echo "::error::checkpoint not persisted"; exit 1; }
           $API -X DELETE "http://localhost/containers/$CID?force=true" >/dev/null || true
           echo SMOKE_OK
 
