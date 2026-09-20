@@ -90,7 +90,7 @@ jobs:
           drun "$TOKSPEC" || { echo "::error::token relay"; exit 1; }
           TOKEN=$(echo "$DR_LOG" | grep -oE "[0-9a-f]{40}" | head -1)
           [ -n "$TOKEN" ] || { echo "::error::empty token (relay rc=$?)"; echo "$DR_LOG" | od -c | head -5; exit 1; }
-          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"rm -rf /src/* /src/.[!.]* 2>/dev/null||true; git config --global --add safe.directory /src; git clone --quiet --branch ${{ gitea.ref_name }} http://x:${TOKEN}@gitea:3000/${{ gitea.repository }}.git /src && cd /src && git checkout --quiet ${{ gitea.sha }} && echo STAGE-OK\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"gitea_default\"}}"
+          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"rm -rf /src/* /src/.[!.]* 2>/dev/null||true; git config --global --add safe.directory /src; echo cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher > /src/.ci-ignore.txt; git clone --quiet --branch ${{ gitea.ref_name }} http://x:${TOKEN}@gitea:3000/${{ gitea.repository }}.git /src && cd /src && git checkout --quiet ${{ gitea.sha }} && echo STAGE-OK\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"gitea_default\"}}"
           drun "$SPEC" && echo REPO-STAGED || { echo "::error::stage failed"; exit 1; }
 
       - name: Jest inside node:22 on shared volume
@@ -102,10 +102,7 @@ jobs:
           IGNORE="cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher"
           # script travels as an Env var (JSON-safe, zero quote nesting);
           # container runs sh -c "$JEST_SCRIPT"
-          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"\$JEST_SCRIPT\"],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\",\"IGNORE=cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher\",\"JEST_SCRIPT=cd /src; HOME=/tmp npm ci --no-audit --no-fund 2>&1 | tail -3; HOME=/tmp NODE_OPTIONS=--experimental-vm-modules npx jest plugins tests/unit --testPathIgnorePatterns \$IGNORE --silent --forceExit > /src/.ci-jest.log 2>&1; echo JEST-DONE rc=$?\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"Memory\":4294967296}}"
-          drun "$SPEC" || true
-          echo RUN-COMPLETE
-          drun "{\"Image\":\"node:22\",\"Cmd\":[\"cat\",\"/src/.ci-jest.log\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
+          SPEC='{"Image":"node:22","Cmd":["sh","-c","$JEST_SCRIPT"],"Env":["CI=false","npm_config_build_from_source=true","JEST_SCRIPT=echo Y2QgL3NyYwpnaXQgY29uZmlnIC0tZ2xvYmFsIC0tYWRkIHNhZmUuZGlyZWN0b3J5IC9zcmMKSUdOT1JFPSQoY2F0IC9zcmMvLmNpLWlnbm9yZS50eHQpCm5wbSBjaSAtLW5vLWF1ZGl0IC0tbm8tZnVuZCAyPiYxIHwgdGFpbCAtMwpOT0RFX09QVElPTlM9LS1leHBlcmltZW50YWwtdm0tbW9kdWxlcyBucHggamVzdCBwbHVnaW5zIHRlc3RzL3VuaXQgLS10ZXN0UGF0aElnbm9yZVBhdHRlcm5zICRJR05PUkUgLS1zaWxlbnQgLS1mb3JjZUV4aXQgPiAvc3JjLy5jaS1qZXN0LmxvZyAyPiYxOyBlY2hvIEpFU1QtRE9ORSByYz0kPwo= | base64 -d > /src/.ci-jest.sh; sh /src/.ci-jest.sh"],"HostConfig":{"Binds":["${REPO_VOL}:/src","${NPM_VOL}:/root/.npm"],"NetworkMode":"gitea_default","Memory":4294967296}}'
           SUITES=$(echo "$DR_LOG" | grep "^Test Suites:" | head -1)
           TESTS=$(echo "$DR_LOG" | grep "^Tests:" | head -1)
           echo "SUITES=[$SUITES]"
