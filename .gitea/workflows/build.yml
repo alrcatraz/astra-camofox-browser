@@ -197,11 +197,12 @@ jobs:
             grep -aq "persistence plugin enabled" /tmp/smoke.log && { ok=1; break; }
             grep -aq "plugin load failed.*persistence" /tmp/smoke.log && { echo "::error::persistence load failed"; tail -20 /tmp/smoke.log | tr -dc "[:print:]\n"; exit 1; }
           done
-          [ -n "$ok" ] || { echo "::error::persistence never loaded"; exit 1; }
+          [ -n "$ok" ] || { echo "::error::persistence never loaded"; tr -dc "[:print:]\n" < /tmp/smoke.log | tail -30; exit 1; }
           $API "http://localhost/v1.43/containers/$CID/json" > /tmp/cid.json 2>/dev/null || true
           IP=$(tr , "\n" < /tmp/cid.json | grep IPAddress | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | head -1)
-          curl -sf -m 15 -X POST "http://$IP:9377/tabs" -H "Content-Type: application/json" \
-            -d "{\"userId\":\"ci_smoke\",\"sessionKey\":\"s\",\"url\":\"https://example.com\"}" >/dev/null
+          echo "SMOKE-IP=$IP"
+          curl -sf -m 60 --retry 5 --retry-delay 3 --retry-connrefused -X POST "http://$IP:9377/tabs" -H "Content-Type: application/json" \
+            -d "{\"userId\":\"ci_smoke\",\"sessionKey\":\"s\",\"url\":\"https://example.com\"}" >/dev/null || { echo "::error::tab create failed rc=$? ip=$IP"; tr -dc "[:print:]\n" < /tmp/smoke.log | tail -30; exit 1; }
           sleep 3
           curl -sf -m 15 -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
           sleep 3
