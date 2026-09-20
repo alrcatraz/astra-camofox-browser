@@ -34,6 +34,7 @@ concurrency:
 env:
   TOKEN_HOST_PATH: /volume1/docker/act_runner_nix/data/ci-clone-token
   REPO_VOL: camofox-ci-src
+  RELAY_HOST_DIR: /volume1/docker/act_runner_nix/data/ci-relay
   NPM_VOL: camofox-npm-ci-cache
   VNC_BASE: localhost/camofox-browser:135.0.1-x86_64-vnc
 
@@ -90,7 +91,7 @@ jobs:
           drun "$TOKSPEC" || { echo "::error::token relay"; exit 1; }
           TOKEN=$(echo "$DR_LOG" | grep -oE "[0-9a-f]{40}" | head -1)
           [ -n "$TOKEN" ] || { echo "::error::empty token (relay rc=$?)"; echo "$DR_LOG" | od -c | head -5; exit 1; }
-          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"echo cm0gLXJmIC9zcmMvKiAvc3JjLy5bIS5dKiAyPi9kZXYvbnVsbHx8dHJ1ZQpnaXQgY29uZmlnIC0tZ2xvYmFsIC0tYWRkIHNhZmUuZGlyZWN0b3J5IC9zcmMKcHJpbnRmICVzICJjb29raWVzLHNlY3VyaXR5LHRhYlJlY3ljbGluZyx0YWJMaWZlY3ljbGVDb250cmFjdCxvcGVyYXRpb25hbEZhaWx1cmVzLHZuYy13YXRjaGVyIiA+IC9zcmMvLmNpLWlnbm9yZS50eHQKcHJpbnRmICVzICdjb25zdCBmcz1yZXF1aXJlKFN0cmluZy5mcm9tQ2hhckNvZGUoMTAyLDExNSkpOwpjb25zdCBzcmM9cHJvY2Vzcy5hcmd2WzJdO2NvbnN0IGRzdD1wcm9jZXNzLmFyZ3ZbM107CmZvcihjb25zdCBlIG9mIGZzLnJlYWRkaXJTeW5jKHNyYykpe2ZzLnJlbmFtZVN5bmMoc3JjK1N0cmluZy5mcm9tQ2hhckNvZGUoNDcpK2UsZHN0K1N0cmluZy5mcm9tQ2hhckNvZGUoNDcpK2UpO30nID4gL3NyYy8uY2ktcmVuYW1lLmNqcwpnaXQgY2xvbmUgLS1xdWlldCAtLWJyYW5jaCBhc3RyYSBodHRwOi8veDoke1RPS0VOfUBnaXRlYTozMDAwL2FscmNhdHJhei9hc3RyYS1jYW1vZm94LWJyb3dzZXIuZ2l0IC9zcmMvcmVwbzsgZWNobyBDTE9ORS1SQz0kPwpjZCAvc3JjL3JlcG8gJiYgZ2l0IGNoZWNrb3V0IC0tcXVpZXQgJFNIQTsgZWNobyBDSEVDS09VVC1SQz0kPwpub2RlIC9zcmMvLmNpLXJlbmFtZS5janMgL3NyYy9yZXBvIC9zcmM7IGVjaG8gUkVOQU1FLVJDPSQ/CnJtZGlyIC9zcmMvcmVwbzsgbHMgL3NyYy9wYWNrYWdlLmpzb24gPi9kZXYvbnVsbCAmJiBlY2hvIFNUQUdFLU9LIHx8IHsgZWNobyBTVEFHRS1NSVNTSU5HOyBleGl0IDE7IH0K | base64 -d > /src/.s.sh; sh /src/.s.sh; sh /src/.s.sh\"],\"Env\":[\"TOKEN=${TOKEN}\",\"SHA=${{ gitea.sha }}\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"gitea_default\"}}"
+          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"echo cm0gLXJmIC9zcmMvKiAvc3JjLy5bIS5dKiAyPi9kZXYvbnVsbHx8dHJ1ZQpnaXQgY29uZmlnIC0tZ2xvYmFsIC0tYWRkIHNhZmUuZGlyZWN0b3J5IC9zcmMKcHJpbnRmICVzICJjb29raWVzLHNlY3VyaXR5LHRhYlJlY3ljbGluZyx0YWJMaWZlY3ljbGVDb250cmFjdCxvcGVyYXRpb25hbEZhaWx1cmVzLHZuYy13YXRjaGVyIiA+IC9zcmMvLmNpLWlnbm9yZS50eHQKcHJpbnRmICVzICdjb25zdCBmcz1yZXF1aXJlKFN0cmluZy5mcm9tQ2hhckNvZGUoMTAyLDExNSkpOwpjb25zdCBzcmM9cHJvY2Vzcy5hcmd2WzJdO2NvbnN0IGRzdD1wcm9jZXNzLmFyZ3ZbM107CmZvcihjb25zdCBlIG9mIGZzLnJlYWRkaXJTeW5jKHNyYykpe2ZzLnJlbmFtZVN5bmMoc3JjK1N0cmluZy5mcm9tQ2hhckNvZGUoNDcpK2UsZHN0K1N0cmluZy5mcm9tQ2hhckNvZGUoNDcpK2UpO30nID4gL3NyYy8uY2ktcmVuYW1lLmNqcwpnaXQgY2xvbmUgLS1xdWlldCAtLWJyYW5jaCBhc3RyYSBodHRwOi8veDoke1RPS0VOfUBnaXRlYTozMDAwL2FscmNhdHJhei9hc3RyYS1jYW1vZm94LWJyb3dzZXIuZ2l0IC9zcmMvcmVwbzsgZWNobyBDTE9ORS1SQz0kPwpjZCAvc3JjL3JlcG8gJiYgZ2l0IGNoZWNrb3V0IC0tcXVpZXQgJFNIQTsgZWNobyBDSEVDS09VVC1SQz0kPwpub2RlIC9zcmMvLmNpLXJlbmFtZS5janMgL3NyYy9yZXBvIC9zcmM7IGVjaG8gUkVOQU1FLVJDPSQ/CnJtZGlyIC9zcmMvcmVwbwpybSAtZiAvcmVsYXkvc3JjLnRnegp0YXIgY3pmIC9yZWxheS9zcmMudGd6IC1DIC9zcmMgLiA7IGVjaG8gVEFSLVJDPSQ/IFNJWkU9JCh3YyAtYyA8IC9yZWxheS9zcmMudGd6KQpscyAvc3JjL3BhY2thZ2UuanNvbiA+L2Rldi9udWxsICYmIGVjaG8gU1RBR0UtT0sgfHwgeyBlY2hvIFNUQUdFLU1JU1NJTkc7IGV4aXQgMTsgfQo= | base64 -d > /src/.s.sh; sh /src/.s.sh; sh /src/.s.sh\"],\"Env\":[\"TOKEN=${TOKEN}\",\"SHA=${{ gitea.sha }}\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$RELAY_HOST_DIR:/relay\"],\"NetworkMode\":\"gitea_default\"}}"
 
       - name: Jest inside node:22 on shared volume
         shell: bash
@@ -101,7 +102,7 @@ jobs:
           IGNORE="cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher"
           # script travels as an Env var (JSON-safe, zero quote nesting);
           # container runs sh -c "$JEST_SCRIPT"
-          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"echo Y2QgL3NyYwpIT01FPS90bXAgbnBtIGNpIC0tbm8tYXVkaXQgLS1uby1mdW5kID4gL3NyYy8uY2ktamVzdC5sb2cgMj4mMTsgZWNobyBOUE0tUkM9JD8gPj4gL3NyYy8uY2ktamVzdC5sb2cKSE9NRT0vdG1wIE5PREVfT1BUSU9OUz0tLWV4cGVyaW1lbnRhbC12bS1tb2R1bGVzIG5vZGUgbm9kZV9tb2R1bGVzLy5iaW4vamVzdCBwbHVnaW5zIHRlc3RzL3VuaXQgLS10ZXN0UGF0aElnbm9yZVBhdHRlcm5zIGNvb2tpZXMgc2VjdXJpdHkgdGFiUmVjeWNsaW5nIHRhYkxpZmVjeWNsZUNvbnRyYWN0IG9wZXJhdGlvbmFsRmFpbHVyZXMgdm5jLXdhdGNoZXIgLS1zaWxlbnQgLS1mb3JjZUV4aXQgPj4gL3NyYy8uY2ktamVzdC5sb2cgMj4mMQpKRVNUX1JDPSQ/CmVjaG8gSkVTVC1ET05FIHJjPSRKRVNUX1JDID4+IC9zcmMvLmNpLWplc3QubG9nCmdyZXAgLWFFICJUZXN0IFN1aXRlczp8XlRlc3RzOiIgL3NyYy8uY2ktamVzdC5sb2cgfCB0ciAtZGMgIls6cHJpbnQ6XVxcbiIK | base64 -d > /src/.j.sh; sh /src/.j.sh; sh /src/.j.sh\"],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"Memory\":4294967296}}"
+          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"echo Y2QgL3NyYwp0YXIgeHpmIC9yZWxheS9zcmMudGd6IC1DIC9zcmM7IGVjaG8gVU5UQVItUkM9JD8KSE9NRT0vdG1wIG5wbSBjaSAtLW5vLWF1ZGl0IC0tbm8tZnVuZCA+IC9zcmMvLmNpLWplc3QubG9nIDI+JjE7IGVjaG8gTlBNLVJDPSQ/ID4+IC9zcmMvLmNpLWplc3QubG9nCkhPTUU9L3RtcCBOT0RFX09QVElPTlM9LS1leHBlcmltZW50YWwtdm0tbW9kdWxlcyBub2RlIG5vZGVfbW9kdWxlcy8uYmluL2plc3QgcGx1Z2lucyB0ZXN0cy91bml0IC0tdGVzdFBhdGhJZ25vcmVQYXR0ZXJucyBjb29raWVzIHNlY3VyaXR5IHRhYlJlY3ljbGluZyB0YWJMaWZlY3ljbGVDb250cmFjdCBvcGVyYXRpb25hbEZhaWx1cmVzIHZuYy13YXRjaGVyIC0tc2lsZW50IC0tZm9yY2VFeGl0ID4+IC9zcmMvLmNpLWplc3QubG9nIDI+JjEKSkVTVF9SQz0kPwplY2hvIEpFU1QtRE9ORSByYz0kSkVTVF9SQyA+PiAvc3JjLy5jaS1qZXN0LmxvZwpncmVwIC1hRSAiVGVzdCBTdWl0ZXM6fF5UZXN0czoiIC9zcmMvLmNpLWplc3QubG9nIHwgdHIgLWRjICJbOnByaW50Ol1cXG4iCg== | base64 -d > /src/.j.sh; sh /src/.j.sh; sh /src/.j.sh\"],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$RELAY_HOST_DIR:/relay\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"Memory\":4294967296}}"
           drun "$SPEC" || true
           echo RUN-COMPLETE
           # cat-container removed: DR_LOG must stay the jest container's ASCII summary
@@ -167,6 +168,7 @@ jobs:
           trap "" PIPE
           . "$PWD/dlib.sh"
           $API "http://localhost/images/$VNC_BASE/json" >/dev/null || { echo "::error::VNC base missing on NAS"; exit 1; }
+          drun "{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"echo Y2QgL3NyYyAmJiB0YXIgeHpmIC9yZWxheS9zcmMudGd6IC1DIC9zcmM= | base64 -d | sh\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$RELAY_HOST_DIR:/relay\"],\"NetworkMode\":\"none\"}}" || true
           drun "{\"Image\":\"node:22\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
           VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           [ -n "$VERSION" ] || { echo "::error::no version"; exit 1; }
@@ -185,6 +187,7 @@ jobs:
           trap "" PIPE
           . "$PWD/dlib.sh"
           SHA="${{ gitea.sha }}"
+          drun "{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"echo Y2QgL3NyYyAmJiB0YXIgeHpmIC9yZWxheS9zcmMudGd6IC1DIC9zcmM= | base64 -d | sh\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$RELAY_HOST_DIR:/relay\"],\"NetworkMode\":\"none\"}}" || true
           drun "{\"Image\":\"node:22\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
           VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
@@ -221,8 +224,20 @@ jobs:
           trap "" PIPE
           . "$PWD/dlib.sh"
           SHA="${{ gitea.sha }}"
+          drun "{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"echo Y2QgL3NyYyAmJiB0YXIgeHpmIC9yZWxheS9zcmMudGd6IC1DIC9zcmM= | base64 -d | sh\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$RELAY_HOST_DIR:/relay\"],\"NetworkMode\":\"none\"}}" || true
           drun "{\"Image\":\"node:22\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
           VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
           $API -X POST "http://localhost/images/$TAG/tag?repo=localhost/camofox-browser&tag=live" >/dev/null
           echo "Published $TAG as :live (NAS-local)."
+      - name: Cleanup shared artifacts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap "" PIPE
+          . "$PWD/dlib.sh"
+          # wipe the shared src volume AND the persistent relay tarball so no
+          # artifact bleeds between runs (user directive 2026-09-21)
+          drun "{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"rm -rf /src/* /src/.[!.]* /relay/src.tgz 2>/dev/null; echo CLEANED\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$RELAY_HOST_DIR:/relay\"],\"NetworkMode\":\"none\"}}" || true
+          case "$DR_LOG" in *CLEANED*) echo CLEANUP-OK;; *) echo "::warning::cleanup unverified";; esac
