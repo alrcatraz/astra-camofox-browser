@@ -49,18 +49,17 @@ jobs:
           cat > "$PWD/dlib.sh" <<'DLIB'
           API="curl -sS --unix-socket /var/run/docker.sock"
           jfield() { grep -oE "[0-9a-f]{64}" | head -1; }
-          dcreate() { $API -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/containers/create | jfield Id; }
-          dstart()  { $API -X POST "http://localhost/containers/$1/start"; }
-          dwait()   { $API "http://localhost/containers/$1/wait"; }
+          dcreate() { $API -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/v1.51/containers/create | jfield Id; }
+          dstart()  { $API -X POST "http://localhost/v1.51/containers/$1/start"; }
+          dwait()   { $API "http://localhost/v1.51/containers/$1/wait"; }
           dfmt() { tr "\000-\010" "\n"; }
           drun() { local spec="$1"; local c; local rcs sr
             c=$(dcreate "$spec") || return 1
-            sr=$($API -X POST "http://localhost/containers/$c/start" 2>&1); echo "start-reply:$sr" >&2
-            case "$sr" in *rror*) DR_LOG=""; return 1;; esac
-            WRESP=$($API "http://localhost/containers/$c/wait"); echo "wait-reply:$WRESP" >&2
+            if ! $API -f -X POST "http://localhost/v1.51/containers/$c/start" >/dev/null; then echo "start failed cid=$c" >&2; DR_LOG=""; return 1; fi
+            WRESP=$($API "http://localhost/v1.51/containers/$c/wait")
             rcs=$(echo "$WRESP" | tr , "\n" | grep StatusCode | grep -oE "[0-9]+" | head -1)
             echo "drun rc=$rcs cid=$c" >&2
-            DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
+            DR_LOG=$($API "http://localhost/v1.51/containers/$c/logs?stdout=1&stderr=1" | dfmt)
             echo "$DR_LOG" | tail -12
             DR_CID=$c
             [ "$rcs" = "0" ]; }
@@ -114,18 +113,17 @@ jobs:
           cat > "$PWD/dlib.sh" <<'DLIB'
           API="curl -sS --unix-socket /var/run/docker.sock"
           jfield() { grep -oE "[0-9a-f]{64}" | head -1; }
-          dcreate() { $API -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/containers/create | jfield Id; }
-          dstart()  { $API -X POST "http://localhost/containers/$1/start"; }
-          dwait()   { $API "http://localhost/containers/$1/wait"; }
+          dcreate() { $API -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/v1.51/containers/create | jfield Id; }
+          dstart()  { $API -X POST "http://localhost/v1.51/containers/$1/start"; }
+          dwait()   { $API "http://localhost/v1.51/containers/$1/wait"; }
           dfmt() { tr "\000-\010" "\n"; }
           drun() { local spec="$1"; local c; local rcs sr
             c=$(dcreate "$spec") || return 1
-            sr=$($API -X POST "http://localhost/containers/$c/start" 2>&1); echo "start-reply:$sr" >&2
-            case "$sr" in *rror*) DR_LOG=""; return 1;; esac
-            WRESP=$($API "http://localhost/containers/$c/wait"); echo "wait-reply:$WRESP" >&2
+            if ! $API -f -X POST "http://localhost/v1.51/containers/$c/start" >/dev/null; then echo "start failed cid=$c" >&2; DR_LOG=""; return 1; fi
+            WRESP=$($API "http://localhost/v1.51/containers/$c/wait")
             rcs=$(echo "$WRESP" | tr , "\n" | grep StatusCode | grep -oE "[0-9]+" | head -1)
             echo "drun rc=$rcs cid=$c" >&2
-            DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
+            DR_LOG=$($API "http://localhost/v1.51/containers/$c/logs?stdout=1&stderr=1" | dfmt)
             echo "$DR_LOG" | tail -12
             DR_CID=$c
             [ "$rcs" = "0" ]; }
@@ -165,20 +163,20 @@ jobs:
           ok=""
           for i in $(seq 1 15); do
             sleep 2
-            L=$($API "http://localhost/containers/$CID/logs?stdout=1&stderr=1" | head -c 2000000 || true)
+            L=$($API "http://localhost/v1.51/containers/$CID/logs?stdout=1&stderr=1" | head -c 2000000 || true)
             echo "$L" | grep -q "persistence plugin enabled" && { ok=1; break; }
             echo "$L" | grep -q "plugin load failed.*persistence" && { echo "::error::persistence load failed"; exit 1; }
           done
           [ -n "$ok" ] || { echo "::error::persistence never loaded"; exit 1; }
-          IP=$($API "http://localhost/containers/$CID/json"
+          IP=$($API "http://localhost/v1.51/containers/$CID/json"
             | tr , "\n" | grep IPAddress | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           curl -sf -m 15 -X POST "http://$IP:9377/tabs" -H "Content-Type: application/json" \
             -d "{\"userId\":\"ci_smoke\",\"sessionKey\":\"s\",\"url\":\"https://example.com\"}" >/dev/null
           sleep 3
           curl -sf -m 15 -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
           sleep 3
-          $API "http://localhost/containers/$CID/logs?stdout=1&stderr=1" | head -c 2000000 | grep -q "storage state persisted" || { echo "::error::checkpoint not persisted"; exit 1; }
-          $API -X DELETE "http://localhost/containers/$CID?force=true" >/dev/null || true
+          $API "http://localhost/v1.51/containers/$CID/logs?stdout=1&stderr=1" | head -c 2000000 | grep -q "storage state persisted" || { echo "::error::checkpoint not persisted"; exit 1; }
+          $API -X DELETE "http://localhost/v1.51/containers/$CID?force=true" >/dev/null || true
           echo SMOKE_OK
 
       - name: Publish :live tag on NAS
