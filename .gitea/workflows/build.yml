@@ -101,14 +101,15 @@ jobs:
           IGNORE="cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher"
           # script travels as an Env var (JSON-safe, zero quote nesting);
           # container runs sh -c "$JEST_SCRIPT"
-          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"echo Y2QgL3NyYwpIT01FPS90bXAgbnBtIGNpIC0tbm8tYXVkaXQgLS1uby1mdW5kID4gL3NyYy8uY2ktamVzdC5sb2cgMj4mMTsgZWNobyBOUE0tUkM9JD8gPj4gL3NyYy8uY2ktamVzdC5sb2cKSE9NRT0vdG1wIE5PREVfT1BUSU9OUz0tLWV4cGVyaW1lbnRhbC12bS1tb2R1bGVzIG5vZGUgbm9kZV9tb2R1bGVzLy5iaW4vamVzdCBwbHVnaW5zIHRlc3RzL3VuaXQgLS10ZXN0UGF0aElnbm9yZVBhdHRlcm5zIGNvb2tpZXMgc2VjdXJpdHkgdGFiUmVjeWNsaW5nIHRhYkxpZmVjeWNsZUNvbnRyYWN0IG9wZXJhdGlvbmFsRmFpbHVyZXMgdm5jLXdhdGNoZXIgLS1zaWxlbnQgLS1mb3JjZUV4aXQgPj4gL3NyYy8uY2ktamVzdC5sb2cgMj4mMQplY2hvIEpFU1QtRE9ORSByYz0kPyA+PiAvc3JjLy5jaS1qZXN0LmxvZwo= | base64 -d > /src/.j.sh; sh /src/.j.sh; sh /src/.j.sh\"],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"Memory\":4294967296}}"
+          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"echo Y2QgL3NyYwpIT01FPS90bXAgbnBtIGNpIC0tbm8tYXVkaXQgLS1uby1mdW5kID4gL3NyYy8uY2ktamVzdC5sb2cgMj4mMTsgZWNobyBOUE0tUkM9JD8gPj4gL3NyYy8uY2ktamVzdC5sb2cKSE9NRT0vdG1wIE5PREVfT1BUSU9OUz0tLWV4cGVyaW1lbnRhbC12bS1tb2R1bGVzIG5vZGUgbm9kZV9tb2R1bGVzLy5iaW4vamVzdCBwbHVnaW5zIHRlc3RzL3VuaXQgLS10ZXN0UGF0aElnbm9yZVBhdHRlcm5zIGNvb2tpZXMgc2VjdXJpdHkgdGFiUmVjeWNsaW5nIHRhYkxpZmVjeWNsZUNvbnRyYWN0IG9wZXJhdGlvbmFsRmFpbHVyZXMgdm5jLXdhdGNoZXIgLS1zaWxlbnQgLS1mb3JjZUV4aXQgPj4gL3NyYy8uY2ktamVzdC5sb2cgMj4mMQpKRVNUX1JDPSQ/CmVjaG8gSkVTVC1ET05FIHJjPSRKRVNUX1JDID4+IC9zcmMvLmNpLWplc3QubG9nCnRhaWwgLWMgMjAwMCAvc3JjLy5jaS1qZXN0LmxvZwo= | base64 -d > /src/.j.sh; sh /src/.j.sh; sh /src/.j.sh\"],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"Memory\":4294967296}}"
           drun "$SPEC" || true
           echo RUN-COMPLETE
           drun "{\"Image\":\"node:22\",\"Cmd\":[\"cat\",\"/src/.ci-jest.log\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
 
+          # summary lines come from the tail we echoed to stdout (frame bytes stripped)
           DR_LOG=$(printf "%s\n" "$DR_LOG" | tr -d "\\001-\\037")
-          SUITES=$(echo "$DR_LOG" | grep "^Test Suites:" | head -1)
-          TESTS=$(echo "$DR_LOG" | grep "^Tests:" | head -1)
+          SUITES=$(echo "$DR_LOG" | grep "Test Suites:" | head -1)
+          TESTS=$(echo "$DR_LOG" | grep -E "^Tests:|Tests: +[0-9]" | head -1)
           echo "SUITES=[$SUITES]"
           echo "TESTS=[$TESTS]"
           case "$SUITES" in *" passed, "*total*) ;; *) echo "::error::no suites summary"; exit 1;; esac
