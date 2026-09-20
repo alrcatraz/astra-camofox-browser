@@ -200,8 +200,8 @@ jobs:
           [ -n "$ok" ] || { echo "::error::persistence never loaded"; tr -dc "[:print:]\n" < /tmp/smoke.log | tail -30; exit 1; }
           $API "http://localhost/v1.43/containers/$CID/json" > /tmp/cid.json 2>/dev/null || true
           GW=$(tr , "\n" < /tmp/cid.json | grep -m1 Gateway | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+")
-          MPORT=$(echo "$GW" | sed -E "s/[0-9]+$/2/")
-          IP="$MPORT"
+          PREFIX=${GW%.*}
+          IP="$PREFIX.2"
           echo "SMOKE-GW=$GW IP=$IP (mesh-port trick)"
           echo "SMOKE-IP=$IP"
           TABCODE=$(curl -s -o /tmp/tab.json -w "%{http_code}" -H "Authorization: Bearer ci-smoke-key" -m 120 --retry 5 --retry-delay 5 --retry-all-errors -X POST "http://$IP:9377/tabs" -H "Content-Type: application/json" -d "{\"userId\":\"ci_smoke\",\"sessionKey\":\"s\",\"url\":\"https://example.com\"}")
