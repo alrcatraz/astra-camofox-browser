@@ -106,6 +106,7 @@ jobs:
           echo RUN-COMPLETE
           drun "{\"Image\":\"node:22\",\"Cmd\":[\"cat\",\"/src/.ci-jest.log\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
 
+          DR_LOG=$(printf "%s\n" "$DR_LOG" | tr -d "\\001-\\037")
           SUITES=$(echo "$DR_LOG" | grep "^Test Suites:" | head -1)
           TESTS=$(echo "$DR_LOG" | grep "^Tests:" | head -1)
           echo "SUITES=[$SUITES]"
