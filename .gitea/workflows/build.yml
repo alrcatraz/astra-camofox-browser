@@ -201,10 +201,10 @@ jobs:
           $API "http://localhost/v1.43/containers/$CID/json" > /tmp/cid.json 2>/dev/null || true
           IP=$(tr , "\n" < /tmp/cid.json | grep IPAddress | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           echo "SMOKE-IP=$IP"
-          TABCODE=$(curl -s -o /tmp/tab.json -w "%{http_code}" -m 120 --retry 5 --retry-delay 5 --retry-all-errors -X POST "http://$IP:9377/tabs" -H "Content-Type: application/json" -d "{\"userId\":\"ci_smoke\",\"sessionKey\":\"s\",\"url\":\"https://example.com\"}")
+          TABCODE=$(curl -s -o /tmp/tab.json -w "%{http_code}" -H "Authorization: Bearer ci-smoke-key" -m 120 --retry 5 --retry-delay 5 --retry-all-errors -X POST "http://$IP:9377/tabs" -H "Content-Type: application/json" -d "{\"userId\":\"ci_smoke\",\"sessionKey\":\"s\",\"url\":\"https://example.com\"}")
           [ "$TABCODE" = "200" ] || { echo "::error::tab create http=$TABCODE body=$(head -c 300 /tmp/tab.json)"; $API "http://localhost/v1.43/containers/$CID/logs?stdout=1&stderr=1" > /tmp/smoke.log 2>/dev/null || true; tr -dc "[:print:]\n" < /tmp/smoke.log | tail -30; exit 1; }
           sleep 3
-          curl -sf -m 15 -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
+          curl -sf -m 15 -H "Authorization: Bearer ci-smoke-key" -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
           sleep 3
           $API "http://localhost/v1.43/containers/$CID/logs?stdout=1&stderr=1" > /tmp/smoke.log 2>/dev/null || true
           grep -aq "storage state persisted" /tmp/smoke.log || { echo "::error::checkpoint not persisted"; tail -30 /tmp/smoke.log | tr -dc "[:print:]\n"; exit 1; }
