@@ -193,19 +193,20 @@ jobs:
           ok=""
           for i in $(seq 1 15); do
             sleep 2
-            L=$($API "http://localhost/v1.43/containers/$CID/logs?stdout=1&stderr=1" | head -c 2000000 || true)
-            echo "$L" | grep -q "persistence plugin enabled" && { ok=1; break; }
-            echo "$L" | grep -q "plugin load failed.*persistence" && { echo "::error::persistence load failed"; exit 1; }
+            $API "http://localhost/v1.43/containers/$CID/logs?stdout=1&stderr=1" > /tmp/smoke.log 2>/dev/null || true
+            grep -aq "persistence plugin enabled" /tmp/smoke.log && { ok=1; break; }
+            grep -aq "plugin load failed.*persistence" /tmp/smoke.log && { echo "::error::persistence load failed"; tail -20 /tmp/smoke.log | tr -dc "[:print:]\n"; exit 1; }
           done
           [ -n "$ok" ] || { echo "::error::persistence never loaded"; exit 1; }
-          IP=$($API "http://localhost/v1.43/containers/$CID/json"
-            | tr , "\n" | grep IPAddress | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+          $API "http://localhost/v1.43/containers/$CID/json" > /tmp/cid.json 2>/dev/null || true
+          IP=$(tr , "\n" < /tmp/cid.json | grep IPAddress | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           curl -sf -m 15 -X POST "http://$IP:9377/tabs" -H "Content-Type: application/json" \
             -d "{\"userId\":\"ci_smoke\",\"sessionKey\":\"s\",\"url\":\"https://example.com\"}" >/dev/null
           sleep 3
           curl -sf -m 15 -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
           sleep 3
-          $API "http://localhost/v1.43/containers/$CID/logs?stdout=1&stderr=1" | head -c 2000000 | grep -q "storage state persisted" || { echo "::error::checkpoint not persisted"; exit 1; }
+          $API "http://localhost/v1.43/containers/$CID/logs?stdout=1&stderr=1" > /tmp/smoke.log 2>/dev/null || true
+          grep -aq "storage state persisted" /tmp/smoke.log || { echo "::error::checkpoint not persisted"; tail -30 /tmp/smoke.log | tr -dc "[:print:]\n"; exit 1; }
           $API -X DELETE "http://localhost/v1.43/containers/$CID?force=true" >/dev/null || true
           echo SMOKE_OK
 
