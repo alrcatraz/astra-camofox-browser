@@ -58,10 +58,19 @@ jobs:
           drun() { local spec="$1"; local c; local rcs sr
             c=$(dcreate "$spec") || return 1
             if ! $API -f -X POST "http://localhost/v1.43/containers/$c/start" >/dev/null; then echo "start failed cid=$c" >&2; DR_LOG=""; return 1; fi
-            WRESP=$($API "http://localhost/v1.43/containers/$c/wait"); echo "wait-reply:$WRESP" >&2
-            rcs=$(echo "$WRESP" | grep -oE "[0-9]+" | head -1)
+            rcs=""; i=0
+            while [ $i -lt 600 ]; do i=$((i+1)); sleep 1
+              J=$($API "http://localhost/v1.43/containers/$c/json")
+              case "$J" in *page*not*found*) rcs=0; break;; esac
+              RUNNING=$(echo "$J" | tr , "\n" | grep "\"Running\"" | grep -oE "true|false" | head -1)
+              if [ "$RUNNING" = "false" ]; then
+                rcs=$(echo "$J" | tr , "\n" | grep -oE "ExitCode[^0-9-][0-9-]*" | grep -oE "[0-9-]+" | tail -1)
+                break
+              fi
+            done
             echo "drun rc=$rcs cid=$c" >&2
             DR_LOG=$($API "http://localhost/v1.43/containers/$c/logs?stdout=1&stderr=1" | dfmt)
+            $API -X DELETE "http://localhost/v1.43/containers/$c?force=true" >/dev/null 2>&1 || true
             echo "$DR_LOG" | tail -12
             DR_CID=$c
             [ "$rcs" = "0" ]; }
@@ -74,11 +83,11 @@ jobs:
           set -euo pipefail
           trap "" PIPE
           . "$PWD/dlib.sh"
-          TOKSPEC="{\"Image\":\"alpine\",\"Cmd\":[\"cat\",\"/tok\"],\"HostConfig\":{\"Binds\":[\"$TOKEN_HOST_PATH:/tok:ro\"],\"AutoRemove\":true,\"NetworkMode\":\"none\"}}"
+          TOKSPEC="{\"Image\":\"alpine\",\"Cmd\":[\"cat\",\"/tok\"],\"HostConfig\":{\"Binds\":[\"$TOKEN_HOST_PATH:/tok:ro\"],\"NetworkMode\":\"none\"}}"
           drun "$TOKSPEC" || { echo "::error::token relay"; exit 1; }
           TOKEN=$(echo "$DR_LOG" | grep -oE "[0-9a-f]{40}" | head -1)
           [ -n "$TOKEN" ] || { echo "::error::empty token (relay rc=$?)"; echo "$DR_LOG" | od -c | head -5; exit 1; }
-          SPEC="{\"Image\":\"alpine/git\",\"Cmd\":[\"sh\",\"-c\",\"export HOME=/tmp; rm -rf /src/* /src/.[!.]* 2>/dev/null||true; git config --global http.sslVerify false; GIT_SSL_NO_VERIFY=true git clone --quiet --branch ${{ gitea.ref_name }} http://x:${TOKEN}@gitea:3000/${{ gitea.repository }}.git /src && cd /src && git checkout --quiet ${{ gitea.sha }} && echo STAGE-OK\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"gitea_default\",\"AutoRemove\":true}}"
+          SPEC="{\"Image\":\"alpine/git\",\"Cmd\":[\"sh\",\"-c\",\"export HOME=/tmp; rm -rf /src/* /src/.[!.]* 2>/dev/null||true; git config --global http.sslVerify false; GIT_SSL_NO_VERIFY=true git clone --quiet --branch ${{ gitea.ref_name }} http://x:${TOKEN}@gitea:3000/${{ gitea.repository }}.git /src && cd /src && git checkout --quiet ${{ gitea.sha }} && echo STAGE-OK\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"gitea_default\"}}"
           drun "$SPEC" && echo REPO-STAGED || { echo "::error::stage failed"; exit 1; }
 
       - name: Jest inside node:22 on shared volume
@@ -90,10 +99,10 @@ jobs:
           IGNORE="cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher"
           # script travels as an Env var (JSON-safe, zero quote nesting);
           # container runs sh -c "$JEST_SCRIPT"
-          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"$JEST_SCRIPT\"],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\",\"JEST_SCRIPT=cd /src && npm ci --no-audit --no-fund 2>&1 | tail -3; env NODE_OPTIONS=--experimental-vm-modules npx jest plugins tests/unit --testPathIgnorePatterns $IGNORE --silent --forceExit > /src/.ci-jest.log 2>&1 || true; echo JEST-DONE\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"AutoRemove\":true,\"Memory\":4294967296}}"
+          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"$JEST_SCRIPT\"],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\",\"JEST_SCRIPT=cd /src && npm ci --no-audit --no-fund 2>&1 | tail -3; env NODE_OPTIONS=--experimental-vm-modules npx jest plugins tests/unit --testPathIgnorePatterns $IGNORE --silent --forceExit > /src/.ci-jest.log 2>&1 || true; echo JEST-DONE\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"Memory\":4294967296}}"
           drun "$SPEC" || true
           echo RUN-COMPLETE
-          drun "{\"Image\":\"alpine\",\"Cmd\":[\"cat\",\"/src/.ci-jest.log\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"AutoRemove\":true,\"NetworkMode\":\"none\"}}" || true
+          drun "{\"Image\":\"alpine\",\"Cmd\":[\"cat\",\"/src/.ci-jest.log\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
           SUITES=$(echo "$DR_LOG" | grep "^Test Suites:" | head -1)
           TESTS=$(echo "$DR_LOG" | grep "^Tests:" | head -1)
           echo "SUITES=[$SUITES]"
@@ -124,10 +133,19 @@ jobs:
           drun() { local spec="$1"; local c; local rcs sr
             c=$(dcreate "$spec") || return 1
             if ! $API -f -X POST "http://localhost/v1.43/containers/$c/start" >/dev/null; then echo "start failed cid=$c" >&2; DR_LOG=""; return 1; fi
-            WRESP=$($API "http://localhost/v1.43/containers/$c/wait"); echo "wait-reply:$WRESP" >&2
-            rcs=$(echo "$WRESP" | grep -oE "[0-9]+" | head -1)
+            rcs=""; i=0
+            while [ $i -lt 600 ]; do i=$((i+1)); sleep 1
+              J=$($API "http://localhost/v1.43/containers/$c/json")
+              case "$J" in *page*not*found*) rcs=0; break;; esac
+              RUNNING=$(echo "$J" | tr , "\n" | grep "\"Running\"" | grep -oE "true|false" | head -1)
+              if [ "$RUNNING" = "false" ]; then
+                rcs=$(echo "$J" | tr , "\n" | grep -oE "ExitCode[^0-9-][0-9-]*" | grep -oE "[0-9-]+" | tail -1)
+                break
+              fi
+            done
             echo "drun rc=$rcs cid=$c" >&2
             DR_LOG=$($API "http://localhost/v1.43/containers/$c/logs?stdout=1&stderr=1" | dfmt)
+            $API -X DELETE "http://localhost/v1.43/containers/$c?force=true" >/dev/null 2>&1 || true
             echo "$DR_LOG" | tail -12
             DR_CID=$c
             [ "$rcs" = "0" ]; }
@@ -141,13 +159,13 @@ jobs:
           trap "" PIPE
           . "$PWD/dlib.sh"
           $API "http://localhost/images/$VNC_BASE/json" >/dev/null || { echo "::error::VNC base missing on NAS"; exit 1; }
-          drun "{\"Image\":\"alpine\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"AutoRemove\":true,\"NetworkMode\":\"none\"}}" || true
+          drun "{\"Image\":\"alpine\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
           VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           [ -n "$VERSION" ] || { echo "::error::no version"; exit 1; }
           SHA="${{ gitea.sha }}"
           TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
           echo "TAG=$TAG"
-          drun "{\"Image\":\"docker:cli\",\"Cmd\":[\"docker\",\"build\",\"-f\",\"Dockerfile.astra\",\"-t\",\"$TAG\",\".\"],\"WorkingDir\":\"/src\",\"HostConfig\":{\"Binds\":[\"/var/run/docker.sock:/var/run/docker.sock\",\"$REPO_VOL:/src\"],\"AutoRemove\":true}}" \
+          drun "{\"Image\":\"docker:cli\",\"Cmd\":[\"docker\",\"build\",\"-f\",\"Dockerfile.astra\",\"-t\",\"$TAG\",\".\"],\"WorkingDir\":\"/src\",\"HostConfig\":{\"Binds\":[\"/var/run/docker.sock:/var/run/docker.sock\",\"$REPO_VOL:/src\"]}}" \
             && echo BUILD_TRIGGERED || { echo "::error::image build failed"; exit 1; }
           $API "http://localhost/images/$TAG/json" >/dev/null || { echo "::error::$TAG missing after build"; exit 1; }
           echo BUILD_OK
@@ -159,7 +177,7 @@ jobs:
           trap "" PIPE
           . "$PWD/dlib.sh"
           SHA="${{ gitea.sha }}"
-          drun "{\"Image\":\"alpine\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"AutoRemove\":true,\"NetworkMode\":\"none\"}}" || true
+          drun "{\"Image\":\"alpine\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
           VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
           CID=$(dcreate "{\"Image\":\"$TAG\",\"Env\":[\"CAMOFOX_API_KEY=***\"],\"HostConfig\":{\"AutoRemove\":true,\"NetworkMode\":\"gitea_default\"}}")
@@ -190,7 +208,7 @@ jobs:
           trap "" PIPE
           . "$PWD/dlib.sh"
           SHA="${{ gitea.sha }}"
-          drun "{\"Image\":\"alpine\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"AutoRemove\":true,\"NetworkMode\":\"none\"}}" || true
+          drun "{\"Image\":\"alpine\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
           VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
           $API -X POST "http://localhost/images/$TAG/tag?repo=localhost/camofox-browser&tag=live" >/dev/null
