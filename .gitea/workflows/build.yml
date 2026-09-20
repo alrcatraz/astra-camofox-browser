@@ -58,16 +58,18 @@ jobs:
           drun() { local spec="$1"; local c; local rcs sr
             c=$(dcreate "$spec") || return 1
             if ! $API -f -X POST "http://localhost/v1.43/containers/$c/start" >/dev/null; then echo "start failed cid=$c" >&2; DR_LOG=""; return 1; fi
-            rcs=""; i=0
+            rcs=""; i=0; LASTJ=""
             while [ $i -lt 600 ]; do i=$((i+1)); sleep 1
-              J=$($API "http://localhost/v1.43/containers/$c/json")
+              J=$($API "http://localhost/v1.43/containers/$c/json") || { echo "json curl-fail try=$i" >&2; continue; }
+              LASTJ="$J"
               case "$J" in *page*not*found*) rcs=0; break;; esac
-              RUNNING=$(echo "$J" | tr , "\n" | grep "\"Running\"" | grep -oE "true|false" | head -1)
-              if [ "$RUNNING" = "false" ]; then
-                rcs=$(echo "$J" | tr , "\n" | grep -oE "ExitCode[^0-9-][0-9-]*" | grep -oE "[0-9-]+" | tail -1)
-                break
-              fi
+              ST=$(echo "$J" | tr , "\n" | grep Running | head -1)
+              case "$ST" in *false*)
+                rcs=$(echo "$J" | tr , "\n" | grep ExitCode | grep -oE "[0-9-]+" | tail -1)
+                break;;
+              esac
             done
+            [ -n "$rcs" ] || { echo "TIMEOUT after ${i}s last-json=$(echo "$LASTJ" | head -c 300)" >&2; return 1; }
             echo "drun rc=$rcs cid=$c" >&2
             DR_LOG=$($API "http://localhost/v1.43/containers/$c/logs?stdout=1&stderr=1" | dfmt)
             $API -X DELETE "http://localhost/v1.43/containers/$c?force=true" >/dev/null 2>&1 || true
@@ -133,16 +135,18 @@ jobs:
           drun() { local spec="$1"; local c; local rcs sr
             c=$(dcreate "$spec") || return 1
             if ! $API -f -X POST "http://localhost/v1.43/containers/$c/start" >/dev/null; then echo "start failed cid=$c" >&2; DR_LOG=""; return 1; fi
-            rcs=""; i=0
+            rcs=""; i=0; LASTJ=""
             while [ $i -lt 600 ]; do i=$((i+1)); sleep 1
-              J=$($API "http://localhost/v1.43/containers/$c/json")
+              J=$($API "http://localhost/v1.43/containers/$c/json") || { echo "json curl-fail try=$i" >&2; continue; }
+              LASTJ="$J"
               case "$J" in *page*not*found*) rcs=0; break;; esac
-              RUNNING=$(echo "$J" | tr , "\n" | grep "\"Running\"" | grep -oE "true|false" | head -1)
-              if [ "$RUNNING" = "false" ]; then
-                rcs=$(echo "$J" | tr , "\n" | grep -oE "ExitCode[^0-9-][0-9-]*" | grep -oE "[0-9-]+" | tail -1)
-                break
-              fi
+              ST=$(echo "$J" | tr , "\n" | grep Running | head -1)
+              case "$ST" in *false*)
+                rcs=$(echo "$J" | tr , "\n" | grep ExitCode | grep -oE "[0-9-]+" | tail -1)
+                break;;
+              esac
             done
+            [ -n "$rcs" ] || { echo "TIMEOUT after ${i}s last-json=$(echo "$LASTJ" | head -c 300)" >&2; return 1; }
             echo "drun rc=$rcs cid=$c" >&2
             DR_LOG=$($API "http://localhost/v1.43/containers/$c/logs?stdout=1&stderr=1" | dfmt)
             $API -X DELETE "http://localhost/v1.43/containers/$c?force=true" >/dev/null 2>&1 || true
