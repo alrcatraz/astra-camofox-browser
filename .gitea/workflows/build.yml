@@ -188,7 +188,7 @@ jobs:
           drun "{\"Image\":\"node:22\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
           VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
-          CID=$(dcreate "{\"Image\":\"$TAG\",\"Env\":[\"CAMOFOX_API_KEY=***\"],\"HostConfig\":{\"AutoRemove\":true,\"NetworkMode\":\"gitea_default\"}}")
+          CID=$(dcreate "{\"Image\":\"$TAG\",\"Env\":[\"CAMOFOX_API_KEY=***\"],\"HostConfig\":{\"AutoRemove\":true,\"NetworkMode\":\"bridge\"}}")
           dstart "$CID"
           ok=""
           for i in $(seq 1 15); do
@@ -199,7 +199,10 @@ jobs:
           done
           [ -n "$ok" ] || { echo "::error::persistence never loaded"; tr -dc "[:print:]\n" < /tmp/smoke.log | tail -30; exit 1; }
           $API "http://localhost/v1.43/containers/$CID/json" > /tmp/cid.json 2>/dev/null || true
-          IP=$(tr , "\n" < /tmp/cid.json | grep IPAddress | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+          GW=$(tr , "\n" < /tmp/cid.json | grep -m1 Gateway | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+")
+          MPORT=$(echo "$GW" | sed -E "s/[0-9]+$/2/")
+          IP="$MPORT"
+          echo "SMOKE-GW=$GW IP=$IP (mesh-port trick)"
           echo "SMOKE-IP=$IP"
           TABCODE=$(curl -s -o /tmp/tab.json -w "%{http_code}" -H "Authorization: Bearer ci-smoke-key" -m 120 --retry 5 --retry-delay 5 --retry-all-errors -X POST "http://$IP:9377/tabs" -H "Content-Type: application/json" -d "{\"userId\":\"ci_smoke\",\"sessionKey\":\"s\",\"url\":\"https://example.com\"}")
           [ "$TABCODE" = "200" ] || { echo "::error::tab create http=$TABCODE body=$(head -c 300 /tmp/tab.json)"; $API "http://localhost/v1.43/containers/$CID/logs?stdout=1&stderr=1" > /tmp/smoke.log 2>/dev/null || true; tr -dc "[:print:]\n" < /tmp/smoke.log | tail -30; exit 1; }
