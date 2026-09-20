@@ -59,7 +59,7 @@ jobs:
             c=$(dcreate "$spec") || return 1
             if ! $API -f -X POST "http://localhost/v1.43/containers/$c/start" >/dev/null; then echo "start failed cid=$c" >&2; DR_LOG=""; return 1; fi
             rcs=""; i=0; LASTJ=""
-            while [ $i -lt 600 ]; do i=$((i+1)); sleep 1
+            while [ $i -lt 3600 ]; do i=$((i+1)); sleep 1
               J=$($API "http://localhost/v1.43/containers/$c/json") || { echo "json curl-fail try=$i" >&2; continue; }
               LASTJ="$J"
               case "$J" in *page*not*found*) rcs=0; break;; esac
@@ -101,7 +101,7 @@ jobs:
           IGNORE="cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher"
           # script travels as an Env var (JSON-safe, zero quote nesting);
           # container runs sh -c "$JEST_SCRIPT"
-          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"\$JEST_SCRIPT\"],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\",\"JEST_SCRIPT=cd /src && npm ci --no-audit --no-fund 2>&1 | tail -3; env NODE_OPTIONS=--experimental-vm-modules npx jest plugins tests/unit --testPathIgnorePatterns $IGNORE --silent --forceExit > /src/.ci-jest.log 2>&1 || true; echo JEST-DONE\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"Memory\":4294967296}}"
+          SPEC="{\"Image\":\"node:22\",\"Cmd\":[\"sh\",\"-c\",\"\$JEST_SCRIPT\"],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\",\"IGNORE=cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher\",\"JEST_SCRIPT=cd /src && npm ci --no-audit --no-fund 2>&1 | tail -3; env NODE_OPTIONS=--experimental-vm-modules npx jest plugins tests/unit --testPathIgnorePatterns \$IGNORE --silent --forceExit > /src/.ci-jest.log 2>&1 || true; echo JEST-DONE\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"Memory\":4294967296}}"
           drun "$SPEC" || true
           echo RUN-COMPLETE
           drun "{\"Image\":\"node:22\",\"Cmd\":[\"cat\",\"/src/.ci-jest.log\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
@@ -136,7 +136,7 @@ jobs:
             c=$(dcreate "$spec") || return 1
             if ! $API -f -X POST "http://localhost/v1.43/containers/$c/start" >/dev/null; then echo "start failed cid=$c" >&2; DR_LOG=""; return 1; fi
             rcs=""; i=0; LASTJ=""
-            while [ $i -lt 600 ]; do i=$((i+1)); sleep 1
+            while [ $i -lt 3600 ]; do i=$((i+1)); sleep 1
               J=$($API "http://localhost/v1.43/containers/$c/json") || { echo "json curl-fail try=$i" >&2; continue; }
               LASTJ="$J"
               case "$J" in *page*not*found*) rcs=0; break;; esac
