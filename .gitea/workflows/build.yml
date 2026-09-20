@@ -53,16 +53,13 @@ jobs:
           dstart()  { $API -X POST "http://localhost/containers/$1/start"; }
           dwait()   { $API "http://localhost/containers/$1/wait"; }
           dfmt() { tr "\000-\010" "\n"; }
-          drun() { local spec="$1" c rcs
-            c=$(dcreate "$spec"); dstart "$c"; rcs=$($API "http://localhost/containers/$c/wait" | grep -oE "[0-9]+" | head -1)
+          drun() { local spec="$1"; local c; local rcs
+            c=$(dcreate "$spec") || return 1; dstart "$c"
+            rcs=$($API "http://localhost/containers/$c/wait" | grep -oE "[0-9]+" | head -1)
             DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
             echo "$DR_LOG" | tail -12
             DR_CID=$c
             [ "$rcs" = "0" ]; }
-            DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
-            echo "$DR_LOG" | tail -12
-            DR_CID=$c
-            [ "$rc" = "0" ]; }
           DLIB
           echo dlib-ready
 
@@ -117,16 +114,13 @@ jobs:
           dstart()  { $API -X POST "http://localhost/containers/$1/start"; }
           dwait()   { $API "http://localhost/containers/$1/wait"; }
           dfmt() { tr "\000-\010" "\n"; }
-          drun() { local spec="$1" c rcs
-            c=$(dcreate "$spec"); dstart "$c"; rcs=$($API "http://localhost/containers/$c/wait" | grep -oE "[0-9]+" | head -1)
+          drun() { local spec="$1"; local c; local rcs
+            c=$(dcreate "$spec") || return 1; dstart "$c"
+            rcs=$($API "http://localhost/containers/$c/wait" | grep -oE "[0-9]+" | head -1)
             DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
             echo "$DR_LOG" | tail -12
             DR_CID=$c
             [ "$rcs" = "0" ]; }
-            DR_LOG=$($API "http://localhost/containers/$c/logs?stdout=1&stderr=1" | dfmt)
-            echo "$DR_LOG" | tail -12
-            DR_CID=$c
-            [ "$rc" = "0" ]; }
           DLIB
           echo dlib-ready
 
