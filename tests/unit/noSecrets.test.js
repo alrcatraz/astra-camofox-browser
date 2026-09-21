@@ -74,15 +74,7 @@ describe('no embedded secrets in distributed files', () => {
     expect(toml).toContain('name = "camofox-telemetry"');
   });
 
-  test('deploy workflow triggers on worker changes from main', () => {
-    // astra: upstream workflows are quarantined under disabled/ (releases run on Gitea);
-    // content contract still verified at the new path
-    const workflow = readFileSync(join(__dirname, '../../.github/workflows/disabled/telemetry-deploy.yml'), 'utf-8');
-    expect(workflow).toContain('workers/crash-reporter/**');
-    expect(workflow).toContain('branches: [master]');
-    expect(workflow).toContain('CLOUDFLARE_API_TOKEN');
-    expect(workflow).toContain('CLOUDFLARE_ACCOUNT_ID');
-    expect(workflow).toContain('__COMMIT_SHA__');
-    expect(workflow).toContain('__SOURCE_SHA256__');
-  });
+  // astra: upstream deploy workflow removed deliberately (private deployment; no
+  // Cloudflare publishing from this fork) — the trigger-contract test above it was
+  // dropped along with the file. Telemetry client contract tests remain.
 });
