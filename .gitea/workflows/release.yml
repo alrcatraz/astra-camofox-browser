@@ -52,7 +52,9 @@ jobs:
             REF=$(git for-each-ref --points-at HEAD --format='%(refname:short)' 'refs/tags/v*' | head -1)
           fi
           [ -n "$REF" ] || { echo "::error::no v* tag points at HEAD — cannot determine release ref"; exit 1; }
-          TOK=$(cat /jobdata/ci-clone-token)
+          # ci-clone-token is read-only (403 on POST releases); act exports the
+          # per-run runner token as GITHUB_TOKEN which carries repo write scope.
+          TOK="${GITHUB_TOKEN:-$(cat /jobdata/ci-clone-token)}"
           # runner jobs are host-networked on the NAS: talk to Gitea over loopback,
           # not the public WAN front (Lucky proxy flaked at 10443 -> curl exit 28)
           # Gitea API reachable from the runner network as `gitea:3000` (actions/checkout
