@@ -93,12 +93,13 @@ jobs:
         run: |
           set -euo pipefail
           TAG=$(cat /tmp/ci_tag)
-          # smoke key: ephemeral per-run. GITHUB_TOKEN-style literals get masked by the
-          # log scrubber (***), so we generate one and reference it via shell vars only.
-          SMOKE_KEY="ci-$RANDOM-$$"
-          printf %s "$SMOKE_KEY" > /tmp/ci_smoke_key
-          printf "Authorization: Bearer %s\n" "$SMOKE_KEY" > /tmp/ci_auth_hdr
-          CID=$(docker create --rm --label ci-smoke=1 -e CAMOFOX_API_KE...G)
+          # smoke key: ephemeral per-run. Any literal that matches the log scrubber's
+          # secret pattern gets rewritten to *** in the *executed script too* (run#130/131),
+          # so build the env flag from runtime pieces and never name it *_KEY inline.
+          SK="ci-$RANDOM-$$"
+          printf %s "$SK" > /tmp/ci_smoke_key
+          printf "Authorization: Bearer %s\n" "$SK" > /tmp/ci_auth_hdr
+          CID=$(docker create --rm --label ci-smoke=1 -e "CAMOFOX_API_KEY=$SK" "$TAG")
           trap "docker rm -f $CID >/dev/null 2>&1 || true" EXIT
           docker start "$CID" >/dev/null
           IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID")
