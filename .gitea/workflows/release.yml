@@ -2,9 +2,10 @@ name: Release camofox image (astra)
 
 # Tag v* -> build.yml already produced localhost/camofox-browser:<version> on the
 # NAS daemon (its Publish step re-tags the exact-tag commit). This workflow only:
-# -> publish ghcr.io (if PAT baked) -> create Gitea release entry.
+# -> create Gitea release entry. (ghcr public publishing dropped 2026-09-22:
+#    astra = private deployment; images live on the NAS registry only.)
 # Credentials stay as host files under /jobdata (bind allowlisted in runner config):
-#   /jobdata/ci-clone-token (Gitea), /volume1/docker/ci-ghcr-pat via same dir pattern.
+#   /volume1/docker/act_runner_nix/data/ci-release-token (write:repository PAT).
 # NOTE: no secret-looking literals in run blocks (log scrubber rewrites them);
 # smoke key is generated at runtime. No GITHUB_ENV (unreliable across steps in act).
 
@@ -28,26 +29,6 @@ jobs:
       - name: Checkout tag
         uses: actions/checkout@v4
 
-      - name: Publish to ghcr.io (skips without PAT file)
-        run: |
-          set -euo pipefail
-          # act does not export GITEA_REF_NAME on tag runs; derive from HEAD exactly.
-          # --abbrev=0 is WRONG here (nearest tag by distance, could be an old release).
-          REF="${GITEA_REF_NAME:-}"
-          if [ -z "$REF" ]; then
-            REF=$(git for-each-ref --points-at HEAD --format='%(refname:short)' 'refs/tags/v*' | head -1)
-          fi
-          [ -n "$REF" ] || { echo "::error::no v* tag points at HEAD — cannot determine release ref"; exit 1; }
-          echo "release ref: $REF"
-          PAT=$(cat /volume1/docker/act_runner_nix/data/ci-ghcr-pat 2>/dev/null || true)
-          if [ -z "$PAT" ]; then echo "SKIP_GHCR (drop PAT at runner data dir to enable)"; exit 0; fi
-          SRC="localhost/camofox-browser:$REF"
-          printf %s "$PAT" | docker login ghcr.io -u alrcatraz --password-stdin
-          docker tag "$SRC" "ghcr.io/alrcatraz/astra-camofox-browser:$REF"
-          docker tag "$SRC" "ghcr.io/alrcatraz/astra-camofox-browser:latest"
-          docker push "ghcr.io/alrcatraz/astra-camofox-browser:$REF"
-          docker push "ghcr.io/alrcatraz/astra-camofox-browser:latest"
-
       - name: Create Gitea release entry
         run: |
           set -euo pipefail
@@ -67,14 +48,14 @@ jobs:
           CODE=$(curl -s --connect-timeout 10 -u "alrcatraz:$TOK" -X POST \
             "$BASE/api/v1/repos/${GITEA_REPOSITORY:-alrcatraz/astra-camofox-browser}/releases" \
             -H 'Content-Type: application/json' \
-            -d "{\"tag_name\":\"$REF\",\"name\":\"camofox-browser $REF\",\"body\":\"Image: localhost/camofox-browser:$REF on NAS; :live = latest CI build; ghcr.io published when PAT configured\"}" \
+            -d "{\"tag_name\":\"$REF\",\"name\":\"camofox-browser $REF\",\"body\":\"Image: localhost/camofox-browser:$REF on NAS; :live = latest CI build\"}" \
             -o /tmp/rel_out.json -w "%{http_code}\n")
           if [ "$CODE" = "422" ]; then
             echo "release exists for $REF — updating via PATCH"
             curl -sf --connect-timeout 10 -u "alrcatraz:$TOK" -X PATCH \
               "$BASE/api/v1/repos/${GITEA_REPOSITORY:-alrcatraz/astra-camofox-browser}/releases" \
               -H 'Content-Type: application/json' \
-              -d "{\"tag_name\":\"$REF\",\"name\":\"camofox-browser $REF\",\"body\":\"Image: localhost/camofox-browser:$REF on NAS; :live = latest CI build; ghcr.io published when PAT configured\"}" \
+              -d "{\"tag_name\":\"$REF\",\"name\":\"camofox-browser $REF\",\"body\":\"Image: localhost/camofox-browser:$REF on NAS; :live = latest CI build\"}" \
               -o /tmp/rel_out.json -w "PATCH %{http_code}\n"
           else
             echo "POST $CODE"
