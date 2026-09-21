@@ -27,7 +27,14 @@ jobs:
       - name: Publish to ghcr.io (skips without PAT file)
         run: |
           set -euo pipefail
-          REF="${GITEA_REF_NAME:-$(git describe --tags --abbrev=0)}"
+          # act does not export GITEA_REF_NAME on tag runs; derive from HEAD exactly.
+          # --abbrev=0 is WRONG here (nearest tag by distance, could be an old release).
+          REF="${GITEA_REF_NAME:-}"
+          if [ -z "$REF" ]; then
+            REF=$(git for-each-ref --points-at HEAD --format='%(refname:short)' 'refs/tags/v*' | head -1)
+          fi
+          [ -n "$REF" ] || { echo "::error::no v* tag points at HEAD — cannot determine release ref"; exit 1; }
+          echo "release ref: $REF"
           PAT=$(cat /volume1/docker/act_runner_nix/data/ci-ghcr-pat 2>/dev/null || true)
           if [ -z "$PAT" ]; then echo "SKIP_GHCR (drop PAT at runner data dir to enable)"; exit 0; fi
           SRC="localhost/camofox-browser:$REF"
@@ -40,12 +47,28 @@ jobs:
       - name: Create Gitea release entry
         run: |
           set -euo pipefail
-          REF="${GITEA_REF_NAME:-$(git describe --tags --abbrev=0)}"
+          REF="${GITEA_REF_NAME:-}"
+          if [ -z "$REF" ]; then
+            REF=$(git for-each-ref --points-at HEAD --format='%(refname:short)' 'refs/tags/v*' | head -1)
+          fi
+          [ -n "$REF" ] || { echo "::error::no v* tag points at HEAD — cannot determine release ref"; exit 1; }
           TOK=$(cat /jobdata/ci-clone-token)
           # runner jobs are host-networked on the NAS: talk to Gitea over loopback,
           # not the public WAN front (Lucky proxy flaked at 10443 -> curl exit 28)
           BASE="https://127.0.0.1:10443"
-          GIT_SSL_NO_VERIFY=true curl -sf --connect-timeout 10 -k -u "alrcatraz:$TOK" -X POST \
+          CODE=$(curl -s --connect-timeout 10 -k -u "alrcatraz:$TOK" -X POST \
             "$BASE/api/v1/repos/${GITEA_REPOSITORY:-alrcatraz/astra-camofox-browser}/releases" \
             -H 'Content-Type: application/json' \
-            -d "{\"tag_name\":\"$REF\",\"name\":\"camofox-browser $REF\",\"body\":\"Image: localhost/camofox-browser:$REF on NAS; :live = latest CI build; ghcr.io published when PAT configured\"}" | head -c 200; echo
+            -d "{\"tag_name\":\"$REF\",\"name\":\"camofox-browser $REF\",\"body\":\"Image: localhost/camofox-browser:$REF on NAS; :live = latest CI build; ghcr.io published when PAT configured\"}" \
+            -o /tmp/rel_out.json -w "%{http_code}\n")
+          if [ "$CODE" = "422" ]; then
+            echo "release exists for $REF — updating via PATCH"
+            curl -sf --connect-timeout 10 -k -u "alrcatraz:$TOK" -X PATCH \
+              "$BASE/api/v1/repos/${GITEA_REPOSITORY:-alrcatraz/astra-camofox-browser}/releases" \
+              -H 'Content-Type: application/json' \
+              -d "{\"tag_name\":\"$REF\",\"name\":\"camofox-browser $REF\",\"body\":\"Image: localhost/camofox-browser:$REF on NAS; :live = latest CI build; ghcr.io published when PAT configured\"}" \
+              -o /tmp/rel_out.json -w "PATCH %{http_code}\n"
+          else
+            echo "POST $CODE"
+          fi
+          case "$CODE" in 2*) echo OK;; *) echo "::error::release POST/PATCH failed ($CODE)"; exit 1;; esac
