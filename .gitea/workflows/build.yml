@@ -130,6 +130,8 @@ jobs:
           # release.yml builds its own image from the tag checkout; reuse it here so
           # `git tag v1.13.2` costs one build, not two (same commit = same layers)
           if V=$(git describe --tags --exact-match 2>/dev/null); then
+            PV="v$(node -p "require('./package.json').version")"
+            [ "$V" = "$PV" ] || { echo "::error::tag $V != package.json version $PV — bump package.json on the tagged commit"; exit 1; }
             docker tag "$TAG" "localhost/camofox-browser:$V"
             echo "Also tagged $TAG as :$V"
           fi
