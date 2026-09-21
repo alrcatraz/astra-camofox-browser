@@ -122,11 +122,17 @@ jobs:
           trap - EXIT
           echo SMOKE_OK
 
-      - name: Publish :live tag on NAS
+      - name: Publish :live + version tags on NAS
         run: |
           set -euo pipefail
           TAG=$(cat /tmp/ci_tag)
           docker tag "$TAG" localhost/camofox-browser:live
+          # release.yml builds its own image from the tag checkout; reuse it here so
+          # `git tag v1.13.2` costs one build, not two (same commit = same layers)
+          if V=$(git describe --tags --exact-match 2>/dev/null); then
+            docker tag "$TAG" "localhost/camofox-browser:$V"
+            echo "Also tagged $TAG as :$V"
+          fi
           # drop stale per-commit CI tags so the daemon storage doesn't bloat;
           # keep only what we just built + :live
           for t in $(docker images --format "{{.Tag}}" localhost/camofox-browser | grep -E "^1\.[0-9]+\.[0-9]+-x86_64-vnc-ci-" | grep -v "${TAG##*:}"); do
