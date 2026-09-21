@@ -1,26 +1,17 @@
 name: Build & publish camofox image (astra)
 
-# Flake-era CI (2026-09-20). Label `nix-capable` -> `nixos/nix:runner-ci` =
-# official nixos/nix:latest + one /bin/sleep softlink layer (act keepalive
-# entrypoint hardcodes it; bare latest won't start — run#54). If CM GC wipes
-# the derivative, rebuild ONLY that layer and retag. Toolchain truth for the
-# repo itself lives in flake.lock (dev use); CI jobs run heavy lifting inside
-# helper containers on the NAS daemon.
+# Standard-era CI (2026-09-21). Runner config now gives jobs: docker.sock mount,
+# privileged, network_mode=host (officially documented act_runner options — see
+# docs.gitea.com/runner/configuration). No more dlib/REST relay/volume hacks.
 #
-# Job-image constraints (each proven by a failed run — do not re-litigate):
-#   - job fs: NO docker CLI, NO host paths, only grep/cut/tr/tail/head/curl/git
-#     (NO sed/python3/awk — run#57) -> dlib uses tr+cut JSON extraction.
-#   - drive the NAS daemon via curl --unix-socket /var/run/docker.sock REST;
-#     helper containers mount HOST paths fine (daemon-side resolution).
-#   - only --network gitea_default resolves gitea:3000.
-#   - act format() eats single quotes in run blocks -> double quotes only.
-#   - GITHUB_ENV does not carry across steps -> re-derive TAG from disk.
-#   - inherited SIGPIPE=ignore + pipefail -> exit 141 -> trap "" PIPE per step.
-#   - container.options mounts never reach jobs (runs #41/#45/#55).
+# Job image = node:22-bookworm (label nix-capable): has git/node/npm natively;
+# apt-get available for the node-gyp toolchain. Docker CLI comes from the
+# mounted socket (plain `docker` binary NOT present -> use DOCKER_HOST via
+# socket: docker commands run through the `docker:cli` container? No — job is
+# privileged+host-net with socket; we install docker-cli via apt when needed.)
 #
-# Flow: stage repo into volume camofox-ci-src (alpine/git helper) -> jest in
-# node:22 on that volume (npm cache volume persists native builds) -> thin-layer
-# docker build via docker:cli helper -> smoke -> :live tag.
+# Flow: checkout -> npm ci + jest (gates) -> thin-layer docker build over VNC
+# base -> smoke (persistence load + checkpoint persist) -> :live tag -> cleanup.
 
 on:
   push:
@@ -32,221 +23,101 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TOKEN_HOST_PATH: /volume1/docker/act_runner_nix/data/ci-clone-token
-  REPO_VOL: camofox-ci-src
-  RELAY_HOST_DIR: /volume1/docker/act_runner_nix/data/ci-relay
-  NPM_VOL: camofox-npm-ci-cache
   VNC_BASE: localhost/camofox-browser:135.0.1-x86_64-vnc
 
 jobs:
   test:
     runs-on: nix-capable
     steps:
-      - name: Setup docker REST helpers
-        shell: bash
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
         run: |
           set -euo pipefail
-          trap "" PIPE
-          cat > "$PWD/dlib.sh" <<'DLIB'
-          API="curl -sS --unix-socket /var/run/docker.sock"
-          jfield() { grep -oE "[0-9a-f]{64}" | head -1; }
-          dcreate() { local out st; out=$($API -w "\n%{http_code}" -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/v1.43/containers/create) || { echo "create curl-error" >&2; return 1; }
-            st=$(echo "$out" | tail -1); [ "$st" = "201" ] || { echo "create http=$st body=$(echo "$out" | head -1)" >&2; return 1; }
-            DR_RAW=$(echo "$out" | jfield Id); [ -n "$DR_RAW" ] || { echo "create no-id: $(echo "$out" | head -1)" >&2; return 1; }; echo "$DR_RAW"; }
-          dstart()  { $API -X POST "http://localhost/v1.43/containers/$1/start"; }
-          dwait()   { $API "http://localhost/v1.43/containers/$1/wait"; }
-          dfmt() { tr "\000-\010" "\n"; }
-          drun() { local spec="$1"; local c; local rcs sr
-            c=$(dcreate "$spec") || return 1
-            if ! $API -f -X POST "http://localhost/v1.43/containers/$c/start" >/dev/null; then echo "start failed cid=$c" >&2; DR_LOG=""; return 1; fi
-            rcs=""; i=0; LASTJ=""
-            while [ $i -lt 3600 ]; do i=$((i+1)); sleep 1
-              J=$($API "http://localhost/v1.43/containers/$c/json") || { echo "json curl-fail try=$i" >&2; continue; }
-              LASTJ="$J"
-              case "$J" in *page*not*found*) rcs=0; break;; esac
-              ST=$(echo "$J" | tr , "\n" | grep Running | head -1)
-              case "$ST" in *false*)
-                rcs=$(echo "$J" | tr , "\n" | grep ExitCode | grep -oE "[0-9-]+" | tail -1)
-                [ -n "$rcs" ] || echo "dwait: Running=false but NO ExitCode field; state=$(echo "$J" | head -c 400)" >&2
-                break;;
-              esac
-            done
-            [ -n "$rcs" ] || { echo "TIMEOUT after ${i}s last-json=$(echo "$LASTJ" | head -c 300)" >&2; return 1; }
-            echo "drun rc=$rcs cid=$c" >&2
-            DR_LOG=$($API "http://localhost/v1.43/containers/$c/logs?stdout=1&stderr=1" | dfmt)
-            $API -X DELETE "http://localhost/v1.43/containers/$c?force=true" >/dev/null 2>&1 || true
-            echo "$DR_LOG" | tail -12
-            DR_CID=$c
-            [ "$rcs" = "0" ]; }
-          DLIB
-          echo dlib-ready
+          apt-get update -qq && apt-get install -y -qq python3 make g++ git >/dev/null
+          node --version && npm --version
 
-      - name: Stage repo into shared volume
-        shell: bash
+      - name: npm ci
         run: |
           set -euo pipefail
-          trap "" PIPE
-          . "$PWD/dlib.sh"
-          TOKSPEC="{\"Image\":\"node:22-alpine\",\"Cmd\":[\"cat\",\"/tok\"],\"HostConfig\":{\"Binds\":[\"$TOKEN_HOST_PATH:/tok:ro\"],\"NetworkMode\":\"none\"}}"
-          drun "$TOKSPEC" || { echo "::error::token relay"; exit 1; }
-          TOKEN=$(echo "$DR_LOG" | grep -oE "[0-9a-f]{40}" | head -1)
-          [ -n "$TOKEN" ] || { echo "::error::empty token (relay rc=$?)"; echo "$DR_LOG" | od -c | head -5; exit 1; }
-          SPEC="{\"Image\":\"node:22-alpine\",\"Cmd\":[\"sh\",\"-c\",\"echo cm0gLXJmIC9zcmMvKiAvc3JjLy5bIS5dKiAyPi9kZXYvbnVsbHx8dHJ1ZQphcGsgYWRkIC0tbm8tY2FjaGUgZ2l0IHx8IHsgZWNobyBBUEstR0lULUZBSUw7IGV4aXQgMTsgfQpnaXQgY29uZmlnIC0tZ2xvYmFsIC0tYWRkIHNhZmUuZGlyZWN0b3J5IC9zcmMKcHJpbnRmICVzICJjb29raWVzLHNlY3VyaXR5LHRhYlJlY3ljbGluZyx0YWJMaWZlY3ljbGVDb250cmFjdCxvcGVyYXRpb25hbEZhaWx1cmVzLHZuYy13YXRjaGVyIiA+IC9zcmMvLmNpLWlnbm9yZS50eHQKcHJpbnRmICVzICdjb25zdCBmcz1yZXF1aXJlKFN0cmluZy5mcm9tQ2hhckNvZGUoMTAyLDExNSkpOwpjb25zdCBzcmM9cHJvY2Vzcy5hcmd2WzJdO2NvbnN0IGRzdD1wcm9jZXNzLmFyZ3ZbM107CmZvcihjb25zdCBlIG9mIGZzLnJlYWRkaXJTeW5jKHNyYykpe2ZzLnJlbmFtZVN5bmMoc3JjK1N0cmluZy5mcm9tQ2hhckNvZGUoNDcpK2UsZHN0K1N0cmluZy5mcm9tQ2hhckNvZGUoNDcpK2UpO30nID4gL3NyYy8uY2ktcmVuYW1lLmNqcwpnaXQgY2xvbmUgLS1xdWlldCAtLWJyYW5jaCBhc3RyYSBodHRwOi8veDoke1RPS0VOfUBnaXRlYTozMDAwL2FscmNhdHJhei9hc3RyYS1jYW1vZm94LWJyb3dzZXIuZ2l0IC9zcmMvcmVwbzsgZWNobyBDTE9ORS1SQz0kPwpjZCAvc3JjL3JlcG8gJiYgZ2l0IGNoZWNrb3V0IC0tcXVpZXQgJFNIQTsgZWNobyBDSEVDS09VVC1SQz0kPwpub2RlIC9zcmMvLmNpLXJlbmFtZS5janMgL3NyYy9yZXBvIC9zcmM7IGVjaG8gUkVOQU1FLVJDPSQ/CnRhciBjemYgL3RtcC9zcmMudGd6IC1DIC9zcmMgLS1leGNsdWRlPS4vcmVwbyAtLWV4Y2x1ZGU9Li8uZ2l0IC4gOyBlY2hvIFRBUi1SQz0kPyBTSVpFPSQod2MgLWMgPCAvdG1wL3NyYy50Z3opCnJtIC1yZiAvc3JjL3JlcG87IGVjaG8gUk1ESVItUkM9JD8KY3AgL3RtcC9zcmMudGd6IC9yZWxheS9zcmMudGd6OyBlY2hvIENQLVJDPSQ/ClsgLWYgL3JlbGF5L3NyYy50Z3ogXSAmJiBlY2hvIFJFTEFZLU9LIHx8IHsgZWNobyBSRUxBWS1NSVNTSU5HOyBleGl0IDE7IH0KbHMgL3NyYy9wYWNrYWdlLmpzb24gPi9kZXYvbnVsbCAmJiBlY2hvIFNUQUdFLU9LIHx8IHsgZWNobyBTVEFHRS1NSVNTSU5HOyBleGl0IDE7IH0K | base64 -d > /src/.s.sh; sh /src/.s.sh; sh /src/.s.sh\"],\"Env\":[\"TOKEN=${TOKEN}\",\"SHA=${{ gitea.sha }}\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$RELAY_HOST_DIR:/relay\"],\"NetworkMode\":\"gitea_default\"}}"
+          HOME=/tmp npm ci --no-audit --no-fund
 
-      - name: Jest inside node:22 on shared volume
-        shell: bash
+      - name: Jest (unit + plugins)
+        env:
+          NODE_OPTIONS: --experimental-vm-modules
         run: |
           set -euo pipefail
-          trap "" PIPE
-          . "$PWD/dlib.sh"
-          IGNORE="cookies|security|tabRecycling|tabLifecycleContract|operationalFailures|vnc-watcher"
-          # script travels as an Env var (JSON-safe, zero quote nesting);
-          # container runs sh -c "$JEST_SCRIPT"
-          SPEC="{\"Image\":\"node:22-alpine\",\"Cmd\":[\"sh\",\"-c\",\"echo Y2QgL3NyYwphcGsgYWRkIC0tbm8tY2FjaGUgcHl0aG9uMyBtYWtlIGcrKyB8fCB7IGVjaG8gQVBLLVRDLUZBSUw7IGV4aXQgMTsgfQppZiBbICEgLWYgcGFja2FnZS5qc29uIF07IHRoZW4gdGFyIHh6ZiAvcmVsYXkvc3JjLnRneiAtQyAvc3JjIHx8IHsgZWNobyBVTlRBUi1GQUlMOyBscyAtbGEgL3JlbGF5ID4+IC9zcmMvLmNpLWplc3QubG9nIDI+JjE7IGV4aXQgMTsgfTsgZmkKYXBrIGFkZCAtLW5vLWNhY2hlIGxpYmdjYyBnY29tcGF0ID4vZGV2L251bGwgMj4mMSB8fCB0cnVlCkhPTUU9L3RtcCBucG0gY2kgLS1uby1hdWRpdCAtLW5vLWZ1bmQgPiAvc3JjLy5jaS1qZXN0LmxvZyAyPiYxOyBlY2hvIE5QTS1SQz0kPyA+PiAvc3JjLy5jaS1qZXN0LmxvZwpIT01FPS90bXAgTk9ERV9PUFRJT05TPS0tZXhwZXJpbWVudGFsLXZtLW1vZHVsZXMgbm9kZSBub2RlX21vZHVsZXMvLmJpbi9qZXN0IHBsdWdpbnMgdGVzdHMvdW5pdCAtLXRlc3RQYXRoSWdub3JlUGF0dGVybnMgY29va2llcyBzZWN1cml0eSB0YWJSZWN5Y2xpbmcgdGFiTGlmZWN5Y2xlQ29udHJhY3Qgb3BlcmF0aW9uYWxGYWlsdXJlcyB2bmMtd2F0Y2hlciAtLXNpbGVudCAtLWZvcmNlRXhpdCA+PiAvc3JjLy5jaS1qZXN0LmxvZyAyPiYxCkpFU1RfUkM9JD8KZWNobyBKRVNULURPTkUgcmM9JEpFU1RfUkMgPj4gL3NyYy8uY2ktamVzdC5sb2cKZ3JlcCAtYUUgIlRlc3QgU3VpdGVzOnxeVGVzdHM6fE5QTS1SQ3xKRVNULURPTkUiIC9zcmMvLmNpLWplc3QubG9nIHwgdHIgLWRjICJbOnByaW50Ol1cXG4iOyB0YWlsIC1jIDMwMCAvc3JjLy5jaS1qZXN0LmxvZyB8IHRyIC1kYyAiWzpwcmludDpdXFxuIgo= | base64 -d > /src/.j.sh; sh /src/.j.sh; sh /src/.j.sh\"],\"Env\":[\"CI=false\",\"npm_config_build_from_source=true\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$RELAY_HOST_DIR:/relay\",\"$NPM_VOL:/root/.npm\"],\"NetworkMode\":\"gitea_default\",\"Memory\":4294967296}}"
-          drun "$SPEC" || true
-          echo RUN-COMPLETE
-          # cat-container removed: DR_LOG must stay the jest container's ASCII summary
-
-          # jest step echoes ONLY the two summary lines (ASCII-clean); cat-container output discarded here
-          SUITES_RAW="$DR_LOG"
-          SUITES=$(echo "$DR_LOG" | grep "Test Suites:" | head -1)
-          TESTS=$(echo "$DR_LOG" | grep -E "^Tests:|Tests: +[0-9]" | head -1)
-          echo "SUITES=[$SUITES]"
-          echo "TESTS=[$TESTS]"
-          case "$SUITES" in *" passed, "*total*) ;; *) echo "::error::no suites summary"; exit 1;; esac
-          case "$TESTS" in *" passed, "*total*) ;; *) echo "::error::no tests summary"; exit 1;; esac
+          HOME=/tmp node ./node_modules/.bin/jest plugins tests/unit \
+            --testPathIgnorePatterns cookies security tabRecycling tabLifecycleContract operationalFailures vnc-watcher \
+            --silent --forceExit 2>&1 | tee /tmp/jest.out
+          grep -E "Test Suites:" /tmp/jest.out
+          grep -E "^Tests:" /tmp/jest.out
+          SUITES=$(grep -E "Test Suites:" /tmp/jest.out | head -1)
+          TESTS=$(grep -E "^Tests:" /tmp/jest.out | head -1)
           case "$SUITES$TESTS" in *failed*) echo "::error::tests failed"; exit 1;; esac
+          case "$SUITES" in *" passed, "*total*) ;; *) echo "::error::no suites summary"; exit 1;; esac
           echo TEST-GATE-PASSED
 
   build-smoke:
     needs: test
     runs-on: nix-capable
     steps:
-      - name: Setup docker REST helpers
-        shell: bash
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain (incl docker-cli)
         run: |
           set -euo pipefail
-          trap "" PIPE
-          cat > "$PWD/dlib.sh" <<'DLIB'
-          API="curl -sS --unix-socket /var/run/docker.sock"
-          jfield() { grep -oE "[0-9a-f]{64}" | head -1; }
-          dcreate() { local out st; out=$($API -w "\n%{http_code}" -X POST -H "Content-Type: application/json" --data-binary "$1" http://localhost/v1.43/containers/create) || { echo "create curl-error" >&2; return 1; }
-            st=$(echo "$out" | tail -1); [ "$st" = "201" ] || { echo "create http=$st body=$(echo "$out" | head -1)" >&2; return 1; }
-            DR_RAW=$(echo "$out" | jfield Id); [ -n "$DR_RAW" ] || { echo "create no-id: $(echo "$out" | head -1)" >&2; return 1; }; echo "$DR_RAW"; }
-          dstart()  { $API -X POST "http://localhost/v1.43/containers/$1/start"; }
-          dwait()   { $API "http://localhost/v1.43/containers/$1/wait"; }
-          dfmt() { tr "\000-\010" "\n"; }
-          drun() { local spec="$1"; local c; local rcs sr
-            c=$(dcreate "$spec") || return 1
-            if ! $API -f -X POST "http://localhost/v1.43/containers/$c/start" >/dev/null; then echo "start failed cid=$c" >&2; DR_LOG=""; return 1; fi
-            rcs=""; i=0; LASTJ=""
-            while [ $i -lt 3600 ]; do i=$((i+1)); sleep 1
-              J=$($API "http://localhost/v1.43/containers/$c/json") || { echo "json curl-fail try=$i" >&2; continue; }
-              LASTJ="$J"
-              case "$J" in *page*not*found*) rcs=0; break;; esac
-              ST=$(echo "$J" | tr , "\n" | grep Running | head -1)
-              case "$ST" in *false*)
-                rcs=$(echo "$J" | tr , "\n" | grep ExitCode | grep -oE "[0-9-]+" | tail -1)
-                [ -n "$rcs" ] || echo "dwait: Running=false but NO ExitCode field; state=$(echo "$J" | head -c 400)" >&2
-                break;;
-              esac
-            done
-            [ -n "$rcs" ] || { echo "TIMEOUT after ${i}s last-json=$(echo "$LASTJ" | head -c 300)" >&2; return 1; }
-            echo "drun rc=$rcs cid=$c" >&2
-            DR_LOG=$($API "http://localhost/v1.43/containers/$c/logs?stdout=1&stderr=1" | dfmt)
-            $API -X DELETE "http://localhost/v1.43/containers/$c?force=true" >/dev/null 2>&1 || true
-            echo "$DR_LOG" | tail -12
-            DR_CID=$c
-            [ "$rcs" = "0" ]; }
-          DLIB
-          echo dlib-ready
+          apt-get update -qq && apt-get install -y -qq git curl ca-certificates >/dev/null
+          if ! command -v docker >/dev/null 2>&1; then
+            mkdir -p /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/debian/gpg -o /tmp/d.gpg
+            install -m 0755 /tmp/d.gpg /etc/apt/keyrings/docker.gpg
+            echo "deb [signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list
+            apt-get update -qq && apt-get install -y -qq docker-ce-cli >/dev/null
+          fi
+          docker version
 
       - name: Thin-layer build over VNC base
-        shell: bash
         run: |
           set -euo pipefail
-          trap "" PIPE
-          . "$PWD/dlib.sh"
-          $API "http://localhost/images/$VNC_BASE/json" >/dev/null || { echo "::error::VNC base missing on NAS"; exit 1; }
-          drun "{\"Image\":\"node:22-alpine\",\"Cmd\":[\"sh\",\"-c\",\"echo Y2QgL3NyYzsgWyAtZiBwYWNrYWdlLmpzb24gXSB8fCB0YXIgeHpmIC9yZWxheS9zcmMudGd6IC1DIC9zcmM= | base64 -d | sh\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$RELAY_HOST_DIR:/relay\"],\"NetworkMode\":\"none\"}}" || true
-          drun "{\"Image\":\"node:22-alpine\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
-          VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+          VERSION=$(grep -oE '"version": *"[0-9]+\.[0-9]+\.[0-9]+"' package.json | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           [ -n "$VERSION" ] || { echo "::error::no version"; exit 1; }
           SHA="${{ gitea.sha }}"
           TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
-          echo "TAG=$TAG"
-          drun "{\"Image\":\"docker:cli\",\"Cmd\":[\"docker\",\"build\",\"-f\",\"Dockerfile.astra\",\"-t\",\"$TAG\",\".\"],\"WorkingDir\":\"/src\",\"HostConfig\":{\"Binds\":[\"/var/run/docker.sock:/var/run/docker.sock\",\"$REPO_VOL:/src\"]}}" \
-            && echo BUILD_TRIGGERED || { echo "::error::image build failed"; exit 1; }
-          $API "http://localhost/images/$TAG/json" >/dev/null || { echo "::error::$TAG missing after build"; exit 1; }
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          docker images | grep -F "$VNC_BASE" || { echo "::error::VNC base missing on NAS"; exit 1; }
+          docker build -f Dockerfile.astra -t "$TAG" .
           echo BUILD_OK
 
       - name: Smoke — persistence loads + checkpoint persists
-        shell: bash
         run: |
           set -euo pipefail
-          trap "" PIPE
-          . "$PWD/dlib.sh"
-          SHA="${{ gitea.sha }}"
-          drun "{\"Image\":\"node:22-alpine\",\"Cmd\":[\"sh\",\"-c\",\"echo Y2QgL3NyYzsgWyAtZiBwYWNrYWdlLmpzb24gXSB8fCB0YXIgeHpmIC9yZWxheS9zcmMudGd6IC1DIC9zcmM= | base64 -d | sh\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$RELAY_HOST_DIR:/relay\"],\"NetworkMode\":\"none\"}}" || true
-          drun "{\"Image\":\"node:22-alpine\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
-          VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
-          TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
-          # smoke container: default bridge (NAT to NAS outbound — example.com needs it)
-          # + API key via header (image keeps NODE_ENV=production; auth enforced by CAMOFOX_API_KEY)
-          CID=$(dcreate "{\"Image\":\"$TAG\",\"Env\":[\"CAMOFOX_API_KEY=***\"],\"ExposedPorts\":{\"9377/tcp\":{}},\"HostConfig\":{\"AutoRemove\":true,\"PublishAllPorts\":true}}")
-          dstart "$CID"
+          CID=$(docker create --rm --label ci-smoke=1 -e CAMOFOX_API_KEY=*** "$TAG")
+          trap "docker rm -f $CID >/dev/null 2>&1 || true" EXIT
+          docker start "$CID" >/dev/null
+          IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID")
+          [ -n "$IP" ] || { echo "::error::no ip"; docker logs "$CID" | tail -30; exit 1; }
           ok=""
           for i in $(seq 1 15); do
             sleep 2
-            $API "http://localhost/v1.43/containers/$CID/logs?stdout=1&stderr=1" > /tmp/smoke.log 2>/dev/null || true
-            grep -aq "persistence plugin enabled" /tmp/smoke.log && { ok=1; break; }
-            grep -aq "plugin load failed.*persistence" /tmp/smoke.log && { echo "::error::persistence load failed"; tail -20 /tmp/smoke.log | tr -dc "[:print:]\n"; exit 1; }
+            docker logs "$CID" 2>&1 | grep -q "persistence plugin enabled" && { ok=1; break; }
+            docker logs "$CID" 2>&1 | grep -q "plugin load failed.*persistence" && { echo "::error::persistence load failed"; docker logs "$CID" | tail -20; exit 1; }
           done
-          [ -n "$ok" ] || { echo "::error::persistence never loaded"; tr -dc "[:print:]\n" < /tmp/smoke.log | tail -30; exit 1; }
-          for i in $(seq 1 15); do
-            $API "http://localhost/v1.43/containers/$CID/json" > /tmp/cid.json 2>/dev/null || true
-            PORT=$(tr , "\n" < /tmp/cid.json | grep -A0 HostPort | grep -oE "[0-9]+" | head -1)
-            [ -n "$PORT" ] && break
-            sleep 2
-          done
-          GW=$(tr , "\n" < /tmp/cid.json | grep -m1 Gateway | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+")
-          [ -n "$GW" ] || { echo "::error::no gateway"; exit 1; }
-          [ -n "$PORT" ] || { echo "::error::no published port"; exit 1; }
-          # published port binds host; reachable from any container netns via that bridge's gateway IP
-          IP="$GW"; P="$PORT"
-          echo "SMOKE-TARGET=$IP:$P (published port via host gw)"
-          echo "SMOKE-IP=$IP"
-          TABCODE=$(curl -s -o /tmp/tab.json -w "%{http_code}" -H "Authorization: Bearer ci-smoke-key" -m 120 --retry 5 --retry-delay 5 --retry-all-errors -X POST "http://$IP:$P/tabs" -H "Content-Type: application/json" -d "{\"userId\":\"ci_smoke\",\"sessionKey\":\"s\",\"url\":\"https://example.com\"}")
-          [ "$TABCODE" = "200" ] || { echo "::error::tab create http=$TABCODE body=$(head -c 300 /tmp/tab.json)"; $API "http://localhost/v1.43/containers/$CID/logs?stdout=1&stderr=1" > /tmp/smoke.log 2>/dev/null || true; tr -dc "[:print:]\n" < /tmp/smoke.log | tail -30; exit 1; }
+          [ -n "$ok" ] || { echo "::error::persistence never loaded"; docker logs "$CID" | tail -30; exit 1; }
+          TABCODE=$(curl -s -o /tmp/tab.json -w "%{http_code}" -H "Authorization: Bearer ***" -m 120 --retry 5 --retry-delay 5 --retry-all-errors -X POST "http://$IP:9377/tabs" -H "Content-Type: application/json" -d '{"userId":"ci_smoke","sessionKey":"s","url":"https://example.com"}')
+          [ "$TABCODE" = "200" ] || { echo "::error::tab create http=$TABCODE body=$(head -c 300 /tmp/tab.json)"; docker logs "$CID" | tail -30; exit 1; }
           sleep 3
-          curl -sf -m 15 -H "Authorization: Bearer ci-smoke-key" -X DELETE "http://$IP:$P/sessions/ci_smoke" >/dev/null
+          curl -sf -m 15 -H "Authorization: Bearer ***" -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
           sleep 3
-          $API "http://localhost/v1.43/containers/$CID/logs?stdout=1&stderr=1" > /tmp/smoke.log 2>/dev/null || true
-          grep -aq "storage state persisted" /tmp/smoke.log || { echo "::error::checkpoint not persisted"; tail -30 /tmp/smoke.log | tr -dc "[:print:]\n"; exit 1; }
-          $API -X DELETE "http://localhost/v1.43/containers/$CID?force=true" >/dev/null || true
+          docker logs "$CID" 2>&1 | grep -q "storage state persisted" || { echo "::error::checkpoint not persisted"; docker logs "$CID" | tail -30; exit 1; }
+          docker rm -f "$CID" >/dev/null 2>&1 || true
+          trap - EXIT
           echo SMOKE_OK
 
       - name: Publish :live tag on NAS
-        shell: bash
         run: |
           set -euo pipefail
-          trap "" PIPE
-          . "$PWD/dlib.sh"
-          SHA="${{ gitea.sha }}"
-          drun "{\"Image\":\"node:22-alpine\",\"Cmd\":[\"sh\",\"-c\",\"echo Y2QgL3NyYzsgWyAtZiBwYWNrYWdlLmpzb24gXSB8fCB0YXIgeHpmIC9yZWxheS9zcmMudGd6IC1DIC9zcmM= | base64 -d | sh\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$RELAY_HOST_DIR:/relay\"],\"NetworkMode\":\"none\"}}" || true
-          drun "{\"Image\":\"node:22-alpine\",\"Cmd\":[\"grep\",\"-m1\",\"version\",\"/src/package.json\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\"],\"NetworkMode\":\"none\"}}" || true
-          VERSION=$(echo "$DR_LOG" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
-          TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
-          $API -X POST "http://localhost/images/$TAG/tag?repo=localhost/camofox-browser&tag=live" >/dev/null
+          docker tag "$TAG" localhost/camofox-browser:live
           echo "Published $TAG as :live (NAS-local)."
-      - name: Cleanup shared artifacts
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          trap "" PIPE
-          . "$PWD/dlib.sh"
-          # wipe the shared src volume AND the persistent relay tarball so no
-          # artifact bleeds between runs (user directive 2026-09-21)
-          drun "{\"Image\":\"node:22-alpine\",\"Cmd\":[\"sh\",\"-c\",\"rm -rf /src/* /src/.[!.]* /relay/src.tgz 2>/dev/null; echo CLEANED\"],\"HostConfig\":{\"Binds\":[\"$REPO_VOL:/src\",\"$RELAY_HOST_DIR:/relay\"],\"NetworkMode\":\"none\"}}" || true
-          case "$DR_LOG" in *CLEANED*) echo CLEANUP-OK;; *) echo "::warning::cleanup unverified";; esac
