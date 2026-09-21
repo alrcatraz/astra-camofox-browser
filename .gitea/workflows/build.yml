@@ -83,7 +83,10 @@ jobs:
           # GITHUB_ENV is not honored by this act build (proven runs #41/#45) -> persist via file
           echo "$TAG" > /tmp/ci_tag
           docker image inspect "$VNC_BASE" >/dev/null 2>&1 || { echo "::error::VNC base missing on NAS"; docker images | grep camofox | head -5; exit 1; }
-          docker build -f Dockerfile.astra -t "$TAG" .
+          # Dockerfile.astra is a thin layer over the VNC base (which carries its own
+          # node_modules); CI checkout has none, so drop that COPY for the CI build.
+          grep -v "^COPY node_modules" Dockerfile.astra > Dockerfile.ci
+          docker build -f Dockerfile.ci -t "$TAG" .
           echo BUILD_OK
 
       - name: Smoke — persistence loads + checkpoint persists
