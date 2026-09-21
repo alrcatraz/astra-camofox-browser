@@ -13,6 +13,10 @@ on:
     tags: ['v*']
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+  releases: write   # job token scope for POST /releases (Gitea clamps to configured max)
+
 concurrency:
   group: camofox-release
   cancel-in-progress: false
@@ -52,9 +56,10 @@ jobs:
             REF=$(git for-each-ref --points-at HEAD --format='%(refname:short)' 'refs/tags/v*' | head -1)
           fi
           [ -n "$REF" ] || { echo "::error::no v* tag points at HEAD — cannot determine release ref"; exit 1; }
-          # ci-clone-token is read-only (403 on POST releases); act exports the
-          # per-run runner token as GITHUB_TOKEN which carries repo write scope.
-          TOK="${GITHUB_TOKEN:-$(cat /jobdata/ci-clone-token)}"
+          # Job token = ${{ secrets.GITEA_TOKEN }} (documented name in Gitea Actions;
+          # GITHUB_TOKEN may be an alias but scoping follows permissions: above).
+          # Basic auth "login:token" is accepted by Gitea API for token auth.
+          TOK="${GITEA_TOKEN:-${GITHUB_TOKEN:-$(cat /jobdata/ci-clone-token)}}"; echo "tok len ${#TOK}" | tr -d '\n' > /tmp/toklen.txt
           # runner jobs are host-networked on the NAS: talk to Gitea over loopback,
           # not the public WAN front (Lucky proxy flaked at 10443 -> curl exit 28)
           # Gitea API reachable from the runner network as `gitea:3000` (actions/checkout
