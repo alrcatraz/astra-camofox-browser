@@ -42,7 +42,10 @@ jobs:
           set -euo pipefail
           REF="${GITEA_REF_NAME:-$(git describe --tags --abbrev=0)}"
           TOK=$(cat /jobdata/ci-clone-token)
-          curl -sf -u "alrcatraz:$TOK" -X POST \
-            "https://git01.wrt.astra-lab.org:10443/api/v1/repos/${GITEA_REPOSITORY:-alrcatraz/astra-camofox-browser}/releases" \
+          # runner jobs are host-networked on the NAS: talk to Gitea over loopback,
+          # not the public WAN front (Lucky proxy flaked at 10443 -> curl exit 28)
+          BASE="https://127.0.0.1:10443"
+          GIT_SSL_NO_VERIFY=true curl -sf --connect-timeout 10 -k -u "alrcatraz:$TOK" -X POST \
+            "$BASE/api/v1/repos/${GITEA_REPOSITORY:-alrcatraz/astra-camofox-browser}/releases" \
             -H 'Content-Type: application/json' \
             -d "{\"tag_name\":\"$REF\",\"name\":\"camofox-browser $REF\",\"body\":\"Image: localhost/camofox-browser:$REF on NAS; :live = latest CI build; ghcr.io published when PAT configured\"}" | head -c 200; echo
