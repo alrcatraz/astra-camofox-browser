@@ -97,9 +97,10 @@ jobs:
           # secret pattern gets rewritten to *** in the *executed script too* (run#130/131),
           # so build the env flag from runtime pieces and never name it *_KEY inline.
           SK="ci-$RANDOM-$$"
-          printf %s "$SK" > /tmp/ci_smoke_key
           printf "Authorization: Bearer %s\n" "$SK" > /tmp/ci_auth_hdr
-          CID=$(docker create --rm --label ci-smoke=1 -e "CAMOFOX_API_KEY=$SK" "$TAG")
+          # set both gates in one step (access-key middleware 401s before route auth):
+          ENVF="-e CAMOFOX_API_KEY=$SK -e CAMOFOX_ACCESS_KEY=$SK"
+          CID=$(docker create --rm --label ci-smoke=1 $ENVF "$TAG")
           trap "docker rm -f $CID >/dev/null 2>&1 || true" EXIT
           docker start "$CID" >/dev/null
           IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID")
