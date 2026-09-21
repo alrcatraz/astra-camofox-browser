@@ -69,14 +69,7 @@ jobs:
       - name: Toolchain (incl docker-cli)
         run: |
           set -euo pipefail
-          apt-get update -qq && apt-get install -y -qq git curl ca-certificates >/dev/null
-          if ! command -v docker >/dev/null 2>&1; then
-            mkdir -p /etc/apt/keyrings
-            curl -fsSL https://download.docker.com/linux/debian/gpg -o /tmp/d.gpg
-            install -m 0755 /tmp/d.gpg /etc/apt/keyrings/docker.gpg
-            echo "deb [signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list
-            apt-get update -qq && apt-get install -y -qq docker-ce-cli >/dev/null
-          fi
+          apt-get update -qq && apt-get install -y -qq git curl ca-certificates docker.io >/dev/null
           docker version
 
       - name: Thin-layer build over VNC base
