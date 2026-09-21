@@ -80,13 +80,16 @@ jobs:
           SHA="${{ gitea.sha }}"
           TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
           echo "TAG=$TAG" >> "$GITHUB_ENV"
-          docker images | grep -F "$VNC_BASE" || { echo "::error::VNC base missing on NAS"; exit 1; }
+          # GITHUB_ENV is not honored by this act build (proven runs #41/#45) -> persist via file
+          echo "$TAG" > /tmp/ci_tag
+          docker image inspect "$VNC_BASE" >/dev/null 2>&1 || { echo "::error::VNC base missing on NAS"; docker images | grep camofox | head -5; exit 1; }
           docker build -f Dockerfile.astra -t "$TAG" .
           echo BUILD_OK
 
       - name: Smoke — persistence loads + checkpoint persists
         run: |
           set -euo pipefail
+          TAG=$(cat /tmp/ci_tag)
           CID=$(docker create --rm --label ci-smoke=1 -e CAMOFOX_API_KEY=*** "$TAG")
           trap "docker rm -f $CID >/dev/null 2>&1 || true" EXIT
           docker start "$CID" >/dev/null
@@ -112,5 +115,6 @@ jobs:
       - name: Publish :live tag on NAS
         run: |
           set -euo pipefail
+          TAG=$(cat /tmp/ci_tag)
           docker tag "$TAG" localhost/camofox-browser:live
           echo "Published $TAG as :live (NAS-local)."
