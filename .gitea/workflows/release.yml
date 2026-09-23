@@ -35,7 +35,9 @@ jobs:
           # node inside the runner image (a toolchain the repo flake does not own).
           # Full fetch (no --depth) because this job reads tags via for-each-ref.
           # URL assembled with shell parameter expansion (runner image has no sed).
-          URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          # GITHUB_SERVER_URL is the public WAN front; job containers run on host
+          # net where only the container name resolves — use it directly.
+          URL="http://gitea:3000/$GITHUB_REPOSITORY.git"
           git init -q "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
           git remote add origin "${URL%%://*}://x-access-token:${CHECKOUT_TOKEN}@${URL#*://}"
