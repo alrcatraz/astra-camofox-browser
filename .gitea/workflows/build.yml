@@ -152,7 +152,7 @@ jobs:
 
       - name: Smoke — persistence loads + checkpoint persists
         env:
-          SMOKE_TEST_KEY: ${{ secrets.SMOKE_TEST_KEY }}
+          SMOKE_KEY: ${{ secrets.SMOKE_KEY }}
         run: |
           set -euo pipefail
           TAG=$(cat /tmp/ci_tag)
@@ -161,7 +161,7 @@ jobs:
           # The smoke key arrives as a step-level env var (secret binding): if it were
           # interpolated into the run body, Gitea's log scrubber would rewrite the
           # credential-shaped literal on disk before execution (run#183 evidence).
-          SMOKE_SECRET="$SMOKE_TEST_KEY" \
+          SMOKE_SECRET="$SMOKE_KEY" \
             nix develop .#ci --command bash -s "$TAG" <<'SMOKE_EOF'
           set -euo pipefail
           export DOCKER_HOST='unix:///var/run/docker.sock'
