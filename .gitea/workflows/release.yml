@@ -27,7 +27,22 @@ jobs:
     runs-on: nix-capable
     steps:
       - name: Checkout tag
-        uses: actions/checkout@v4
+        run: |
+          set -euo pipefail
+          # Native git clone — actions/checkout is a Node program and would need
+          # node inside the runner image (a toolchain the repo flake does not own).
+          # Full fetch (no --depth) because this job reads tags via for-each-ref.
+          git init -q "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          AUTH_URL=$(printf '%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" | sed "s|://|://x-access-token:${GITEA_TOKEN}@|")
+          git remote add origin "$AUTH_URL"
+          git fetch -q --tags origin "+refs/tags/*:refs/tags/*" "+refs/heads/*:refs/remotes/origin/*"
+          if [ -n "${GITHUB_REF_NAME:-}" ] && git rev-parse -q --verify "refs/tags/$GITHUB_REF_NAME" >/dev/null; then
+            git checkout -q "refs/tags/$GITHUB_REF_NAME"
+          else
+            git fetch -q origin "$GITHUB_SHA" && git checkout -q FETCH_HEAD
+          fi
+          git remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
 
       - name: Create Gitea release entry
         run: |
