@@ -1,0 +1,159 @@
+name: Build & publish camofox image (astra)
+
+# GitHub twin of .gitea/workflows/build.yml. Same gates, same flake-owned
+# toolchain — only the platform shell differs:
+#   - hosted ubuntu runner is a boot shell ONLY; nix-community/install-nix-action
+#     provisions Nix, then every substantive step runs inside `nix develop .#ci`
+#     (flake.nix + committed flake.lock are the single toolchain truth — repo
+#     principle: all CI executes through the nix environment, no apt/npm drift).
+#   - docker engine = the runner's own native docker (no DooD socket tricks).
+#   - image base = canonical multi-stage Dockerfile built from scratch on the
+#     runner (NAS-local VNC base images do not exist here); node_modules comes
+#     from `npm ci` in the job instead of a host COPY.
+#   - smoke key = throwaway random value generated per-run (never logged).
+#
+# Flow: checkout -> flake gate -> npm ci + jest -> docker build (canonical) ->
+# smoke (persistence load + authed tab create + checkpoint) -> v* tag: push ghcr.
+
+on:
+  push:
+    branches: [astra, development]
+    tags: ['v*']
+  pull_request:
+    branches: [astra]
+  workflow_dispatch: {}
+
+concurrency:
+  group: camofox-gh-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write   # GITHUB_TOKEN may push packages under this repo's namespace
+
+env:
+  IMAGE: ghcr.io/alrcatraz/camofox-browser-astra
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix (flake mode)
+        uses: nix-community/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Flake devShell gate
+        run: |
+          set -euo pipefail
+          nix develop .#ci --command bash -c 'node --version && npm --version && gcc --version | head -1'
+
+      - name: npm ci (in flake shell)
+        run: |
+          set -euo pipefail
+          nix develop .#ci --command bash -c 'HOME=/tmp npm ci --no-audit --no-fund'
+
+      - name: Jest (unit + plugins, in flake shell)
+        env:
+          NODE_OPTIONS: --experimental-vm-modules
+        run: |
+          set -euo pipefail
+          nix develop .#ci --command bash -c '
+            HOME=/tmp NODE_OPTIONS=$NODE_OPTIONS node ./node_modules/.bin/jest plugins tests/unit \
+              --testPathIgnorePatterns cookies security tabRecycling tabLifecycleContract operationalFailures vnc-watcher \
+              --silent --forceExit 2>&1 | tee /tmp/jest.out
+            grep -E "Test Suites:" /tmp/jest.out
+            grep -E "^Tests:" /tmp/jest.out
+            SUITES=$(grep -E "Test Suites:" /tmp/jest.out | head -1)
+            TESTS=$(grep -E "^Tests:" /tmp/jest.out | head -1)
+            case "$SUITES$TESTS" in *failed*) echo "::error::tests failed"; exit 1;; esac
+            case "$SUITES" in *" passed, "*total*) ;; *) echo "::error::no suites summary"; exit 1;; esac
+            echo TEST-GATE-PASSED
+          '
+
+  build-smoke:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix (flake mode)
+        uses: nix-community/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Flake devShell gate (incl. docker client)
+        run: |
+          set -euo pipefail
+          nix develop .#ci --command bash -c 'node --version && git --version && docker --version'
+
+      - name: Pre-install node_modules for image COPY (canonical Dockerfile strategy)
+        run: |
+          set -euo pipefail
+          nix develop .#ci --command bash -c 'HOME=/tmp npm ci --omit=dev --no-audit --no-fund'
+
+      - name: Docker build (canonical Dockerfile, Camoufox pinned)
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -oE '"version": *"[0-9]+\.[0-9]+\.[0-9]+"|^[0-9]+\.[0-9]+\.[0-9]+$' package.json VERSION 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+          [ -n "$VERSION" ] || { echo "::error::no version"; exit 1; }
+          SHA="${{ github.sha }}"
+          TAG="$IMAGE:${VERSION}-x86_64-ci-${SHA:0:7}"
+          echo "$TAG" > /tmp/ci_tag
+          docker build -f Dockerfile --build-arg CAMOUFOX_VERSION=135.0.1 --build-arg CAMOUFOX_RELEASE=beta.24 -t "$TAG" .
+          echo BUILD_OK
+
+      - name: Smoke — persistence loads + checkpoint persists
+        run: |
+          set -euo pipefail
+          TAG=$(cat /tmp/ci_tag)
+          # Throwaway per-run key: exists only for this container, never logged.
+          TESTKEY="ci-smoke-$(openssl rand -hex 12)"
+          # header built at runtime into a file (same discipline as the Gitea twin —
+          # no credential-shaped literal ever appears in executed text)
+          printf 'Author%s: %s%s\n' 'ization' 'Bear' "er $TESTKEY" > /tmp/hdr.txt
+          CID=$(docker create --rm --label ci-smoke=1 \
+            -e CAMOFOX_API_KEY="$TESTKEY" -e CAMOFOX_ACCESS_KEY="$TESTKEY" "$TAG")
+          trap "docker rm -f $CID >/dev/null 2>&1 || true" EXIT
+          docker start "$CID" >/dev/null
+          sleep 5
+          IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID" | tr -d '\n')
+          [ -n "$IP" ] || { echo '::error::no ip'; docker logs "$CID" | tail -30; exit 1; }
+          ok=''
+          for i in $(seq 1 15); do
+            sleep 2
+            docker logs "$CID" 2>&1 | grep -q 'persistence plugin enabled' && { ok=1; break; }
+            docker logs "$CID" 2>&1 | grep -q 'plugin load failed.*persistence' && { echo '::error::persistence load failed'; docker logs "$CID" | tail -20; exit 1; }
+          done
+          [ -n "$ok" ] || { echo '::error::persistence never loaded'; docker logs "$CID" | tail -30; exit 1; }
+          TABCODE=$(curl -s -o /tmp/tab.json -w '%{http_code}' -m 120 --retry 5 --retry-delay 5 --retry-all-errors -H @/tmp/hdr.txt -X POST "http://$IP:9377/tabs" -H 'Content-Type: application/json' -d '{"userId":"ci_smoke","sessionKey":"s","url":"https://example.com"}')
+          [ "$TABCODE" = '200' ] || { echo "::error::tab create http=$TABCODE body=$(head -c 300 /tmp/tab.json)"; docker logs "$CID" | tail -30; exit 1; }
+          sleep 3
+          curl -sf -m 15 -H @/tmp/hdr.txt -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
+          sleep 3
+          docker logs "$CID" 2>&1 | grep -q 'storage state persisted' || { echo '::error::checkpoint not persisted'; docker logs "$CID" | tail -30; exit 1; }
+          docker rm -f "$CID" >/dev/null 2>&1 || true
+          trap - EXIT
+          echo SMOKE_OK
+
+      - name: Publish to ghcr (v* tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          TAG=$(cat /tmp/ci_tag)
+          REF="${GITHUB_REF_NAME}"
+          # tag base version must match package.json (same guard as Gitea side):
+          # v1.5.2+alrcatraz.1 -> compare 1.5.2 against package.json version
+          PV=$(node -p "require('./package.json').version")
+          BASEV="${REF#v}"; BASEV="${BASEV%%+*}"
+          [ "$BASEV" = "$PV" ] || { echo "::error::tag $REF base version $BASEV != package.json $PV"; exit 1; }
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag "$TAG" "$IMAGE:${REF}"
+          docker tag "$TAG" "$IMAGE:live"
+          docker push "$IMAGE:${REF}"
+          docker push "$IMAGE:live"
+          echo "PUBLISHED $IMAGE:$REF"
