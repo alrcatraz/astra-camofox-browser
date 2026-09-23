@@ -42,6 +42,7 @@ jobs:
       - name: Checkout
         run: |
           set -euo pipefail
+          echo "ENV-PROBE:"; env | grep -iE 'token|gitea|github' | sed 's/=.*/=<set>/' | sort
           # Native git clone instead of actions/checkout: that action is a Node
           # program, so it needs node inside the RUNNER image — a toolchain we
           # do not control (a runner-image rebuild silently dropped it once).
