@@ -27,24 +27,29 @@ jobs:
     runs-on: nix-capable
     steps:
       - name: Checkout tag
+        env:
+          CHECKOUT_TOKEN: ${{ gitea.token }}
         run: |
           set -euo pipefail
           # Native git clone — actions/checkout is a Node program and would need
           # node inside the runner image (a toolchain the repo flake does not own).
           # Full fetch (no --depth) because this job reads tags via for-each-ref.
+          # URL assembled with shell parameter expansion (runner image has no sed).
+          URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git init -q "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
-          AUTH_URL=$(printf '%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" | sed "s|://|://x-access-token:${GITHUB_TOKEN}@|")
-          git remote add origin "$AUTH_URL"
+          git remote add origin "${URL%%://*}://x-access-token:${CHECKOUT_TOKEN}@${URL#*://}"
           git fetch -q --tags origin "+refs/tags/*:refs/tags/*" "+refs/heads/*:refs/remotes/origin/*"
           if [ -n "${GITHUB_REF_NAME:-}" ] && git rev-parse -q --verify "refs/tags/$GITHUB_REF_NAME" >/dev/null; then
             git checkout -q "refs/tags/$GITHUB_REF_NAME"
           else
             git fetch -q origin "$GITHUB_SHA" && git checkout -q FETCH_HEAD
           fi
-          git remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git remote set-url origin "$URL"
 
       - name: Create Gitea release entry
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
           REF="${GITEA_REF_NAME:-}"
@@ -52,9 +57,10 @@ jobs:
             REF=$(git for-each-ref --points-at HEAD --format='%(refname:short)' 'refs/tags/v*' | head -1)
           fi
           [ -n "$REF" ] || { echo "::error::no v* tag points at HEAD — cannot determine release ref"; exit 1; }
-          # Actions job tokens are git-only on Gitea (API writes -> 403, by design).
-          # Use a dedicated write:repository PAT stored on the runner host.
-          TOK=$(cat /volume1/docker/act_runner_nix/data/ci-release-token)
+          # Actions job tokens are git-only on Gitea (API writes -> 403, by design),
+          # so release creation uses a dedicated write:repository PAT — stored as
+          # the repo Actions secret RELEASE_TOKEN, never on disk.
+          TOK="$RELEASE_TOKEN"
           # runner jobs are host-networked on the NAS: talk to Gitea over loopback,
           # not the public WAN front (Lucky proxy flaked at 10443 -> curl exit 28)
           # Gitea API reachable from the runner network as `gitea:3000` (actions/checkout
