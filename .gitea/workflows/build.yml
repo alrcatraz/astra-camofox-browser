@@ -171,6 +171,8 @@ jobs:
           # the request header. The runner reaches the container over the bridge
           # network, so the loopback exemption in lib/auth.js does not apply.
           TESTKEY="$SMOKE_SECRET"
+          # ONE-SHOT DIAGNOSTIC (round 2): is the header literal intact at execution?
+          echo "DIAG hdr_len=${#TESTKEY} tab_hdr=$(printf 'Authorization: Bearer %s' "$TESTKEY" | wc -c) key_head=$(printf %s "$TESTKEY" | cut -c1-4)"
           CID=$(docker create --rm --label ci-smoke=1 \
             -e CAMOFOX_API_KEY="$TESTKEY" -e CAMOFOX_ACCESS_KEY="$TESTKEY" "$TAG")
           trap "docker rm -f $CID >/dev/null 2>&1 || true" EXIT
