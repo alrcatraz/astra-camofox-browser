@@ -109,7 +109,9 @@ jobs:
           PV=$(node -p "require('./package.json').version")
           [ "$BASEV" = "$PV" ] || { echo "::error::VERSION $V base $BASEV != package.json $PV"; exit 1; }
           SHA="${{ github.sha }}"
-          TAG="$IMAGE:${V}-x86_64-ci-${SHA:0:7}"
+          # OCI tags forbid '+' — map build-metadata +alrcatraz.N to -alrcatraz.N
+          TV=$(echo "$V" | tr '+' '-')
+          TAG="$IMAGE:${TV}-x86_64-ci-${SHA:0:7}"
           echo "$TAG" > /tmp/ci_tag
           docker build -f Dockerfile --build-arg CAMOUFOX_VERSION=135.0.1 --build-arg CAMOUFOX_RELEASE=beta.24 -t "$TAG" .
           echo BUILD_OK
@@ -157,9 +159,10 @@ jobs:
           # package.json cross-check already happened in the build step
           V=$(tr -d '[:space:]' < VERSION)
           [ "$REF" = "v$V" ] || { echo "::error::tag $REF != v$V (VERSION file)"; exit 1; }
+          RV=$(echo "$V" | tr '+' '-')   # OCI-safe release tag (+ not allowed in tags)
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker tag "$TAG" "$IMAGE:${REF#v}"
+          docker tag "$TAG" "$IMAGE:${RV}"
           docker tag "$TAG" "$IMAGE:live"
-          docker push "$IMAGE:${REF#v}"
+          docker push "$IMAGE:${RV}"
           docker push "$IMAGE:live"
-          echo "PUBLISHED $IMAGE:${REF#v}"
+          echo "PUBLISHED $IMAGE:${RV}"
