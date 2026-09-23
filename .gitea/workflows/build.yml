@@ -40,7 +40,21 @@ jobs:
     runs-on: nixos
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        run: |
+          set -euo pipefail
+          # Native git clone instead of actions/checkout: that action is a Node
+          # program, so it needs node inside the RUNNER image — a toolchain we
+          # do not control (a runner-image rebuild silently dropped it once).
+          # Everything the job needs must come from the repo flake, so we clone
+          # with the git the runner image already ships, authenticating with the
+          # job token the runner injects.
+          git init -q "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          AUTH_URL=$(printf '%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" | sed "s|://|://x-access-token:${GITEA_TOKEN}@|")
+          git remote add origin "$AUTH_URL"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          git remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
 
       - name: Flake devShell gate
         run: |
@@ -76,7 +90,16 @@ jobs:
     runs-on: nixos
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        run: |
+          set -euo pipefail
+          # Native git clone — see the test job for why actions/checkout is not used.
+          git init -q "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          AUTH_URL=$(printf '%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" | sed "s|://|://x-access-token:${GITEA_TOKEN}@|")
+          git remote add origin "$AUTH_URL"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          git remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
 
       - name: Flake devShell gate (incl. docker client)
         run: |
