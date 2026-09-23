@@ -153,6 +153,7 @@ jobs:
       - name: Smoke — persistence loads + checkpoint persists
         env:
           SMOKE_KEY: ${{ secrets.SMOKE_KEY }}
+          # (secret value rotated; touching the file re-triggers the run)
         run: |
           set -euo pipefail
           TAG=$(cat /tmp/ci_tag)
