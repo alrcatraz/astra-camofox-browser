@@ -34,7 +34,7 @@ jobs:
           # Full fetch (no --depth) because this job reads tags via for-each-ref.
           git init -q "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
-          AUTH_URL=$(printf '%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" | sed "s|://|://x-access-token:${GITEA_TOKEN}@|")
+          AUTH_URL=$(printf '%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" | sed "s|://|://x-access-token:${GITHUB_TOKEN}@|")
           git remote add origin "$AUTH_URL"
           git fetch -q --tags origin "+refs/tags/*:refs/tags/*" "+refs/heads/*:refs/remotes/origin/*"
           if [ -n "${GITHUB_REF_NAME:-}" ] && git rev-parse -q --verify "refs/tags/$GITHUB_REF_NAME" >/dev/null; then
