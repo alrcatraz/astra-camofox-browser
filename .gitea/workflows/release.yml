@@ -35,9 +35,11 @@ jobs:
           # node inside the runner image (a toolchain the repo flake does not own).
           # Full fetch (no --depth) because this job reads tags via for-each-ref.
           # URL assembled with shell parameter expansion (runner image has no sed).
-          # GITHUB_SERVER_URL is the public WAN front; job containers run on host
-          # net where only the container name resolves — use it directly.
-          URL="http://gitea:3000/$GITHUB_REPOSITORY.git"
+          # Job containers are NOT host-networked (the label's network: host applies
+          # to the runner daemon container, not per-job ones), and the private CA +
+          # WAN front are unavailable inside them. Loopback reaches Gitea's published
+          # 3000 port from any bridge via the host gateway.
+          URL="http://127.0.0.1:3000/$GITHUB_REPOSITORY.git"
           git init -q "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
           git remote add origin "${URL%%://*}://x-access-token:${CHECKOUT_TOKEN}@${URL#*://}"
