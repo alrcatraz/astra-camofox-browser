@@ -1,15 +1,18 @@
 name: Build & publish camofox image (astra)
 
 # Toolchain = repo flake.nix + committed flake.lock, evaluated inside the
-# `nixos` label (nixos/nix:runner-ci). No apt/npm-image toolchain drift.
-# Runner config gives jobs: docker.sock mount, privileged, network_mode=host
-# (docs.gitea.com/runner/configuration). Image build/publish uses the mounted
-# docker socket via a throwaway `docker:cli` container (act forbids *actions*
-# from using docker: images as runs-on — they resolve through gitee mirrors).
+# `nixos` label (nixos/nix:runner-ci2). No apt/npm-image toolchain drift.
+# Runner config gives jobs: docker-socket mount (/var/run/docker.sock =
+# NAS podman's docker-compat REST API),
+# privileged, network_mode=host (docs.gitea.com/runner/configuration).
+#Image build/publish talks over the mounted socket via the flake-provided
+# the flake-pinned `docker` CLI straight against it (DooD) — no throwaway
+# docker:cli relay containers,
+# no nested-engine dependency. The NAS engine is podman serving the docker-compat API.
 #
 # Flow: checkout -> nix develop (flake ci shell): npm ci + jest gates ->
-# docker thin-layer build over VNC base -> smoke (persistence load +
-# checkpoint persist) -> :live tag -> prune stale ci tags.
+# thin-layer build over VNC base -> smoke (persistence load + checkpoint
+# persist) -> :live tag -> prune stale ci tags.
 
 on:
   push:
@@ -22,7 +25,13 @@ concurrency:
 
 env:
   VNC_BASE: localhost/camofox-browser:135.0.1-x86_64-vnc
-  NIX_CONFIG: "experimental-features = nix-command flakes access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}"
+  # multi-line required: single-line space-separated NIX_CONFIG silently keeps
+  # defaults for later keys (sandbox/filter-syscalls ignored -> seccomp BPF fail)
+  NIX_CONFIG: |
+    experimental-features = nix-command flakes
+    access-tokens = github.com=${{ secrets.NIX_GH_TOKEN }}
+    sandbox = false
+    filter-syscalls = false
 
 jobs:
   test:
@@ -67,18 +76,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Flake devShell gate
+      - name: Flake devShell gate (incl. docker client)
         run: |
           set -euo pipefail
           git add -N flake.nix || true
-          nix develop .#ci --command bash -c 'node --version && git --version'
+          nix develop .#ci --command bash -c 'node --version && git --version && docker --version'
 
-      - name: Docker CLI probe (docker:cli helper on shared socket)
+      - name: Docker-API socket probe (DooD on shared socket)
         run: |
           set -euo pipefail
-          D() { docker run --rm -v /var/run/docker.sock:/var/run/docker.sock --network host docker:cli "$@"; }
-          D version >/dev/null
-          echo DOCKER-CLI-OK
+          nix develop .#ci --command bash -c '
+            export DOCKER_HOST="unix:///var/run/docker.sock"
+            docker version >/dev/null && echo DOCKER-SOCKET-OK
+          '
 
       - name: Thin-layer build over VNC base
         run: |
@@ -89,68 +99,82 @@ jobs:
           TAG="localhost/camofox-browser:${VERSION}-x86_64-vnc-ci-${SHA:0:7}"
           # GITHUB_ENV is not honored by act here -> persist via file
           echo "$TAG" > /tmp/ci_tag
-          D() { docker run --rm -v /var/run/docker.sock:/var/run/docker.sock --network host docker:cli "$@"; }
-          D image inspect "$VNC_BASE" >/dev/null 2>&1 || { echo "::error::VNC base missing on NAS"; D images | grep camofox | head -5; exit 1; }
-          # Dockerfile.astra is a thin layer over the VNC base (which carries its own
-          # node_modules); CI checkout has none, so drop that COPY for the CI build.
-          grep -v "^COPY node_modules" Dockerfile.astra > Dockerfile.ci
-          # The daemon lives on the NAS host; the job workspace is itself a host
-          # bind volume, so its $GITHUB_WORKSPACE path is valid there too — pass it
-          # through a docker:cli container for both -f and the build context.
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" --network host \
-            docker:cli build -f "$GITHUB_WORKSPACE/Dockerfile.ci" -t "$TAG" "$GITHUB_WORKSPACE"
-          echo BUILD_OK
+          nix develop .#ci --command bash -c "
+            export DOCKER_HOST='unix:///var/run/docker.sock'
+            docker image inspect '$VNC_BASE' >/dev/null 2>&1 || { echo '::error::VNC base missing on NAS'; docker images | grep camofox | head -5; exit 1; }
+            # Dockerfile.astra is a thin layer over the VNC base (which carries its own
+            # node_modules); CI checkout has none, so drop that COPY for the CI build.
+            grep -v '^COPY node_modules' Dockerfile.astra > Dockerfile.ci
+            # The engine lives on the NAS host; the job workspace is a host bind
+            # volume whose path is valid there too, so the socket API can use it
+            # as build context directly.
+            docker build -f '$GITHUB_WORKSPACE/Dockerfile.ci' -t '$TAG' '$GITHUB_WORKSPACE'
+            echo BUILD_OK
+          "
 
       - name: Smoke — persistence loads + checkpoint persists
         run: |
           set -euo pipefail
           TAG=$(cat /tmp/ci_tag)
-          D() { docker run --rm -v /var/run/docker.sock:/var/run/docker.sock --network host docker:cli "$@"; }
-          # smoke key: ephemeral per-run. Any literal matching the log scrubber's
-          # secret pattern gets rewritten to *** in the *executed script too*,
-          # so build it from runtime pieces and never name it *_KEY inline.
-          SK="ci-$RANDOM-$$"
-          printf "Authorization: Bearer ***" "$SK" > /tmp/ci_auth_hdr
-          # both gates: access-key middleware 401s before route auth
-          CID=$(D create --rm --label ci-smoke=1 -e CAMOFOX_API_KEY="$SK" -e CAMOFOX_ACCESS_KEY="$SK" "$TAG")
-          trap "D rm -f $CID >/dev/null 2>&1 || true" EXIT
-          D start "$CID" >/dev/null
-          IP=$(D inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID" | tr -d '\n')
-          [ -n "$IP" ] || { echo "::error::no ip"; D logs "$CID" | tail -30; exit 1; }
-          ok=""
+          # Script piped to `bash -s` INSIDE the flake shell via a QUOTED heredoc:
+          # zero expansion in the workflow layer -> no outer/inner escaping ladders.
+          # The smoke key comes from a repo secret expanded by the runner BEFORE the
+          # script hits disk, so no credential-shaped literal ever appears in the
+          # executed script (Gitea's log scrubber rewrites such literals in place and
+          # would otherwise corrupt the value mid-flight).
+          SMOKE_SECRET='${{ secrets.SMOKE_TEST_KEY }}' \
+            nix develop .#ci --command bash -s "$TAG" <<'SMOKE_EOF'
+          set -euo pipefail
+          export DOCKER_HOST='unix:///var/run/docker.sock'
+          TAG="$1"
+          # Auth: the key is injected via -e and referenced as a runtime variable in
+          # the request header. The runner reaches the container over the bridge
+          # network, so the loopback exemption in lib/auth.js does not apply.
+          TESTKEY="$SMOKE_SECRET"
+          CID=$(docker create --rm --label ci-smoke=1 \
+            -e CAMOFOX_API_KEY="$TESTKEY" -e CAMOFOX_ACCESS_KEY="$TESTKEY" "$TAG")
+          trap "docker rm -f $CID >/dev/null 2>&1 || true" EXIT
+          docker start "$CID" >/dev/null
+          sleep 5
+          IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID" | tr -d '\n')
+          [ -n "$IP" ] || { echo '::error::no ip'; docker logs "$CID" | tail -30; exit 1; }
+          ok=''
           for i in $(seq 1 15); do
             sleep 2
-            D logs "$CID" 2>&1 | grep -q "persistence plugin enabled" && { ok=1; break; }
-            D logs "$CID" 2>&1 | grep -q "plugin load failed.*persistence" && { echo "::error::persistence load failed"; D logs "$CID" | tail -20; exit 1; }
+            docker logs "$CID" 2>&1 | grep -q 'persistence plugin enabled' && { ok=1; break; }
+            docker logs "$CID" 2>&1 | grep -q 'plugin load failed.*persistence' && { echo '::error::persistence load failed'; docker logs "$CID" | tail -20; exit 1; }
           done
-          [ -n "$ok" ] || { echo "::error::persistence never loaded"; D logs "$CID" | tail -30; exit 1; }
-          TABCODE=$(curl -s -o /tmp/tab.json -w "%{http_code}" -H @/tmp/ci_auth_hdr -m 120 --retry 5 --retry-delay 5 --retry-all-errors -X POST "http://$IP:9377/tabs" -H "Content-Type: application/json" -d '{"userId":"ci_smoke","sessionKey":"s","url":"https://example.com"}')
-          [ "$TABCODE" = "200" ] || { echo "::error::tab create http=$TABCODE body=$(head -c 300 /tmp/tab.json)"; D logs "$CID" | tail -30; exit 1; }
+          [ -n "$ok" ] || { echo '::error::persistence never loaded'; docker logs "$CID" | tail -30; exit 1; }
+          TABCODE=$(curl -s -o /tmp/tab.json -w '%{http_code}' -m 120 --retry 5 --retry-delay 5 --retry-all-errors -H "Authorization: Bearer ***" -X POST "http://$IP:9377/tabs" -H 'Content-Type: application/json' -d '{"userId":"ci_smoke","sessionKey":"s","url":"https://example.com"}')
+          [ "$TABCODE" = '200' ] || { echo "::error::tab create http=$TABCODE body=$(head -c 300 /tmp/tab.json)"; docker logs "$CID" | tail -30; exit 1; }
           sleep 3
-          curl -sf -m 15 -H @/tmp/ci_auth_hdr -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
+          curl -sf -m 15 -H "Authorization: Bearer ***" -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
           sleep 3
-          D logs "$CID" 2>&1 | grep -q "storage state persisted" || { echo "::error::checkpoint not persisted"; D logs "$CID" | tail -30; exit 1; }
-          D rm -f "$CID" >/dev/null 2>&1 || true
+          docker logs "$CID" 2>&1 | grep -q 'storage state persisted' || { echo '::error::checkpoint not persisted'; docker logs "$CID" | tail -30; exit 1; }
+          docker rm -f "$CID" >/dev/null 2>&1 || true
           trap - EXIT
           echo SMOKE_OK
+          SMOKE_EOF
 
       - name: Publish :live + version tags on NAS
         run: |
           set -euo pipefail
           TAG=$(cat /tmp/ci_tag)
-          D() { docker run --rm -v /var/run/docker.sock:/var/run/docker.sock --network host docker:cli "$@"; }
-          D tag "$TAG" localhost/camofox-browser:live
-          # release.yml builds its own image from the tag checkout; reuse it here so
-          # `git tag v1.13.2` costs one build, not two (same commit = same layers)
-          if V=$(git describe --tags --exact-match 2>/dev/null); then
-            PV=$(nix develop .#ci --command bash -c "node -p \"require('./package.json').version\"")
-            [ "$V" = "$PV" ] || { echo "::error::tag $V != package.json version $PV — bump package.json on the tagged commit"; exit 1; }
-            D tag "$TAG" "localhost/camofox-browser:$V"
-            echo "Also tagged $TAG as :$V"
-          fi
-          # drop stale per-commit CI tags so daemon storage doesn't bloat
-          for t in $(D images --format "{{.Tag}}" localhost/camofox-browser | grep -E "^1\.[0-9]+\.[0-9]+-x86_64-vnc-ci-" | grep -v "${TAG##*:}"); do
-            D rmi "localhost/camofox-browser:$t" >/dev/null 2>&1 || true
-          done
-          echo "Published $TAG as :live (NAS-local); old ci tags pruned."
+          nix develop .#ci --command bash -c "
+            set -euo pipefail
+            export DOCKER_HOST='unix:///var/run/docker.sock'
+            docker tag '$TAG' localhost/camofox-browser:live
+            # release.yml builds its own image from the tag checkout; reuse it here so
+            # a git tag costs one build, not two (same commit = same layers)
+            if V=\$(git describe --tags --exact-match 2>/dev/null); then
+              PV=\$(node -p \"require('./package.json').version\")
+              [ \"\$V\" = \"\$PV\" ] || { echo \"::error::tag \$V != package.json version \$PV — bump package.json on the tagged commit\"; exit 1; }
+              docker tag '$TAG' \"localhost/camofox-browser:\$V\"
+              echo \"Also tagged $TAG as :\$V\"
+            fi
+            # drop stale per-commit CI tags so storage doesn't bloat
+            for t in \$(docker images --format '{{.Tag}}' localhost/camofox-browser | grep -E '^1\.[0-9]+\.[0-9]+-x86_64-vnc-ci-' | grep -v '${TAG##*:}'); do
+              docker rmi \"localhost/camofox-browser:\$t\" >/dev/null 2>&1 || true
+            done
+            echo \"Published $TAG as :live (NAS-local); old ci tags pruned.\"
+          "
