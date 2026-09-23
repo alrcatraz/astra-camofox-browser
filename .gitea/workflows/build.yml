@@ -3,12 +3,11 @@ name: Build & publish camofox image (astra)
 # Toolchain = repo flake.nix + committed flake.lock, evaluated inside the
 # `nixos` label (nixos/nix:runner-ci2). No apt/npm-image toolchain drift.
 # Runner config gives jobs: docker-socket mount (/var/run/docker.sock =
-# NAS podman's docker-compat REST API),
-# privileged, network_mode=host (docs.gitea.com/runner/configuration).
-#Image build/publish talks over the mounted socket via the flake-provided
-# the flake-pinned `docker` CLI straight against it (DooD) — no throwaway
-# docker:cli relay containers,
-# no nested-engine dependency. The NAS engine is podman serving the docker-compat API.
+# NAS podman's docker-compat REST API), privileged, network_mode=host
+# (docs.gitea.com/runner/configuration). Image build/publish talks over the
+# mounted socket via the flake-pinned `docker` CLI straight against it (DooD) —
+# no throwaway docker:cli relay containers, no nested-engine dependency. The
+# NAS engine is podman serving the docker-compat API.
 #
 # Flow: checkout -> nix develop (flake ci shell): npm ci + jest gates ->
 # thin-layer build over VNC base -> smoke (persistence load + checkpoint
@@ -16,7 +15,7 @@ name: Build & publish camofox image (astra)
 
 on:
   push:
-    branches: [astra]
+    branches: [astra, development]
   workflow_dispatch: {}
 
 concurrency:
