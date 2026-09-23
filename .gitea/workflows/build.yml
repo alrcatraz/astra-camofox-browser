@@ -171,11 +171,6 @@ jobs:
           # the request header. The runner reaches the container over the bridge
           # network, so the loopback exemption in lib/auth.js does not apply.
           TESTKEY="$SMOKE_SECRET"
-          # ONE-SHOT DIAGNOSTIC (round 3): what env does the ENGINE say the container has?
-          CIDX=$(docker create --rm --label ci-smoke=1 -e CAMOFOX_API_KEY="$TESTKEY" -e CAMOFOX_ACCESS_KEY="$TESTKEY" "$TAG")
-          docker start "$CIDX" >/dev/null; sleep 6
-          echo "DIAG inspect_env:"; docker inspect "$CIDX" --format '{{json .Config.Env}}' | head -c 600; echo
-          docker rm -f "$CIDX" >/dev/null 2>&1 || true
           CID=$(docker create --rm --label ci-smoke=1 \
             -e CAMOFOX_API_KEY="$TESTKEY" -e CAMOFOX_ACCESS_KEY="$TESTKEY" "$TAG")
           trap "docker rm -f $CID >/dev/null 2>&1 || true" EXIT
