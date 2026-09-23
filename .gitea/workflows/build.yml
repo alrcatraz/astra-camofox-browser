@@ -27,9 +27,12 @@ env:
   VNC_BASE: localhost/camofox-browser:135.0.1-x86_64-vnc
   # multi-line required: single-line space-separated NIX_CONFIG silently keeps
   # defaults for later keys (sandbox/filter-syscalls ignored -> seccomp BPF fail)
+  # No access-tokens here on purpose: flake.lock pins all inputs to public
+  # GitHub tarballs, which fetch anonymously — a token would only re-expose CI
+  # to GitHub's secret-scanning revocations (the historical reason this line
+  # ever existed was private-repo inputs, which we do not have).
   NIX_CONFIG: |
     experimental-features = nix-command flakes
-    access-tokens = github.com=${{ secrets.NIX_GH_TOKEN }}
     sandbox = false
     filter-syscalls = false
 
