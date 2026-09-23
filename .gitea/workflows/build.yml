@@ -51,7 +51,9 @@ jobs:
           # the runner image already ships. The job token arrives as an env var
           # (the runner does not export one globally); the URL is assembled with
           # shell parameter expansion because the runner image has no sed.
-          URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          # GITHUB_SERVER_URL is the public WAN front; job containers run on host
+          # net where only the container name resolves — use it directly.
+          URL="http://gitea:3000/$GITHUB_REPOSITORY.git"
           git init -q "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
           git remote add origin "${URL%%://*}://x-access-token:${CHECKOUT_TOKEN}@${URL#*://}"
@@ -98,7 +100,9 @@ jobs:
         run: |
           set -euo pipefail
           # Native git clone — see the test job for why actions/checkout is not used.
-          URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          # GITHUB_SERVER_URL is the public WAN front; job containers run on host
+          # net where only the container name resolves — use it directly.
+          URL="http://gitea:3000/$GITHUB_REPOSITORY.git"
           git init -q "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
           git remote add origin "${URL%%://*}://x-access-token:${CHECKOUT_TOKEN}@${URL#*://}"
