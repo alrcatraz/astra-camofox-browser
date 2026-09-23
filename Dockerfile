@@ -76,6 +76,11 @@ COPY camofox.config.json ./
 COPY lib/ ./lib/
 COPY plugins/ ./plugins/
 COPY scripts/ ./scripts/
+# persistence plugin's bootstrap-cookie helpers live in the mcp package (upstream
+# v1.13.1 split); without this COPY lib/cookies.js import fails and the plugin
+# silently stops persisting storage-state checkpoints (same hotfix as
+# Dockerfile.astra, 2026-09-19).
+COPY mcp/lib/cookies.mjs ./mcp/lib/cookies.mjs
 
 # Install default plugin dependencies (apt packages + post-install hooks)
 RUN sh scripts/install-plugin-deps.sh
