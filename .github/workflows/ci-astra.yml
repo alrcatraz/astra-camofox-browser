@@ -99,10 +99,17 @@ jobs:
       - name: Docker build (canonical Dockerfile, Camoufox pinned)
         run: |
           set -euo pipefail
-          VERSION=$(grep -oE '"version": *"[0-9]+\.[0-9]+\.[0-9]+"|^[0-9]+\.[0-9]+\.[0-9]+$' package.json VERSION 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
-          [ -n "$VERSION" ] || { echo "::error::no version"; exit 1; }
+          # Version = repo-root VERSION file (astra blueprint convention: bare
+          # number, may carry +alrcatraz.N build-metadata suffix). npm package.json
+          # stays at the upstream base because upstream tests assert it.
+          [ -s VERSION ] || { echo "::error::VERSION file missing or empty"; exit 1; }
+          V=$(tr -d '[:space:]' < VERSION)
+          case "$V" in *[!0-9a-zA-Z.+-]*) echo "::error::bad VERSION '$V'"; exit 1;; esac
+          BASEV="${V%%+*}"
+          PV=$(node -p "require('./package.json').version")
+          [ "$BASEV" = "$PV" ] || { echo "::error::VERSION $V base $BASEV != package.json $PV"; exit 1; }
           SHA="${{ github.sha }}"
-          TAG="$IMAGE:${VERSION}-x86_64-ci-${SHA:0:7}"
+          TAG="$IMAGE:${V}-x86_64-ci-${SHA:0:7}"
           echo "$TAG" > /tmp/ci_tag
           docker build -f Dockerfile --build-arg CAMOUFOX_VERSION=135.0.1 --build-arg CAMOUFOX_RELEASE=beta.24 -t "$TAG" .
           echo BUILD_OK
@@ -146,14 +153,13 @@ jobs:
           set -euo pipefail
           TAG=$(cat /tmp/ci_tag)
           REF="${GITHUB_REF_NAME}"
-          # tag base version must match package.json (same guard as Gitea side):
-          # v1.5.2+alrcatraz.1 -> compare 1.5.2 against package.json version
-          PV=$(node -p "require('./package.json').version")
-          BASEV="${REF#v}"; BASEV="${BASEV%%+*}"
-          [ "$BASEV" = "$PV" ] || { echo "::error::tag $REF base version $BASEV != package.json $PV"; exit 1; }
+          # release tag must equal the repo VERSION file (v + VERSION content);
+          # package.json cross-check already happened in the build step
+          V=$(tr -d '[:space:]' < VERSION)
+          [ "$REF" = "v$V" ] || { echo "::error::tag $REF != v$V (VERSION file)"; exit 1; }
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker tag "$TAG" "$IMAGE:${REF}"
+          docker tag "$TAG" "$IMAGE:${REF#v}"
           docker tag "$TAG" "$IMAGE:live"
-          docker push "$IMAGE:${REF}"
+          docker push "$IMAGE:${REF#v}"
           docker push "$IMAGE:live"
-          echo "PUBLISHED $IMAGE:$REF"
+          echo "PUBLISHED $IMAGE:${REF#v}"
