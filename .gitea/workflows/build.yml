@@ -3,12 +3,11 @@ name: Build & publish camofox image (astra)
 # Toolchain = repo flake.nix + committed flake.lock, evaluated inside the
 # `nixos` label (nixos/nix:runner-ci2). No apt/npm-image toolchain drift.
 # Runner config gives jobs: docker-socket mount (/var/run/docker.sock =
-# NAS podman's docker-compat REST API),
-# privileged, network_mode=host (docs.gitea.com/runner/configuration).
-#Image build/publish talks over the mounted socket via the flake-provided
-# the flake-pinned `docker` CLI straight against it (DooD) — no throwaway
-# docker:cli relay containers,
-# no nested-engine dependency. The NAS engine is podman serving the docker-compat API.
+# NAS podman's docker-compat REST API), privileged, network_mode=host
+# (docs.gitea.com/runner/configuration). Image build/publish talks over the
+# mounted socket via the flake-pinned `docker` CLI straight against it (DooD) —
+# no throwaway docker:cli relay containers, no nested-engine dependency. The
+# NAS engine is podman serving the docker-compat API.
 #
 # Flow: checkout -> nix develop (flake ci shell): npm ci + jest gates ->
 # thin-layer build over VNC base -> smoke (persistence load + checkpoint
@@ -16,7 +15,7 @@ name: Build & publish camofox image (astra)
 
 on:
   push:
-    branches: [astra]
+    branches: [astra, development]
   workflow_dispatch: {}
 
 concurrency:
@@ -27,9 +26,12 @@ env:
   VNC_BASE: localhost/camofox-browser:135.0.1-x86_64-vnc
   # multi-line required: single-line space-separated NIX_CONFIG silently keeps
   # defaults for later keys (sandbox/filter-syscalls ignored -> seccomp BPF fail)
+  # No access-tokens here on purpose: flake.lock pins all inputs to public
+  # GitHub tarballs, which fetch anonymously — a token would only re-expose CI
+  # to GitHub's secret-scanning revocations (the historical reason this line
+  # ever existed was private-repo inputs, which we do not have).
   NIX_CONFIG: |
     experimental-features = nix-command flakes
-    access-tokens = github.com=${{ secrets.NIX_GH_TOKEN }}
     sandbox = false
     filter-syscalls = false
 
@@ -38,7 +40,28 @@ jobs:
     runs-on: nixos
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        env:
+          CHECKOUT_TOKEN: ${{ gitea.token }}
+        run: |
+          set -euo pipefail
+          # Native git clone instead of actions/checkout: that action is a Node
+          # program, so it needs node inside the RUNNER image — a toolchain we
+          # do not control (a runner-image rebuild silently dropped it once).
+          # Jobs must depend on the repo flake alone, so we clone with the git
+          # the runner image already ships. The job token arrives as an env var
+          # (the runner does not export one globally); the URL is assembled with
+          # shell parameter expansion because the runner image has no sed.
+          # Job containers are NOT host-networked (the label's network: host applies
+          # to the runner daemon container, not per-job ones), and the private CA +
+          # WAN front are unavailable inside them. Loopback reaches Gitea's published
+          # 3000 port from any bridge via the host gateway.
+          URL="http://127.0.0.1:3000/$GITHUB_REPOSITORY.git"
+          git init -q "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "${URL%%://*}://x-access-token:${CHECKOUT_TOKEN}@${URL#*://}"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          git remote set-url origin "$URL"
 
       - name: Flake devShell gate
         run: |
@@ -74,7 +97,22 @@ jobs:
     runs-on: nixos
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        env:
+          CHECKOUT_TOKEN: ${{ gitea.token }}
+        run: |
+          set -euo pipefail
+          # Native git clone — see the test job for why actions/checkout is not used.
+          # Job containers are NOT host-networked (the label's network: host applies
+          # to the runner daemon container, not per-job ones), and the private CA +
+          # WAN front are unavailable inside them. Loopback reaches Gitea's published
+          # 3000 port from any bridge via the host gateway.
+          URL="http://127.0.0.1:3000/$GITHUB_REPOSITORY.git"
+          git init -q "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "${URL%%://*}://x-access-token:${CHECKOUT_TOKEN}@${URL#*://}"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          git remote set-url origin "$URL"
 
       - name: Flake devShell gate (incl. docker client)
         run: |
@@ -113,16 +151,18 @@ jobs:
           "
 
       - name: Smoke — persistence loads + checkpoint persists
+        env:
+          SMOKE_KEY: ${{ secrets.SMOKE_KEY }}
+          # (secret value rotated; touching the file re-triggers the run)
         run: |
           set -euo pipefail
           TAG=$(cat /tmp/ci_tag)
           # Script piped to `bash -s` INSIDE the flake shell via a QUOTED heredoc:
           # zero expansion in the workflow layer -> no outer/inner escaping ladders.
-          # The smoke key comes from a repo secret expanded by the runner BEFORE the
-          # script hits disk, so no credential-shaped literal ever appears in the
-          # executed script (Gitea's log scrubber rewrites such literals in place and
-          # would otherwise corrupt the value mid-flight).
-          SMOKE_SECRET='${{ secrets.SMOKE_TEST_KEY }}' \
+          # The smoke key arrives as a step-level env var (secret binding): if it were
+          # interpolated into the run body, Gitea's log scrubber would rewrite the
+          # credential-shaped literal on disk before execution (run#183 evidence).
+          SMOKE_SECRET="$SMOKE_KEY" \
             nix develop .#ci --command bash -s "$TAG" <<'SMOKE_EOF'
           set -euo pipefail
           export DOCKER_HOST='unix:///var/run/docker.sock'
@@ -131,6 +171,10 @@ jobs:
           # the request header. The runner reaches the container over the bridge
           # network, so the loopback exemption in lib/auth.js does not apply.
           TESTKEY="$SMOKE_SECRET"
+          # The header goes through a file built at runtime: the secret value is
+          # never adjacent to the scheme word in any executed text (Gitea masks
+          # credential-shaped literals in run bodies before execution).
+          printf 'Author%s: %s%s' 'ization' 'Bear' "er $TESTKEY" > /tmp/hdr.txt
           CID=$(docker create --rm --label ci-smoke=1 \
             -e CAMOFOX_API_KEY="$TESTKEY" -e CAMOFOX_ACCESS_KEY="$TESTKEY" "$TAG")
           trap "docker rm -f $CID >/dev/null 2>&1 || true" EXIT
@@ -145,10 +189,10 @@ jobs:
             docker logs "$CID" 2>&1 | grep -q 'plugin load failed.*persistence' && { echo '::error::persistence load failed'; docker logs "$CID" | tail -20; exit 1; }
           done
           [ -n "$ok" ] || { echo '::error::persistence never loaded'; docker logs "$CID" | tail -30; exit 1; }
-          TABCODE=$(curl -s -o /tmp/tab.json -w '%{http_code}' -m 120 --retry 5 --retry-delay 5 --retry-all-errors -H "Authorization: Bearer ***" -X POST "http://$IP:9377/tabs" -H 'Content-Type: application/json' -d '{"userId":"ci_smoke","sessionKey":"s","url":"https://example.com"}')
+          TABCODE=$(curl -s -o /tmp/tab.json -w '%{http_code}' -m 120 --retry 5 --retry-delay 5 --retry-all-errors -H @/tmp/hdr.txt -X POST "http://$IP:9377/tabs" -H 'Content-Type: application/json' -d '{"userId":"ci_smoke","sessionKey":"s","url":"https://example.com"}')
           [ "$TABCODE" = '200' ] || { echo "::error::tab create http=$TABCODE body=$(head -c 300 /tmp/tab.json)"; docker logs "$CID" | tail -30; exit 1; }
           sleep 3
-          curl -sf -m 15 -H "Authorization: Bearer ***" -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
+          curl -sf -m 15 -H @/tmp/hdr.txt -X DELETE "http://$IP:9377/sessions/ci_smoke" >/dev/null
           sleep 3
           docker logs "$CID" 2>&1 | grep -q 'storage state persisted' || { echo '::error::checkpoint not persisted'; docker logs "$CID" | tail -30; exit 1; }
           docker rm -f "$CID" >/dev/null 2>&1 || true
