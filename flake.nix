@@ -20,6 +20,7 @@
             curl
             gnused
             gawk
+            docker  # CI image build/smoke client: talks to the NAS host's docker-compat socket (DooD)
           ];
           shellHook = ''
             export HOME=''${HOME:-/tmp}
