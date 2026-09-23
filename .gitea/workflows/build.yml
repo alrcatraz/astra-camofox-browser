@@ -40,26 +40,24 @@ jobs:
     runs-on: nixos
     steps:
       - name: Checkout
+        env:
+          CHECKOUT_TOKEN: ${{ gitea.token }}
         run: |
           set -euo pipefail
-          echo "ENV-PROBE-START"
-          for v in $(compgen -v); do
-            case "$v" in *TOKEN*|*GITEA*|*GITHUB*) echo "VAR:$v";; esac
-          done
-          echo "ENV-PROBE-END"
           # Native git clone instead of actions/checkout: that action is a Node
           # program, so it needs node inside the RUNNER image — a toolchain we
           # do not control (a runner-image rebuild silently dropped it once).
-          # Everything the job needs must come from the repo flake, so we clone
-          # with the git the runner image already ships, authenticating with the
-          # job token the runner injects.
+          # Jobs must depend on the repo flake alone, so we clone with the git
+          # the runner image already ships. The job token arrives as an env var
+          # (the runner does not export one globally); the URL is assembled with
+          # shell parameter expansion because the runner image has no sed.
+          URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git init -q "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
-          AUTH_URL=$(printf '%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" | sed "s|://|://x-access-token:${GITHUB_TOKEN}@|")
-          git remote add origin "$AUTH_URL"
+          git remote add origin "${URL%%://*}://x-access-token:${CHECKOUT_TOKEN}@${URL#*://}"
           git fetch -q --depth 1 origin "$GITHUB_SHA"
           git checkout -q FETCH_HEAD
-          git remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git remote set-url origin "$URL"
 
       - name: Flake devShell gate
         run: |
@@ -95,16 +93,18 @@ jobs:
     runs-on: nixos
     steps:
       - name: Checkout
+        env:
+          CHECKOUT_TOKEN: ${{ gitea.token }}
         run: |
           set -euo pipefail
           # Native git clone — see the test job for why actions/checkout is not used.
+          URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git init -q "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
-          AUTH_URL=$(printf '%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" | sed "s|://|://x-access-token:${GITHUB_TOKEN}@|")
-          git remote add origin "$AUTH_URL"
+          git remote add origin "${URL%%://*}://x-access-token:${CHECKOUT_TOKEN}@${URL#*://}"
           git fetch -q --depth 1 origin "$GITHUB_SHA"
           git checkout -q FETCH_HEAD
-          git remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git remote set-url origin "$URL"
 
       - name: Flake devShell gate (incl. docker client)
         run: |
