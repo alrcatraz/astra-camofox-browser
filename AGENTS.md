@@ -625,3 +625,78 @@ storage` (old image history).
 - **Never touch production data layers.** Layers under
   `containers/storage/overlay` that are referenced by a running container
   (this project's production image data) must not be deleted.
+
+## CI & Release Pipeline (astra-owned, dual-forge)
+
+Authoritative record of how this repo is built, gated, and published. Do not
+restructure it without asking the maintainer.
+
+### Version identity — three sources, one rule
+
+- **`VERSION` file at repo root is the release identity** (bare number, no
+  prefix). Fork build-metadata uses SemVer build suffix: `1.13.2+alrcatraz.1`.
+- `package.json` stays at the upstream base version (upstream tests assert it);
+  `camofox.config.json`'s `version` is the *plugin-config* schema version and
+  is NOT a release version — do not confuse the three.
+- CI enforces: VERSION's base (before `+`) == package.json version.
+- Release git tag is `v$(cat VERSION)`; the publish step refuses any other tag.
+- **OCI image tags forbid `+`**: pipelines map `+alrcatraz.N` → `-alrcatraz.N`
+  in every published image tag (`tr '+' '-'`). Git tag keeps `+`, image tag
+  carries `-`.
+
+### Branch model (both forges)
+
+- `astra` = release line, protected, PR-only from `development`.
+- `development` = integration line, direct push allowed; CI runs on both.
+- Land work: commit on `development` → PR to `astra` → merge → tag on `astra`.
+- Gitea branch protection requires status-check contexts to be the EXACT
+  published strings (`<workflow name> / <job name> (push)`), not bare job names.
+
+### CI gates (identical logic on Gitea and GitHub)
+
+- Gitea: `.gitea/workflows/build.yml` (native clone inside the `nixos/nix`
+  runner image; all tools from `nix develop .#ci`) + `release.yml` (tag →
+  Gitea Release entry via `RELEASE_TOKEN` secret; title/body read from the
+  annotated tag message).
+- GitHub: `.github/workflows/ci-astra.yml` (hosted ubuntu shell +
+  `cachix/install-nix-action@v31`, then every real step inside the flake
+  devShell — the ubuntu runner is a boot wrapper, the flake is the
+  environment). Upstream's old `ci.yml` was removed (references a deleted
+  package, always fails); `mirror-camoufox.yml` (upstream asset mirror) stays.
+- Gates: jest suite → `docker build -f Dockerfile` → smoke container with
+  random per-run throwaway keys asserting persistence checkpoint + auth
+  401/200 behaviour.
+- **Both Dockerfiles must carry the same hotfixes.** The canonical `Dockerfile`
+  needs the `COPY mcp/lib/cookies.mjs` persistence fix just like
+  `Dockerfile.astra`; the CI smoke gate catches drift, but sync them at fix time.
+
+### Publishing
+
+- Public image: `ghcr.io/alrcatraz/camofox-browser-astra` (`:live` +
+  `:<version-with-dash>`), pushed only on `v*` tag runs using the workflow's
+  built-in token (`GITHUB_TOKEN` + job-level `permissions: packages: write`) —
+  **no PAT**. Anonymous pull verified.
+- Private NAS images: Gitea CI maintains
+  `localhost/camofox-browser:{live,vX}` on the runner host; prod switch-over to
+  HC01 via docker-save → ssh cat → podman-load.
+
+### Secrets inventory (keep minimal)
+
+- Gitea repo secrets: `RELEASE_TOKEN` (write:repository PAT for the Release
+  API), `SMOKE_KEY` (CI transport key — required because Gitea's scrubber
+  rewrites credential-shaped literals in run scripts; see
+  fork-camofox-private-deployment skill).
+- GitHub: none beyond the built-in `GITHUB_TOKEN`. Do not add PATs here.
+
+### Release procedure (manual, 3 steps, on `astra`)
+
+```bash
+echo "1.13.2+alrcatraz.2" > VERSION   # bump after merging development
+git commit -am "chore(release): v$(cat VERSION)" && git push origin astra
+git tag --no-sign -a "v$(cat VERSION)" -m "<release notes>" && git push origin "v$(cat VERSION)"
+```
+
+The tag annotation becomes the Release title (first line) + body (rest) on
+both forges. Gitea's release workflow can stall in `queued` (platform bug
+go-gitea/gitea#33492) — if so, create the Gitea Release entry via API from the
+same annotation; content is identical.
