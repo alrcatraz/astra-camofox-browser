@@ -4,8 +4,9 @@ name: Release camofox image (astra)
 # NAS daemon (its Publish step re-tags the exact-tag commit). This workflow only:
 # -> create Gitea release entry. (ghcr public publishing dropped 2026-09-22:
 #    astra = private deployment; images live on the NAS registry only.)
-# Credentials stay as host files under /jobdata (bind allowlisted in runner config):
-#   /volume1/docker/act_runner_nix/data/ci-release-token (write:repository PAT).
+# Release title/body come from the tag annotation: `git tag -a v... -m "<title>\n<note>"`
+# -> name = first line, body = rest; unannotated tags fall back to generated defaults.
+# Release API credential = repo Actions secret RELEASE_TOKEN (never on disk).
 # NOTE: no secret-looking literals in run blocks (log scrubber rewrites them);
 # smoke key is generated at runtime. No GITHUB_ENV (unreliable across steps in act).
 
@@ -27,19 +28,57 @@ jobs:
     runs-on: nix-capable
     steps:
       - name: Checkout tag
-        uses: actions/checkout@v4
+        env:
+          CHECKOUT_TOKEN: ${{ gitea.token }}
+        run: |
+          set -euo pipefail
+          # Native git clone — actions/checkout is a Node program and would need
+          # node inside the runner image (a toolchain the repo flake does not own).
+          # Full fetch (no --depth) because this job reads tags via for-each-ref.
+          # URL assembled with shell parameter expansion (runner image has no sed).
+          # Job containers are NOT host-networked (the label's network: host applies
+          # to the runner daemon container, not per-job ones), and the private CA +
+          # WAN front are unavailable inside them. Loopback reaches Gitea's published
+          # 3000 port from any bridge via the host gateway.
+          URL="http://127.0.0.1:3000/$GITHUB_REPOSITORY.git"
+          git init -q "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "${URL%%://*}://x-access-token:${CHECKOUT_TOKEN}@${URL#*://}"
+          git fetch -q --tags origin "+refs/tags/*:refs/tags/*" "+refs/heads/*:refs/remotes/origin/*"
+          if [ -n "${GITHUB_REF_NAME:-}" ] && git rev-parse -q --verify "refs/tags/$GITHUB_REF_NAME" >/dev/null; then
+            git checkout -q "refs/tags/$GITHUB_REF_NAME"
+          else
+            git fetch -q origin "$GITHUB_SHA" && git checkout -q FETCH_HEAD
+          fi
+          git remote set-url origin "$URL"
 
       - name: Create Gitea release entry
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
+          set -euo pipefail
+          export RELEASE_TOKEN
+          # jq (JSON escaping for user-authored notes) comes from the flake devShell —
+          # the runner image has no python3/jq/node and we never bake tools into it.
+          nix develop .#ci --command bash -s <<'REL_EOF'
           set -euo pipefail
           REF="${GITEA_REF_NAME:-}"
           if [ -z "$REF" ]; then
             REF=$(git for-each-ref --points-at HEAD --format='%(refname:short)' 'refs/tags/v*' | head -1)
           fi
           [ -n "$REF" ] || { echo "::error::no v* tag points at HEAD — cannot determine release ref"; exit 1; }
-          # Actions job tokens are git-only on Gitea (API writes -> 403, by design).
-          # Use a dedicated write:repository PAT stored on the runner host.
-          TOK=$(cat /volume1/docker/act_runner_nix/data/ci-release-token)
+          # Actions job tokens are git-only on Gitea (API writes -> 403, by design),
+          # so release creation uses a dedicated write:repository PAT — stored as
+          # the repo Actions secret RELEASE_TOKEN, never on disk.
+          TOK="$RELEASE_TOKEN"
+          # Title & body from the tag annotation (first line = name, rest = body);
+          # everything from a PGP signature block onward is stripped for signed tags.
+          ANNO=$(git for-each-ref --format='%(contents)' "refs/tags/$REF" | awk '/^-----BEGIN PGP/{exit} {print}')
+          RNAME=$(printf '%s\n' "$ANNO" | sed -e :a -e '/^$/{$d;N;ba' -e '}' | head -1)
+          [ -n "$RNAME" ] || RNAME="camofox-browser $REF"
+          RBODY=$(printf '%s\n' "$ANNO" | tail -n +2 | sed -e :a -e '/^$/{$d;N;ba' -e '}')
+          [ -n "$RBODY" ] || RBODY="Image: localhost/camofox-browser:$REF on NAS; :live = latest CI build"
+          PAYLOAD=$(jq -nc --arg t "$REF" --arg n "$RNAME" --arg b "$RBODY" '{tag_name:$t,name:$n,body:$b}')
           # runner jobs are host-networked on the NAS: talk to Gitea over loopback,
           # not the public WAN front (Lucky proxy flaked at 10443 -> curl exit 28)
           # Gitea API reachable from the runner network as `gitea:3000` (actions/checkout
@@ -48,16 +87,17 @@ jobs:
           CODE=$(curl -s --connect-timeout 10 -u "alrcatraz:$TOK" -X POST \
             "$BASE/api/v1/repos/${GITEA_REPOSITORY:-alrcatraz/astra-camofox-browser}/releases" \
             -H 'Content-Type: application/json' \
-            -d "{\"tag_name\":\"$REF\",\"name\":\"camofox-browser $REF\",\"body\":\"Image: localhost/camofox-browser:$REF on NAS; :live = latest CI build\"}" \
+            -d "$PAYLOAD" \
             -o /tmp/rel_out.json -w "%{http_code}\n")
           if [ "$CODE" = "422" ]; then
             echo "release exists for $REF — updating via PATCH"
             curl -sf --connect-timeout 10 -u "alrcatraz:$TOK" -X PATCH \
               "$BASE/api/v1/repos/${GITEA_REPOSITORY:-alrcatraz/astra-camofox-browser}/releases" \
               -H 'Content-Type: application/json' \
-              -d "{\"tag_name\":\"$REF\",\"name\":\"camofox-browser $REF\",\"body\":\"Image: localhost/camofox-browser:$REF on NAS; :live = latest CI build\"}" \
+              -d "$PAYLOAD" \
               -o /tmp/rel_out.json -w "PATCH %{http_code}\n"
           else
             echo "POST $CODE"
           fi
-          case "$CODE" in 2*) echo OK;; *) echo "::error::release POST/PATCH failed ($CODE)"; exit 1;; esac
+          case "$CODE" in 2*) echo OK;; *) echo "::error::release POST/PATCH failed ($CODE)"; cat /tmp/rel_out.json; exit 1;; esac
+          REL_EOF
