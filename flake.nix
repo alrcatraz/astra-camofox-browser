@@ -20,6 +20,7 @@
             curl
             gnused
             gawk
+            jq   # release.yml: JSON-escapes the tag-annotation title/body into the API payload
             docker  # CI image build/smoke client: talks to the NAS host's docker-compat socket (DooD)
           ];
           shellHook = ''
