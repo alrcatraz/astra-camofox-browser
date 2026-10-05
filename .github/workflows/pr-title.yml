@@ -1,0 +1,39 @@
+name: PR title
+
+# Conventional-commit validation for pull requests. Soft check: this is NOT a
+# required status, so it reports but never blocks a merge on its own. Promote
+# to required only after a week of clean runs (see AGENTS.md branch model).
+on:
+  pull_request:
+    branches: [astra, development]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # `deps` must stay here: dependabot.yml sets commit-message prefix
+          # "deps", so without it Dependabot's own PRs would fail this check.
+          types: |
+            feat
+            fix
+            docs
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            deps
+          requireScope: false
+          subjectPattern: ^.{10,100}$
+          subjectPatternError: |
+            The subject of the PR title must be 10-100 characters long, but got {subjectLength} characters: "{subject}"
