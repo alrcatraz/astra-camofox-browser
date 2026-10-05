@@ -145,10 +145,10 @@
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.4",
     "jest": "^30.4.2",
     "pngjs": "^7.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^7.0.2"
   },
   "overrides": {
     "@jest/reporters": {
